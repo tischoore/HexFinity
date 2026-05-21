@@ -1,0 +1,11 @@
+schema_version = "1.0.0"
+
+id = "hexfinity"
+version = "0.1.0"
+name = "HexFinity"
+tagline = "Modular hexagonal terrain tiles for tabletop miniatures"
+maintainer = "Andre Tischer <andre.tischer@3shape.com>"
+type = "add-on"
+blender_version_min = "5.1.0"
+license = ["SPDX:MIT"]
+tags = ["Mesh", "Add Mesh"]
