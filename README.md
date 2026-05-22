@@ -123,16 +123,19 @@ HexFinity is packaged as a **Blender extension** (see `blender_manifest.toml`), 
 
 ## Install (development)
 
-1. Locate Blender 5.1's user extensions directory, typically:
-   `%APPDATA%\Blender Foundation\Blender\5.1\extensions\user_default\`
-2. Either copy the `hexfinity\` folder there, or create a directory junction so changes in `C:\Work\Hexfinity\hexfinity` are picked up live:
-   ```
-   mklink /J "%APPDATA%\Blender Foundation\Blender\5.1\extensions\user_default\hexfinity" "C:\Work\Hexfinity\hexfinity"
-   ```
-3. In Blender: *Edit → Preferences → Get Extensions*, click the refresh icon, find **HexFinity** under the *user_default* repository, and enable it.
-4. In the 3D Viewport press `N`, open the **HexFinity** tab.
+The repo ships a `deploy.ps1` helper at the root:
 
-For end-user install, zip the `hexfinity\` folder and use *Preferences → Get Extensions → drop-down menu → Install from Disk…*.
+```
+.\deploy.ps1            # rebuild dist\hexfinity-<version>.zip
+.\deploy.ps1 -Dev       # also junction the source folder into user_default for live editing
+.\deploy.ps1 -Dev -BlenderVersion 5.2   # target a different Blender version
+```
+
+After running with `-Dev`, in Blender: *Edit → Preferences → Get Extensions*, click the refresh icon, find **HexFinity** under the *user_default* repository, and enable it. In the 3D Viewport press `N`, open the **HexFinity** tab.
+
+For end-user install, run `.\deploy.ps1` and use *Preferences → Get Extensions → drop-down menu → Install from Disk…* on the produced zip.
+
+The script reads the version from `blender_manifest.toml`, strips `__pycache__`, and writes the zip with the manifest at root (the layout Blender expects).
 
 ### Running the unit tests
 
