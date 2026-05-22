@@ -140,6 +140,29 @@ def _eval_coons(u, v, pd):
             Fu_z + Fv_z - Bz)
 
 
+def clamp_center_to_hexagon(x_mm, y_mm, diameter_mm, safety_mm=1.0):
+    """Project (x_mm, y_mm) into the open hexagon with a safety buffer.
+
+    Constraint: n_i · p <= apothem - safety_mm for each of the six outward
+    rim unit normals, where apothem = (diameter / 2) · √3 / 2. Two passes
+    handle corner regions where two adjacent half-planes are violated.
+    """
+    apothem = (diameter_mm / 2.0) * math.sqrt(3.0) / 2.0
+    limit = apothem - safety_mm
+    x, y = x_mm, y_mm
+    for _ in range(2):
+        for i in range(6):
+            theta = math.pi / 3.0 - i * (math.pi / 3.0)
+            nx = math.cos(theta)
+            ny = math.sin(theta)
+            d = nx * x + ny * y
+            if d > limit:
+                excess = d - limit
+                x -= excess * nx
+                y -= excess * ny
+    return x, y
+
+
 def build_hex_tile(
     diameter_mm,
     level_height_mm,
@@ -147,6 +170,7 @@ def build_hex_tile(
     corner_levels,
     center_level,
     subdivisions,
+    center_xy=(0.0, 0.0),
 ):
     """Build a single HexFinity tile.
 
@@ -182,7 +206,7 @@ def build_hex_tile(
     else:
         center_z = sum(corner_z) / 6.0
 
-    C_pos = (0.0, 0.0, center_z)
+    C_pos = (float(center_xy[0]), float(center_xy[1]), center_z)
     corner_pos = [(corners_xy[i][0], corners_xy[i][1], corner_z[i]) for i in range(6)]
 
     # Per-spoke and per-rim unit XY normals (shared between adjacent patches).

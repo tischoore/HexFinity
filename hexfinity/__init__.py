@@ -8,11 +8,12 @@ plain CPython for unit tests.
 
 
 def _classes():
-    from . import properties, operators, panel
+    from . import properties, operators, panel, gizmo
     return (
         properties.HexFinityProperties,
         operators.HEXFINITY_OT_generate,
         panel.HEXFINITY_PT_panel,
+        gizmo.HEXFINITY_GGT_center,
     )
 
 

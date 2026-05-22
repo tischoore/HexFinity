@@ -34,6 +34,9 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         row = box.row()
         row.enabled = props.override_center
         row.prop(props, "center_level")
+        col = box.column(align=True)
+        col.prop(props, "center_x_mm")
+        col.prop(props, "center_y_mm")
 
         box = layout.box()
         box.label(text="Top Surface")

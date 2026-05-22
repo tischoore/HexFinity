@@ -1,6 +1,13 @@
 import bpy
 
 
+def _on_center_xy_update(self, context):
+    # Lazy import — operators imports properties indirectly via the package
+    # init, so importing it at module load would create a cycle.
+    from .operators import rebuild_tile_if_active
+    rebuild_tile_if_active(context)
+
+
 class HexFinityProperties(bpy.types.PropertyGroup):
     diameter_mm: bpy.props.FloatProperty(
         name="Diameter (mm)",
@@ -35,6 +42,18 @@ class HexFinityProperties(bpy.types.PropertyGroup):
         default=False,
     )
     center_level: bpy.props.IntProperty(name="Center Level", default=0, min=0, soft_max=20)
+    center_x_mm: bpy.props.FloatProperty(
+        name="Center X (mm)",
+        description="X offset of the apex from origin in millimetres",
+        default=0.0,
+        update=_on_center_xy_update,
+    )
+    center_y_mm: bpy.props.FloatProperty(
+        name="Center Y (mm)",
+        description="Y offset of the apex from origin in millimetres",
+        default=0.0,
+        update=_on_center_xy_update,
+    )
     subdivisions: bpy.props.IntProperty(
         name="Subdivisions",
         description="Number of cuts per top-triangle edge",

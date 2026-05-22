@@ -1,7 +1,13 @@
 import math
 import pytest
 
-from mesh_builder import build_hex_tile, _hermite_basis, _patch_data, _eval_coons
+from mesh_builder import (
+    build_hex_tile,
+    clamp_center_to_hexagon,
+    _hermite_basis,
+    _patch_data,
+    _eval_coons,
+)
 from manifold_check import assert_two_manifold
 
 
@@ -14,7 +20,8 @@ def _make_patches(corner_levels=(0, 1, 2, 1, 0, 0),
                   center_level=None,
                   diameter_mm=100.0,
                   level_height_mm=5.0,
-                  base_thickness_mm=3.0):
+                  base_thickness_mm=3.0,
+                  center_xy=(0.0, 0.0)):
     """Build the six per-patch data dicts the way build_hex_tile does."""
     R = diameter_mm / 2.0
     apothem = R * math.sqrt(3.0) / 2.0
@@ -28,7 +35,7 @@ def _make_patches(corner_levels=(0, 1, 2, 1, 0, 0),
         center_z = base_thickness_mm + max(0, int(center_level)) * level_height_mm
     else:
         center_z = sum(corner_z) / 6.0
-    C_pos = (0.0, 0.0, center_z)
+    C_pos = (float(center_xy[0]), float(center_xy[1]), center_z)
     corner_pos = [(corners_xy[i][0], corners_xy[i][1], corner_z[i]) for i in range(6)]
     spoke_normals = []
     for i in range(6):
@@ -338,11 +345,14 @@ def _patch_partial_v(u, v, pd, eps=1e-5):
     return tuple((b[k] - a[k]) / (2 * eps) for k in range(3))
 
 
-def test_spoke_position_G0_across_patches():
+@pytest.mark.parametrize("center_xy", [(0.0, 0.0), (5.0, 3.0), (-8.0, 2.0)])
+def test_spoke_position_G0_across_patches(center_xy):
     # G0 continuity across every internal spoke: patch i evaluated at v=0
     # and patch (i-1) at v=1 produce the same point at every u along the
     # shared spoke. This is the precondition for vertex dedup to be safe.
-    patches, _, _ = _make_patches(corner_levels=(0, 3, 0, 3, 0, 3))
+    # Must hold for off-center C too — the spokes are shared by construction.
+    patches, _, _ = _make_patches(corner_levels=(0, 3, 0, 3, 0, 3),
+                                  center_xy=center_xy)
     for spoke_i in range(6):
         pd_left = patches[(spoke_i - 1) % 6]
         pd_right = patches[spoke_i]
@@ -352,11 +362,13 @@ def test_spoke_position_G0_across_patches():
             assert p_left == pytest.approx(p_right, abs=1e-12)
 
 
-def test_spoke_direction_derivative_matches_across_patches():
+@pytest.mark.parametrize("center_xy", [(0.0, 0.0), (5.0, 3.0), (-8.0, 2.0)])
+def test_spoke_direction_derivative_matches_across_patches(center_xy):
     # The u-direction (along the spoke) derivative IS shared between
     # neighbouring patches — both sides give Pi - C (the straight spoke).
     # This is a partial G1 property that the construction does deliver.
-    patches, C_pos, corner_pos = _make_patches(corner_levels=(5, 0, 5, 0, 5, 0))
+    patches, C_pos, corner_pos = _make_patches(corner_levels=(5, 0, 5, 0, 5, 0),
+                                               center_xy=center_xy)
     eps = 1e-5
     for spoke_i in range(6):
         pd_left = patches[(spoke_i - 1) % 6]
@@ -473,3 +485,97 @@ def test_spoke_vertices_are_deduplicated():
             p_left = _eval_coons(u, 1.0, pd_left)
             p_right = _eval_coons(u, 0.0, pd_right)
             assert p_left == pytest.approx(p_right, abs=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Center XY: gizmo-driven drag of the apex in the XY plane.
+
+def test_clamp_center_to_hexagon_interior_passes_through():
+    # Points well inside the hexagon must not be modified.
+    for (x, y) in [(0.0, 0.0), (5.0, 3.0), (-10.0, -2.0), (15.0, 0.0)]:
+        cx, cy = clamp_center_to_hexagon(x, y, diameter_mm=100.0)
+        assert cx == pytest.approx(x, abs=1e-12)
+        assert cy == pytest.approx(y, abs=1e-12)
+
+
+def test_clamp_center_to_hexagon_rim_midpoints():
+    # Push a point 5 mm past each rim midpoint along the outward normal.
+    # Each must clamp to a point at distance (apothem - 1) along the same
+    # normal — i.e., the clamp lands the point inside the hex by the
+    # configured 1 mm safety buffer.
+    diameter = 100.0
+    apothem = (diameter / 2.0) * math.sqrt(3.0) / 2.0
+    limit = apothem - 1.0  # default safety_mm=1.0
+    for i in range(6):
+        theta = math.pi / 3.0 - i * (math.pi / 3.0)
+        nx, ny = math.cos(theta), math.sin(theta)
+        # 5 mm outside the rim along the outward normal.
+        x = (apothem + 5.0) * nx
+        y = (apothem + 5.0) * ny
+        cx, cy = clamp_center_to_hexagon(x, y, diameter_mm=diameter)
+        # Should sit exactly on the half-plane line at limit·n_i.
+        assert cx == pytest.approx(limit * nx, abs=1e-9)
+        assert cy == pytest.approx(limit * ny, abs=1e-9)
+
+
+def test_clamp_center_to_hexagon_far_outside_lands_inside():
+    # An aggressively out-of-range point must end up strictly inside the
+    # safety-margined hexagon along every rim normal.
+    diameter = 100.0
+    apothem = (diameter / 2.0) * math.sqrt(3.0) / 2.0
+    limit = apothem - 1.0
+    cx, cy = clamp_center_to_hexagon(1000.0, 1000.0, diameter_mm=diameter)
+    for i in range(6):
+        theta = math.pi / 3.0 - i * (math.pi / 3.0)
+        nx, ny = math.cos(theta), math.sin(theta)
+        d = nx * cx + ny * cy
+        assert d <= limit + 1e-9
+
+
+def test_clamp_idempotent():
+    # Clamping an already-clamped value must not drift — important because
+    # the gizmo writes the clamped XY back into the property, which then
+    # triggers the update callback which clamps again.
+    diameter = 100.0
+    for (x, y) in [(50.0, 50.0), (-200.0, 30.0), (10.0, -150.0), (0.5, 0.5)]:
+        once = clamp_center_to_hexagon(x, y, diameter_mm=diameter)
+        twice = clamp_center_to_hexagon(*once, diameter_mm=diameter)
+        assert twice[0] == pytest.approx(once[0], abs=1e-12)
+        assert twice[1] == pytest.approx(once[1], abs=1e-12)
+
+
+def test_build_hex_tile_accepts_center_xy():
+    # With all corners at level 0 and override pinning the center high, the
+    # apex is the unique highest top vertex. Its XY must equal the requested
+    # center_xy (converted to metres).
+    verts, _ = build_hex_tile(
+        diameter_mm=100.0,
+        level_height_mm=5.0,
+        base_thickness_mm=3.0,
+        corner_levels=(0,) * 6,
+        center_level=4,
+        subdivisions=2,
+        center_xy=(5.0, -3.0),
+    )
+    apex = max(verts, key=lambda v: v[2])
+    assert apex[0] == pytest.approx(0.005, abs=1e-9)
+    assert apex[1] == pytest.approx(-0.003, abs=1e-9)
+
+
+def test_flat_tile_off_center():
+    # Off-center C still produces a perfectly flat top when corner levels
+    # are uniform and there is no override (center_z == base_thickness).
+    base = 3.0
+    verts, _ = build_hex_tile(
+        diameter_mm=100.0,
+        level_height_mm=5.0,
+        base_thickness_mm=base,
+        corner_levels=(0,) * 6,
+        center_level=None,
+        subdivisions=2,
+        center_xy=(7.0, -4.0),
+    )
+    expected = base / 1000.0
+    for v in verts:
+        if v[2] > 1e-9:
+            assert v[2] == pytest.approx(expected, abs=1e-12)
