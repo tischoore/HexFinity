@@ -38,11 +38,24 @@ A single vertex `C` sits at the geometric centroid (X = 0, Y = 0). Its Z is the 
 - The **level height** parameter (mm) is the vertical distance for one level step.
 - The Z of a corner is `baseThickness + level × levelHeight`. This keeps the side walls non-degenerate even when every corner is at level 0.
 
-### Top surface triangulation
+### Top surface
 
-- The top is split into 6 triangles sharing the center vertex: `(C, P1, P2)`, `(C, P2, P3)`, …, `(C, P6, P1)`.
-- Each triangle is **subdivided** (configurable number of cuts per edge) so the surface has enough geometry for smooth shading, Subdivision Surface modifiers, sculpting, or displacement.
-- Z within a triangle is barycentrically interpolated between its three corners, so even before smoothing the unmodified mesh is already a clean ramp between corners.
+The top is built from **six bicubic Hermite Coons patches**, one per `(C, Pi, Pi+1)` region. Each patch has its `u=0` parametric edge collapsed to the apex `C`, the `u=1` edge as the straight rim from `Pi` to `Pi+1`, and the `v=0` / `v=1` edges as the straight spokes from `C` to `Pi` and `C` to `Pi+1`. Cross-boundary tangents at the rim and across each spoke are horizontal vectors (`Tu1 = β·n_rim`, `Tv0 = γ·n_spoke`), with apex radial tangents `Tu0 = α·(P − C)_xy` linearly blended in `v`. Default magnitudes are `α = 1`, `β = γ = apothem`.
+
+The construction guarantees:
+
+- **G0 continuity at every internal spoke and along the rim.** Spoke and rim curves are straight lines shared by definition between adjacent patches and tiles.
+- **C∞ smoothness inside each patch.** The Coons evaluation `S = F_u + F_v − B` is an analytic function of `(u, v)`, so the interior of each patch has no creases.
+- **Vertex deduplication at every shared key** (`center`, `corner`, `spoke`, `rim`), so the mesh stays manifold across patch boundaries.
+
+What the construction does **not** deliver — and why:
+
+- **Not strict G1 across spokes.** The actual `∂S/∂v` at a spoke depends on the patch's own rim curve `c1`. Each adjacent patch sees a different rim, so the cross-spoke derivatives don't match at the spoke (the visible result is a faint slope change at the spoke under sharp directional lighting, hidden under Blender's shade-smooth for most settings).
+- **Tile-to-tile rim seams are G0, not G1.** The cross-rim derivative `∂S/∂u(1, v)` reduces to `H0(v)·(Pi − C) + H1(v)·(Pip1 − C)`, which uses each tile's own center `C`. Two tiles sharing a rim have different centers, so the cross-rim tangent planes don't match exactly across the seam. Shade-smooth still produces a visually acceptable join.
+
+For tiles with all corner levels equal (flat-top tiles), the surface degenerates to a flat horizontal disk at `z = base_thickness`, exactly. The unit tests verify this and the other invariants.
+
+The `subdivisions` parameter is the number of cells per patch direction (so the parametric grid is `(subdivisions+1) × (subdivisions+1)` per patch). Top face count per tile is `6·(subdivisions+1)²` — a mix of `6·(subdivisions+1)` apex-fan triangles and the rest as quads wound for `+Z` normal.
 
 ### Base, sides, bottom (manifold guarantee)
 
@@ -139,4 +152,4 @@ After generating a tile:
 1. **Visual smoke test** — diameter = 100 mm, level height = 5 mm, levels `0,1,2,1,0,0`, subdivisions = 4, base thickness = 3 mm. Expect a six-sided tile with a ramped top.
 2. **Manifold check** — Edit Mode → *Select → All by Trait → Non-Manifold*. Zero vertices selected = pass. (The plugin's own check already asserts this.)
 3. **Tessellation check** — duplicate the tile and offset by one hex pitch in X / Y. Opposing edges should align with no gaps.
-4. **Smoothness check** — add a Subdivision Surface modifier or shade-smooth. The top surface should transition smoothly across corners with no creases beyond the corner edges themselves.
+4. **Smoothness check** — shade-smooth the top faces (the per-patch interior is already C∞; shading just averages the patch-to-patch normals across the spokes). A Subdivision Surface modifier is not required for smoothness *within* a tile.
