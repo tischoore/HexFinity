@@ -10,6 +10,12 @@ All linear inputs are expressed in **millimeters**. The add-on converts to Blend
 
 ## Geometry
 
+### Anatomy
+
+![HexFinity tile anatomy — top view labelling P1–P6, E1–E6, C, and S1–S6; side view showing base thickness and level height with P4 elevated one level](docs/hex_anatomy.svg)
+
+*Top view* labels the six corners `P1`–`P6`, the six rim edges `E1`–`E6` (each `Ei` is the edge `Pi → Pi+1`, wrapping `P6 → P1` as `E6`), the centre vertex `C`, and the six spokes `S1`–`S6` (each `Si` is `C → Pi`). *Side view* is a cross-section through the `P1–C–P4` axis with corner `P4` raised one level above the rest, showing how `base thickness` and `level height` stack along Z.
+
 ### Hexagon shape
 
 - Regular hexagon, **point-up** orientation, lying in the XY plane.
@@ -17,16 +23,6 @@ All linear inputs are expressed in **millimeters**. The add-on converts to Blend
 - Corners are labeled **P1 – P6 clockwise** viewed from above (+Z):
   - **P1** is at the top (12 o'clock).
   - P2 is 60° clockwise from P1, P3 is at the 4 o'clock position, etc.
-
-```
-        P1
-      /    \
-   P6        P2
-    |        |
-   P5        P3
-      \    /
-        P4
-```
 
 ### Center vertex
 

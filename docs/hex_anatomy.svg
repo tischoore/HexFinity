@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 800 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="hexAnatomyTitle hexAnatomyDesc">
+  <title id="hexAnatomyTitle">HexFinity tile anatomy</title>
+  <desc id="hexAnatomyDesc">Top view labels the six corners P1-P6, the six rim edges E1-E6, the center vertex C, and the six spokes S1-S6. Side view is a cross-section through the P1-C-P4 axis, showing the base thickness from the bottom plane up to the top surface, with corner P4 elevated one level above the rest by the level height.</desc>
+
+  <rect x="0" y="0" width="800" height="400" fill="#fafafa"/>
+
+  <defs>
+    <marker id="arrowEnd" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 0 10 L 10 5 z" fill="#333"/>
+    </marker>
+    <marker id="arrowStart" viewBox="0 0 10 10" refX="0" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 10 0 L 10 10 L 0 5 z" fill="#333"/>
+    </marker>
+  </defs>
+
+  <text x="200" y="28" text-anchor="middle" font-family="sans-serif" font-size="16" font-weight="bold" fill="#333">Top view</text>
+  <text x="600" y="28" text-anchor="middle" font-family="sans-serif" font-size="16" font-weight="bold" fill="#333">Side view (cross-section P1 – C – P4)</text>
+
+  <!-- ===== Top view ===== -->
+  <polygon points="200,90 312.6,155 312.6,285 200,350 87.4,285 87.4,155" fill="none" stroke="#333" stroke-width="2"/>
+
+  <line x1="200" y1="220" x2="200"   y2="90"  stroke="#333" stroke-width="1.4" stroke-dasharray="5 4"/>
+  <line x1="200" y1="220" x2="312.6" y2="155" stroke="#333" stroke-width="1.4" stroke-dasharray="5 4"/>
+  <line x1="200" y1="220" x2="312.6" y2="285" stroke="#333" stroke-width="1.4" stroke-dasharray="5 4"/>
+  <line x1="200" y1="220" x2="200"   y2="350" stroke="#333" stroke-width="1.4" stroke-dasharray="5 4"/>
+  <line x1="200" y1="220" x2="87.4"  y2="285" stroke="#333" stroke-width="1.4" stroke-dasharray="5 4"/>
+  <line x1="200" y1="220" x2="87.4"  y2="155" stroke="#333" stroke-width="1.4" stroke-dasharray="5 4"/>
+
+  <circle cx="200"   cy="90"  r="4" fill="#333"/>
+  <circle cx="312.6" cy="155" r="4" fill="#333"/>
+  <circle cx="312.6" cy="285" r="4" fill="#333"/>
+  <circle cx="200"   cy="350" r="4" fill="#333"/>
+  <circle cx="87.4"  cy="285" r="4" fill="#333"/>
+  <circle cx="87.4"  cy="155" r="4" fill="#333"/>
+  <circle cx="200"   cy="220" r="4" fill="#333"/>
+
+  <text x="200" y="80"  text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333">P1</text>
+  <text x="322" y="151" text-anchor="start"  font-family="sans-serif" font-size="14" fill="#333">P2</text>
+  <text x="322" y="293" text-anchor="start"  font-family="sans-serif" font-size="14" fill="#333">P3</text>
+  <text x="200" y="368" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333">P4</text>
+  <text x="78"  y="293" text-anchor="end"    font-family="sans-serif" font-size="14" fill="#333">P5</text>
+  <text x="78"  y="151" text-anchor="end"    font-family="sans-serif" font-size="14" fill="#333">P6</text>
+  <text x="210" y="216" text-anchor="start"  font-family="sans-serif" font-size="14" fill="#333">C</text>
+
+  <text x="267" y="110" text-anchor="middle" font-family="sans-serif" font-size="12" font-style="italic" fill="#333">E1</text>
+  <text x="336" y="224" text-anchor="start"  font-family="sans-serif" font-size="12" font-style="italic" fill="#333">E2</text>
+  <text x="267" y="335" text-anchor="middle" font-family="sans-serif" font-size="12" font-style="italic" fill="#333">E3</text>
+  <text x="133" y="335" text-anchor="middle" font-family="sans-serif" font-size="12" font-style="italic" fill="#333">E4</text>
+  <text x="64"  y="224" text-anchor="end"    font-family="sans-serif" font-size="12" font-style="italic" fill="#333">E5</text>
+  <text x="133" y="110" text-anchor="middle" font-family="sans-serif" font-size="12" font-style="italic" fill="#333">E6</text>
+
+  <text x="206" y="140" text-anchor="start"  font-family="sans-serif" font-size="12" font-style="italic" fill="#333">S1</text>
+  <text x="254" y="172" text-anchor="start"  font-family="sans-serif" font-size="12" font-style="italic" fill="#333">S2</text>
+  <text x="254" y="270" text-anchor="start"  font-family="sans-serif" font-size="12" font-style="italic" fill="#333">S3</text>
+  <text x="206" y="300" text-anchor="start"  font-family="sans-serif" font-size="12" font-style="italic" fill="#333">S4</text>
+  <text x="146" y="270" text-anchor="end"    font-family="sans-serif" font-size="12" font-style="italic" fill="#333">S5</text>
+  <text x="146" y="172" text-anchor="end"    font-family="sans-serif" font-size="12" font-style="italic" fill="#333">S6</text>
+
+  <!-- ===== Side view ===== -->
+  <line x1="450" y1="300" x2="750" y2="300" stroke="#333" stroke-width="2"/>
+  <polyline points="470,250 600,250 730,200" fill="none" stroke="#333" stroke-width="2"/>
+  <line x1="470" y1="250" x2="470" y2="300" stroke="#333" stroke-width="2"/>
+  <line x1="730" y1="200" x2="730" y2="300" stroke="#333" stroke-width="2"/>
+
+  <line x1="730" y1="250" x2="785" y2="250" stroke="#333" stroke-width="1" stroke-dasharray="4 3"/>
+
+  <circle cx="470" cy="250" r="4" fill="#333"/>
+  <circle cx="600" cy="250" r="4" fill="#333"/>
+  <circle cx="730" cy="200" r="4" fill="#333"/>
+
+  <text x="470" y="240" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333">P1</text>
+  <text x="600" y="240" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333">C</text>
+  <text x="730" y="190" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333">P4</text>
+  <text x="600" y="318" text-anchor="middle" font-family="sans-serif" font-size="12" font-style="italic" fill="#333">bottom plane (z = 0)</text>
+
+  <line x1="440" y1="251" x2="440" y2="299" stroke="#333" stroke-width="1" marker-start="url(#arrowStart)" marker-end="url(#arrowEnd)"/>
+  <text x="434" y="279" text-anchor="end" font-family="sans-serif" font-size="12" fill="#333">base thickness</text>
+
+  <line x1="775" y1="201" x2="775" y2="249" stroke="#333" stroke-width="1" marker-start="url(#arrowStart)" marker-end="url(#arrowEnd)"/>
+  <text x="781" y="229" text-anchor="start" font-family="sans-serif" font-size="12" fill="#333">level height</text>
+</svg>
