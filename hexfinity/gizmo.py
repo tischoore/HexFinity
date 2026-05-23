@@ -4,14 +4,14 @@ from .mesh_builder import clamp_center_to_hexagon
 
 
 class HEXFINITY_GGT_center(bpy.types.GizmoGroup):
-    """A 2D ring gizmo that drags the tile center in the XY plane.
+    """A 2D ring gizmo that drags the active tile's center in the XY plane.
 
     Z of the center is driven by the existing UI input (override toggle +
     center_level), not by the gizmo. The set callback discards any Z drag
     component, clamps the requested XY into the open hexagon, and writes
-    the result back to the scene property group — which triggers the
-    property update callback in `properties.py`, which rebuilds the mesh
-    in place via `operators.rebuild_tile_if_active`.
+    the result back to the active object's per-Object property group —
+    which triggers `_on_tile_prop_update` in `properties.py`, which
+    rebuilds the mesh in place via `operators.rebuild_tile`.
     """
 
     bl_idname = "HEXFINITY_GGT_center"
@@ -23,7 +23,7 @@ class HEXFINITY_GGT_center(bpy.types.GizmoGroup):
     @classmethod
     def poll(cls, context):
         obj = context.active_object
-        return obj is not None and obj.get("hexfinity_tile") == 1
+        return obj is not None and obj.hexfinity_tile.is_generated
 
     def setup(self, context):
         gz = self.gizmos.new("GIZMO_GT_move_3d")
@@ -44,16 +44,16 @@ class HEXFINITY_GGT_center(bpy.types.GizmoGroup):
         self._gz.matrix_basis.identity()
 
     def _get_offset(self):
-        p = bpy.context.scene.hexfinity
+        p = bpy.context.active_object.hexfinity_tile
         return (p.center_x_mm / 1000.0, p.center_y_mm / 1000.0, self._apex_z_m(p))
 
     def _set_offset(self, value):
-        p = bpy.context.scene.hexfinity
+        p = bpy.context.active_object.hexfinity_tile
         x_mm = value[0] * 1000.0
         y_mm = value[1] * 1000.0
         x_mm, y_mm = clamp_center_to_hexagon(x_mm, y_mm, p.diameter_mm)
-        # Writing the properties fires the update callback, which calls
-        # rebuild_tile_if_active. The operator's _REBUILDING guard handles
+        # Writing the properties fires _on_tile_prop_update on this tile,
+        # which calls rebuild_tile. The operator's _REBUILDING guard handles
         # the re-entrant write-back of clamped values.
         p.center_x_mm = x_mm
         p.center_y_mm = y_mm

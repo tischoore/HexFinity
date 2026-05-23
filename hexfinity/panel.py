@@ -10,7 +10,14 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        props = context.scene.hexfinity
+        obj = context.active_object
+        if obj is None or not obj.hexfinity_tile.is_generated:
+            layout.label(text="Select a HexTile to edit, or generate a new one.")
+            layout.operator("hexfinity.generate", icon='MESH_ICOSPHERE')
+            return
+
+        props = obj.hexfinity_tile
+        layout.label(text=f"Editing: {obj.name}")
 
         box = layout.box()
         box.label(text="Base")

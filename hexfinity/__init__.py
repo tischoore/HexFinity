@@ -22,14 +22,14 @@ def register():
     from . import properties
     for cls in _classes():
         bpy.utils.register_class(cls)
-    bpy.types.Scene.hexfinity = bpy.props.PointerProperty(
+    bpy.types.Object.hexfinity_tile = bpy.props.PointerProperty(
         type=properties.HexFinityProperties
     )
 
 
 def unregister():
     import bpy
-    if hasattr(bpy.types.Scene, "hexfinity"):
-        del bpy.types.Scene.hexfinity
+    if hasattr(bpy.types.Object, "hexfinity_tile"):
+        del bpy.types.Object.hexfinity_tile
     for cls in reversed(_classes()):
         bpy.utils.unregister_class(cls)

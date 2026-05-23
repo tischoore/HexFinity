@@ -55,25 +55,6 @@ def rebuild_tile(obj, props):
         _REBUILDING = False
 
 
-def rebuild_tile_if_active(context):
-    """Rebuild the active HexTile (if any) from the current property values.
-
-    Called from the center_x/y update callback. Silently no-ops if the
-    active object is not a HexTile, or if a rebuild error occurs (errors
-    propagate as Blender info; we don't want a keystroke to raise).
-    """
-    obj = context.active_object
-    if obj is None or obj.get("hexfinity_tile") != 1:
-        return
-    props = context.scene.hexfinity
-    try:
-        rebuild_tile(obj, props)
-    except (ValueError, ManifoldError):
-        # A bad parameter combination shouldn't crash the property update.
-        # The next Generate-Tile click surfaces the same error to the user.
-        pass
-
-
 class HEXFINITY_OT_generate(bpy.types.Operator):
     bl_idname = "hexfinity.generate"
     bl_label = "Generate Tile"
@@ -81,19 +62,23 @@ class HEXFINITY_OT_generate(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-        props = context.scene.hexfinity
-
         mesh = bpy.data.meshes.new("HexTile")
         obj = bpy.data.objects.new("HexTile", mesh)
-        obj["hexfinity_tile"] = 1
         context.collection.objects.link(obj)
 
+        # First access auto-initializes the per-Object PropertyGroup with
+        # field defaults.
         try:
-            rebuild_tile(obj, props)
+            rebuild_tile(obj, obj.hexfinity_tile)
         except (ValueError, ManifoldError) as exc:
             bpy.data.objects.remove(obj, do_unlink=True)
             self.report({'ERROR'}, f"HexFinity: {exc}")
             return {'CANCELLED'}
+
+        # Mark *after* a successful build so the panel/gizmo only adopt the
+        # tile once it actually exists. is_generated has no update= callback,
+        # so this write does not trigger an extra rebuild.
+        obj.hexfinity_tile.is_generated = True
 
         for o in context.selected_objects:
             o.select_set(False)
