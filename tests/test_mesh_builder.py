@@ -150,18 +150,18 @@ def test_corner_z_formula():
         center_level=None,
         subdivisions=0,
     )
-    R_m = 50.0 / 1000.0
+    R = 50.0
     for i in range(6):
         angle = math.pi / 2.0 - i * (math.pi / 3.0)
-        cx, cy = R_m * math.cos(angle), R_m * math.sin(angle)
+        cx, cy = R * math.cos(angle), R * math.sin(angle)
         # Top vertex at this XY has Z > 0; bottom vertex shares XY but Z=0.
         top_matches = [
             v for v in verts
-            if abs(v[0] - cx) < 1e-9 and abs(v[1] - cy) < 1e-9 and v[2] > 1e-9
+            if abs(v[0] - cx) < 1e-6 and abs(v[1] - cy) < 1e-6 and v[2] > 1e-6
         ]
         assert len(top_matches) == 1, f"corner {i+1}: expected one top vertex"
-        expected_z = (base + levels[i] * lh) / 1000.0
-        assert top_matches[0][2] == pytest.approx(expected_z, abs=1e-12)
+        expected_z = base + levels[i] * lh
+        assert top_matches[0][2] == pytest.approx(expected_z, abs=1e-9)
 
 
 def test_center_override_pins_center_vertex():
@@ -175,10 +175,10 @@ def test_center_override_pins_center_vertex():
     )
     top_center = [
         v for v in verts
-        if abs(v[0]) < 1e-12 and abs(v[1]) < 1e-12 and v[2] > 1e-9
+        if abs(v[0]) < 1e-9 and abs(v[1]) < 1e-9 and v[2] > 1e-6
     ]
     assert len(top_center) == 1
-    assert top_center[0][2] == pytest.approx(28.0 / 1000.0, abs=1e-12)
+    assert top_center[0][2] == pytest.approx(28.0, abs=1e-9)
 
 
 def test_center_without_override_uses_corner_mean():
@@ -192,11 +192,11 @@ def test_center_without_override_uses_corner_mean():
     )
     top_center = [
         v for v in verts
-        if abs(v[0]) < 1e-12 and abs(v[1]) < 1e-12 and v[2] > 1e-9
+        if abs(v[0]) < 1e-9 and abs(v[1]) < 1e-9 and v[2] > 1e-6
     ]
     assert len(top_center) == 1
-    # Mean of (3, 33, 3, 33, 3, 33) mm = 18 mm = 0.018 m.
-    assert top_center[0][2] == pytest.approx(18.0 / 1000.0, abs=1e-12)
+    # Mean of (3, 33, 3, 33, 3, 33) mm = 18 mm.
+    assert top_center[0][2] == pytest.approx(18.0, abs=1e-9)
 
 
 def test_bottom_is_flat_at_zero():
@@ -228,11 +228,12 @@ def test_validates_inputs():
         build_hex_tile(100.0, 5.0, 3.0, (0,) * 5, None, 0)
 
 
-def test_units_convert_mm_to_meters():
-    # Diameter 100 mm should put corners 0.05 m from origin.
+def test_units_are_millimetres():
+    # Diameter 100 mm should put corners 50 mm from origin (mesh is in mm
+    # so STL export at default settings writes correct physical size).
     verts, _ = build_hex_tile(100.0, 5.0, 3.0, (0,) * 6, None, 0)
     max_radius = max(math.hypot(v[0], v[1]) for v in verts)
-    assert max_radius == pytest.approx(0.05, abs=1e-9)
+    assert max_radius == pytest.approx(50.0, abs=1e-9)
 
 
 # ---------------------------------------------------------------------------
@@ -442,13 +443,13 @@ def test_patch_interior_is_smooth():
 def test_flat_tile_is_perfectly_flat():
     # Levels all zero, no override → C_pos.z = base_thickness, all corners
     # at the same z. The Coons patch must collapse to a horizontal disk at
-    # z = base / 1000 metres, including for non-grid-aligned (u, v).
+    # z = base millimetres, including for non-grid-aligned (u, v).
     base = 3.0
     verts, _ = build_hex_tile(100.0, 5.0, base, (0,) * 6, None, 2)
-    top_z_values = [v[2] for v in verts if v[2] > 1e-9]
-    expected = base / 1000.0
+    top_z_values = [v[2] for v in verts if v[2] > 1e-6]
+    expected = base
     for z in top_z_values:
-        assert z == pytest.approx(expected, abs=1e-12)
+        assert z == pytest.approx(expected, abs=1e-9)
     # Now also sample the surface at dense non-grid (u, v) points.
     patches, _, _ = _make_patches(corner_levels=(0,) * 6,
                                   base_thickness_mm=base)
@@ -547,7 +548,7 @@ def test_clamp_idempotent():
 def test_build_hex_tile_accepts_center_xy():
     # With all corners at level 0 and override pinning the center high, the
     # apex is the unique highest top vertex. Its XY must equal the requested
-    # center_xy (converted to metres).
+    # center_xy in millimetres.
     verts, _ = build_hex_tile(
         diameter_mm=100.0,
         level_height_mm=5.0,
@@ -558,8 +559,8 @@ def test_build_hex_tile_accepts_center_xy():
         center_xy=(5.0, -3.0),
     )
     apex = max(verts, key=lambda v: v[2])
-    assert apex[0] == pytest.approx(0.005, abs=1e-9)
-    assert apex[1] == pytest.approx(-0.003, abs=1e-9)
+    assert apex[0] == pytest.approx(5.0, abs=1e-9)
+    assert apex[1] == pytest.approx(-3.0, abs=1e-9)
 
 
 def test_flat_tile_off_center():
@@ -575,7 +576,7 @@ def test_flat_tile_off_center():
         subdivisions=2,
         center_xy=(7.0, -4.0),
     )
-    expected = base / 1000.0
+    expected = base
     for v in verts:
-        if v[2] > 1e-9:
-            assert v[2] == pytest.approx(expected, abs=1e-12)
+        if v[2] > 1e-6:
+            assert v[2] == pytest.approx(expected, abs=1e-9)

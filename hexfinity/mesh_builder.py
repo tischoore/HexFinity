@@ -1,7 +1,7 @@
 """Pure-Python mesh construction for HexFinity tiles.
 
 No `bpy` imports — this module is unit-testable in plain CPython.
-All linear inputs are millimetres; output vertex coordinates are metres.
+All linear inputs and output vertex coordinates are in millimetres.
 
 Top surface: six bicubic Hermite Coons patches, one per `(C, Pi, Pi+1)` region.
 Each patch has its `u=0` boundary collapsed to the apex `C`. Boundary curves
@@ -174,8 +174,10 @@ def build_hex_tile(
 ):
     """Build a single HexFinity tile.
 
-    Returns (verts, faces) where verts is a list of (x, y, z) tuples in metres
-    and faces is a list of vertex-index tuples (triangles or quads).
+    Returns (verts, faces) where verts is a list of (x, y, z) tuples in
+    millimetres and faces is a list of vertex-index tuples (triangles or
+    quads). Default STL export from Blender writes raw vertex values, so
+    keeping the mesh in mm makes the exported file imports at true mm scale.
     """
     if diameter_mm <= 0:
         raise ValueError(f"diameter_mm must be positive, got {diameter_mm}")
@@ -337,5 +339,4 @@ def build_hex_tile(
             bot_b = vert_index[bot_key(i, s + 1)]
             faces.append((bot_center_idx, bot_a, bot_b))
 
-    verts_m = [(x / 1000.0, y / 1000.0, z / 1000.0) for (x, y, z) in verts_mm]
-    return verts_m, faces
+    return verts_mm, faces

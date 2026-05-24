@@ -4,7 +4,7 @@ A Blender 5.1 add-on for generating modular hexagonal terrain tiles for tabletop
 
 HexFinity creates a single hexagonal tile per click. Each of the six corners has an independently controllable height level, the top surface is subdivided enough to support smooth transitions across the whole tile, and the resulting mesh is watertight (2-manifold) so it is ready for 3D printing, sculpting, or further modifier stacks.
 
-All linear inputs are expressed in **millimeters**. The add-on converts to Blender's internal meters at mesh-build time so the user does not have to change scene units.
+All linear inputs are expressed in **millimeters**, and mesh vertices are emitted in millimeters too. Blender's STL exporter writes raw vertex values, so the exported `.stl` opens at true mm scale in any CAD program or slicer. In Blender's own viewport the tile appears at the numeric value — a 100 mm tile is 100 *units* wide — because Blender's default scene unit is metres; optionally switch the scene to *Metric · Millimeters* (`scale = 0.001`) for a friendlier on-screen display.
 
 ---
 
