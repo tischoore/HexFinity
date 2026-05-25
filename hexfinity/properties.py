@@ -40,9 +40,9 @@ class HexFinityMapProperties(bpy.types.PropertyGroup):
     )
     base_thickness_mm: bpy.props.FloatProperty(
         name="Base Thickness (mm)",
-        description="Minimum gap between the bottom plane and the top surface (uniform across the map)",
-        default=3.0,
-        min=0.001,
+        description="Minimum gap between the bottom plane and the top surface (uniform across the map). Must be at least 10 mm so the inter-tile tab/hole interlock fits inside the base",
+        default=10.0,
+        min=10.0,
         soft_max=100.0,
         update=_on_global_update,
     )

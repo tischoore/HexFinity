@@ -7,8 +7,14 @@ from mesh_builder import (
     _hermite_basis,
     _patch_data,
     _eval_coons,
+    TAB_WIDTH_MM,
+    TAB_HEIGHT_MM,
+    TAB_DEPTH_MM,
+    TAB_OFFSET_FROM_CORNER_MM,
+    TAB_HOLE_TOLERANCE_MM,
 )
 from manifold_check import assert_two_manifold
+from map import neighbour_coord, tile_world_xy, NE
 
 
 # ---------------------------------------------------------------------------
@@ -20,7 +26,7 @@ def _make_patches(corner_levels=(0, 1, 2, 1, 0, 0),
                   center_level=None,
                   diameter_mm=100.0,
                   level_height_mm=5.0,
-                  base_thickness_mm=3.0,
+                  base_thickness_mm=10.0,
                   center_xy=(0.0, 0.0)):
     """Build the six per-patch data dicts the way build_hex_tile does."""
     R = diameter_mm / 2.0
@@ -66,7 +72,7 @@ def _build(
     center_level=None,
     diameter_mm=100.0,
     level_height_mm=5.0,
-    base_thickness_mm=3.0,
+    base_thickness_mm=10.0,
 ):
     return build_hex_tile(
         diameter_mm=diameter_mm,
@@ -81,10 +87,13 @@ def _build(
 @pytest.mark.parametrize(
     "subdivisions,expected_v",
     [
-        (0, 14),   # N=1: top 6N²+1=7   + bottom 7
-        (1, 38),   # N=2: top 6N²+1=25  + bottom 13
-        (2, 74),   # N=3: top 6N²+1=55  + bottom 19
-        (4, 182),  # N=5: top 6N²+1=151 + bottom 31
+        # 6N² + 1 top + 103 bottom-region (6 bcorners + 24 bbreaks + 1 bcenter
+        # + 36 tab + 36 hole verts; tab/hole share 2 bbreak verts each per side
+        # so each contributes 6 new verts × 6 sides).
+        (0, 110),  # N=1: 7   + 103
+        (1, 128),  # N=2: 25  + 103
+        (2, 158),  # N=3: 55  + 103
+        (4, 254),  # N=5: 151 + 103
     ],
 )
 def test_vertex_count(subdivisions, expected_v):
@@ -95,10 +104,12 @@ def test_vertex_count(subdivisions, expected_v):
 @pytest.mark.parametrize(
     "subdivisions,expected_f",
     [
-        (0, 18),   # N=1: 6 top + 6 side + 6 bottom
-        (1, 48),   # N=2: 24 top + 12 side + 12 bottom
-        (2, 90),
-        (4, 210),
+        # 6N² top + 6 side-wall n-gons + 30 tab faces (5/side) + 24 cavity
+        # faces (4/side) + 42 bottom-plate fan triangles (7/side).
+        (0, 108),
+        (1, 126),
+        (2, 156),
+        (4, 252),
     ],
 )
 def test_face_count(subdivisions, expected_f):
@@ -140,7 +151,7 @@ def test_euler_characteristic_is_sphere():
 
 
 def test_corner_z_formula():
-    base, lh = 3.0, 5.0
+    base, lh = 10.0, 5.0
     levels = (0, 1, 2, 3, 4, 5)
     verts, _ = build_hex_tile(
         diameter_mm=100.0,
@@ -168,7 +179,7 @@ def test_center_override_pins_center_vertex():
     verts, _ = build_hex_tile(
         diameter_mm=100.0,
         level_height_mm=5.0,
-        base_thickness_mm=3.0,
+        base_thickness_mm=10.0,
         corner_levels=(0, 0, 0, 0, 0, 0),
         center_level=5,
         subdivisions=0,
@@ -178,14 +189,14 @@ def test_center_override_pins_center_vertex():
         if abs(v[0]) < 1e-9 and abs(v[1]) < 1e-9 and v[2] > 1e-6
     ]
     assert len(top_center) == 1
-    assert top_center[0][2] == pytest.approx(28.0, abs=1e-9)
+    assert top_center[0][2] == pytest.approx(35.0, abs=1e-9)
 
 
 def test_center_without_override_uses_corner_mean():
     verts, _ = build_hex_tile(
         diameter_mm=100.0,
         level_height_mm=5.0,
-        base_thickness_mm=3.0,
+        base_thickness_mm=10.0,
         corner_levels=(0, 6, 0, 6, 0, 6),
         center_level=None,
         subdivisions=0,
@@ -195,8 +206,8 @@ def test_center_without_override_uses_corner_mean():
         if abs(v[0]) < 1e-9 and abs(v[1]) < 1e-9 and v[2] > 1e-6
     ]
     assert len(top_center) == 1
-    # Mean of (3, 33, 3, 33, 3, 33) mm = 18 mm.
-    assert top_center[0][2] == pytest.approx(18.0, abs=1e-9)
+    # Mean of (10, 40, 10, 40, 10, 40) mm = 25 mm.
+    assert top_center[0][2] == pytest.approx(25.0, abs=1e-9)
 
 
 def test_bottom_is_flat_at_zero():
@@ -208,8 +219,8 @@ def test_bottom_is_flat_at_zero():
 
 
 def test_clamps_negative_corner_levels():
-    neg_verts, _ = build_hex_tile(100.0, 5.0, 3.0, (-2, -1, 0, 1, 2, 3), None, 0)
-    zero_verts, _ = build_hex_tile(100.0, 5.0, 3.0, (0, 0, 0, 1, 2, 3), None, 0)
+    neg_verts, _ = build_hex_tile(100.0, 5.0, 10.0, (-2, -1, 0, 1, 2, 3), None, 0)
+    zero_verts, _ = build_hex_tile(100.0, 5.0, 10.0, (0, 0, 0, 1, 2, 3), None, 0)
     assert sorted(v[2] for v in neg_verts) == pytest.approx(
         sorted(v[2] for v in zero_verts)
     )
@@ -217,23 +228,36 @@ def test_clamps_negative_corner_levels():
 
 def test_validates_inputs():
     with pytest.raises(ValueError):
-        build_hex_tile(0.0, 5.0, 3.0, (0,) * 6, None, 0)
+        build_hex_tile(0.0, 5.0, 10.0, (0,) * 6, None, 0)
     with pytest.raises(ValueError):
-        build_hex_tile(100.0, 0.0, 3.0, (0,) * 6, None, 0)
+        build_hex_tile(100.0, 0.0, 10.0, (0,) * 6, None, 0)
     with pytest.raises(ValueError):
         build_hex_tile(100.0, 5.0, 0.0, (0,) * 6, None, 0)
+    # Tab/hole interlock needs base_thickness_mm >= TAB_HEIGHT + TOL (8.2 mm).
     with pytest.raises(ValueError):
-        build_hex_tile(100.0, 5.0, 3.0, (0,) * 6, None, -1)
+        build_hex_tile(100.0, 5.0, 3.0, (0,) * 6, None, 0)
     with pytest.raises(ValueError):
-        build_hex_tile(100.0, 5.0, 3.0, (0,) * 5, None, 0)
+        build_hex_tile(100.0, 5.0, 10.0, (0,) * 6, None, -1)
+    with pytest.raises(ValueError):
+        build_hex_tile(100.0, 5.0, 10.0, (0,) * 5, None, 0)
+    # Diameter must also be wide enough for the tab and hole on a single side
+    # to leave a printable gap of solid material between them.
+    with pytest.raises(ValueError):
+        build_hex_tile(60.0, 5.0, 10.0, (0,) * 6, None, 0)
 
 
 def test_units_are_millimetres():
-    # Diameter 100 mm should put corners 50 mm from origin (mesh is in mm
-    # so STL export at default settings writes correct physical size).
-    verts, _ = build_hex_tile(100.0, 5.0, 3.0, (0,) * 6, None, 0)
-    max_radius = max(math.hypot(v[0], v[1]) for v in verts)
-    assert max_radius == pytest.approx(50.0, abs=1e-9)
+    # Diameter 100 mm should put hex corners 50 mm from origin (mesh is in mm
+    # so STL export at default settings writes correct physical size). Tabs
+    # extend further out radially, so check the hex corners explicitly.
+    verts, _ = build_hex_tile(100.0, 5.0, 10.0, (0,) * 6, None, 0)
+    R = 50.0
+    for i in range(6):
+        angle = math.pi / 3.0 - i * (math.pi / 3.0)
+        cx, cy = R * math.cos(angle), R * math.sin(angle)
+        matches = [v for v in verts
+                   if abs(v[0] - cx) < 1e-9 and abs(v[1] - cy) < 1e-9]
+        assert matches, f"corner {i+1} at ({cx:.3f},{cy:.3f}) not found"
 
 
 # ---------------------------------------------------------------------------
@@ -444,9 +468,11 @@ def test_flat_tile_is_perfectly_flat():
     # Levels all zero, no override → C_pos.z = base_thickness, all corners
     # at the same z. The Coons patch must collapse to a horizontal disk at
     # z = base millimetres, including for non-grid-aligned (u, v).
-    base = 3.0
+    base = 10.0
     verts, _ = build_hex_tile(100.0, 5.0, base, (0,) * 6, None, 2)
-    top_z_values = [v[2] for v in verts if v[2] > 1e-6]
+    # Tab/hole interlock verts live in the lower 8.1 mm of the base; filter
+    # them out so we only check the Coons-patch top surface.
+    top_z_values = [v[2] for v in verts if v[2] >= base - 1e-9]
     expected = base
     for z in top_z_values:
         assert z == pytest.approx(expected, abs=1e-9)
@@ -465,12 +491,13 @@ def test_flat_tile_is_perfectly_flat():
 # Vertex-dedup: G1-on-spokes guarantee depends on shared keys.
 
 def test_spoke_vertices_are_deduplicated():
-    # Top-vertex formula 6N² + 1. Verify by counting vertices above the
-    # bottom (z > 0).
+    # Top-vertex formula 6N² + 1. Verify by counting vertices at or above the
+    # base thickness (10 mm), which excludes the tab/hole interlock geometry
+    # that sits in the lower 8.1 mm of the base.
     for subdivisions in (0, 1, 2, 4):
         N = subdivisions + 1
         verts, _ = _build(subdivisions=subdivisions, corner_levels=(1,) * 6)
-        top_count = sum(1 for v in verts if v[2] > 1e-9)
+        top_count = sum(1 for v in verts if v[2] >= 10.0 - 1e-9)
         assert top_count == 6 * N * N + 1, (
             f"sub={subdivisions} N={N}: top vertex count {top_count} != "
             f"expected {6 * N * N + 1}")
@@ -552,7 +579,7 @@ def test_build_hex_tile_accepts_center_xy():
     verts, _ = build_hex_tile(
         diameter_mm=100.0,
         level_height_mm=5.0,
-        base_thickness_mm=3.0,
+        base_thickness_mm=10.0,
         corner_levels=(0,) * 6,
         center_level=4,
         subdivisions=2,
@@ -566,7 +593,7 @@ def test_build_hex_tile_accepts_center_xy():
 def test_flat_tile_off_center():
     # Off-center C still produces a perfectly flat top when corner levels
     # are uniform and there is no override (center_z == base_thickness).
-    base = 3.0
+    base = 10.0
     verts, _ = build_hex_tile(
         diameter_mm=100.0,
         level_height_mm=5.0,
@@ -578,5 +605,205 @@ def test_flat_tile_off_center():
     )
     expected = base
     for v in verts:
-        if v[2] > 1e-6:
+        if v[2] >= base - 1e-9:
             assert v[2] == pytest.approx(expected, abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Inter-tile tab/hole interlock — geometric placement + neighbour mating.
+
+def _side0_frame(diameter=100.0):
+    """Return (P1, P2, side_len, outward) for side 0 in tile-local coords."""
+    R = diameter / 2.0
+    P1 = (R * math.cos(math.pi / 3.0), R * math.sin(math.pi / 3.0))
+    P2 = (R, 0.0)
+    mid = ((P1[0] + P2[0]) / 2.0, (P1[1] + P2[1]) / 2.0)
+    mag = math.hypot(*mid)
+    outward = (mid[0] / mag, mid[1] / mag)
+    return P1, P2, R, outward
+
+
+def _pos_along_side(P_lo, P_hi, side_len, outward, u, radial, z):
+    rim_x = P_lo[0] + (u / side_len) * (P_hi[0] - P_lo[0])
+    rim_y = P_lo[1] + (u / side_len) * (P_hi[1] - P_lo[1])
+    return (rim_x + radial * outward[0],
+            rim_y + radial * outward[1],
+            z)
+
+
+def _find_vertex(verts, target, tol=1e-6):
+    for v in verts:
+        if (abs(v[0] - target[0]) < tol and
+                abs(v[1] - target[1]) < tol and
+                abs(v[2] - target[2]) < tol):
+            return v
+    return None
+
+
+def test_tab_corners_placed_on_side_0():
+    # Side 0 tab is 10 mm from P2 (the clockwise-next corner of side 0). All
+    # 8 tab corners must exist in the mesh at the spec-derived positions.
+    P1, P2, side_len, outward = _side0_frame()
+    u_lo = side_len - TAB_OFFSET_FROM_CORNER_MM - TAB_WIDTH_MM
+    u_hi = side_len - TAB_OFFSET_FROM_CORNER_MM
+    verts, _ = build_hex_tile(100.0, 5.0, 10.0, (0,) * 6, None, 0)
+    for u in (u_lo, u_hi):
+        for radial in (0.0, TAB_DEPTH_MM):
+            for z in (0.0, TAB_HEIGHT_MM):
+                target = _pos_along_side(P1, P2, side_len, outward, u, radial, z)
+                assert _find_vertex(verts, target) is not None, (
+                    f"no tab vertex at {target}")
+
+
+def test_hole_corners_placed_on_side_0():
+    # Side 0 hole is 10 mm from P1 (the clockwise-previous corner) and TOL/2
+    # wider on each side. Inner cavity corners sit `hole_depth` mm into the
+    # hex along -outward.
+    P1, P2, side_len, outward = _side0_frame()
+    u_lo = TAB_OFFSET_FROM_CORNER_MM - TAB_HOLE_TOLERANCE_MM / 2.0
+    u_hi = TAB_OFFSET_FROM_CORNER_MM + TAB_WIDTH_MM + TAB_HOLE_TOLERANCE_MM / 2.0
+    hole_depth = TAB_DEPTH_MM + TAB_HOLE_TOLERANCE_MM
+    hole_top = TAB_HEIGHT_MM + TAB_HOLE_TOLERANCE_MM
+    verts, _ = build_hex_tile(100.0, 5.0, 10.0, (0,) * 6, None, 0)
+    for u in (u_lo, u_hi):
+        for radial in (0.0, -hole_depth):
+            for z in (0.0, hole_top):
+                target = _pos_along_side(P1, P2, side_len, outward, u, radial, z)
+                assert _find_vertex(verts, target) is not None, (
+                    f"no hole vertex at {target}")
+
+
+def test_bottom_plate_does_not_cover_cavity():
+    # Cavities have no floor by design (mesh_builder.py — "no floor, no front"),
+    # so the bottom plate must detour around each cavity footprint at z=0. A
+    # naive fan from bcenter to a walk that dips through the cavity emits two
+    # triangles per side whose interiors stray into the cavity, because the
+    # polygon "sector minus cavity" is not star-shaped from bcenter. Sample a
+    # grid of points strictly inside each cavity and assert no z=0 triangle
+    # has any of them in its interior.
+    diameter = 100.0
+    verts, faces = build_hex_tile(diameter, 5.0, 10.0, (0,) * 6, None, 0)
+    bottom_tris = [
+        face for face in faces
+        if len(face) == 3 and all(abs(verts[idx][2]) < 1e-9 for idx in face)
+    ]
+    assert len(bottom_tris) == 42  # 7 per side × 6 sides (5 fan + 2 ear)
+
+    R = diameter / 2.0
+    side_len = R
+    u_hole_lo = TAB_OFFSET_FROM_CORNER_MM - TAB_HOLE_TOLERANCE_MM / 2.0
+    u_hole_hi = TAB_OFFSET_FROM_CORNER_MM + TAB_WIDTH_MM + TAB_HOLE_TOLERANCE_MM / 2.0
+    hole_depth = TAB_DEPTH_MM + TAB_HOLE_TOLERANCE_MM
+
+    def strictly_inside(p, a, b, c, eps=1e-7):
+        def s(p1, p2, p3):
+            return (p1[0] - p3[0]) * (p2[1] - p3[1]) - (p2[0] - p3[0]) * (p1[1] - p3[1])
+        d1, d2, d3 = s(p, a, b), s(p, b, c), s(p, c, a)
+        return (d1 > eps and d2 > eps and d3 > eps) or (d1 < -eps and d2 < -eps and d3 < -eps)
+
+    for i in range(6):
+        ip1 = (i + 1) % 6
+        angle_i = math.pi / 3.0 - i * (math.pi / 3.0)
+        angle_ip1 = math.pi / 3.0 - ip1 * (math.pi / 3.0)
+        P_i = (R * math.cos(angle_i), R * math.sin(angle_i))
+        P_ip1 = (R * math.cos(angle_ip1), R * math.sin(angle_ip1))
+        mid = ((P_i[0] + P_ip1[0]) / 2.0, (P_i[1] + P_ip1[1]) / 2.0)
+        mag = math.hypot(*mid)
+        outward = (mid[0] / mag, mid[1] / mag)
+        for u_frac in (0.1, 0.5, 0.9):
+            for r_frac in (0.1, 0.5, 0.9):
+                u = u_hole_lo + u_frac * (u_hole_hi - u_hole_lo)
+                radial = -r_frac * hole_depth
+                t = u / side_len
+                px = P_i[0] + t * (P_ip1[0] - P_i[0]) + radial * outward[0]
+                py = P_i[1] + t * (P_ip1[1] - P_i[1]) + radial * outward[1]
+                for tri in bottom_tris:
+                    a, b, c = verts[tri[0]], verts[tri[1]], verts[tri[2]]
+                    assert not strictly_inside((px, py), a, b, c), (
+                        f"bottom triangle {tri} covers cavity {i} sample ({px}, {py})")
+
+
+def test_tab_mates_with_ne_neighbour_hole():
+    # A's tab on side 0 must mate with B's hole on side 3, where B is A's NE
+    # neighbour. The shared edge runs P2_A ↔ P4_B and P1_A ↔ P5_B (per
+    # SHARED_CORNERS in map.py). A's tab is 10 mm from A.P2; B's hole is 10 mm
+    # from B.P4 — those are the same point. The cavity is symmetric around
+    # the mating tab on the side-direction axis (TOL/2 clearance each side)
+    # and asymmetric on the radial axis (cavity goes 0.2 mm DEEPER than the
+    # tab protrudes, with no clearance at the rim seam).
+    diameter = 100.0
+    verts_a, _ = build_hex_tile(diameter, 5.0, 10.0, (0,) * 6, None, 0)
+    verts_b_local, _ = build_hex_tile(diameter, 5.0, 10.0, (0,) * 6, None, 0)
+    qb, rb = neighbour_coord(0, 0, NE)
+    bx, by = tile_world_xy(qb, rb, diameter)
+    verts_b = [(v[0] + bx, v[1] + by, v[2]) for v in verts_b_local]
+
+    R = diameter / 2.0
+    side_len = R
+    u_tab_lo = side_len - TAB_OFFSET_FROM_CORNER_MM - TAB_WIDTH_MM
+    u_tab_hi = side_len - TAB_OFFSET_FROM_CORNER_MM
+    u_hole_lo = TAB_OFFSET_FROM_CORNER_MM - TAB_HOLE_TOLERANCE_MM / 2.0
+    u_hole_hi = TAB_OFFSET_FROM_CORNER_MM + TAB_WIDTH_MM + TAB_HOLE_TOLERANCE_MM / 2.0
+    hole_depth = TAB_DEPTH_MM + TAB_HOLE_TOLERANCE_MM
+    hole_top = TAB_HEIGHT_MM + TAB_HOLE_TOLERANCE_MM
+
+    P1_a, P2_a, _, out_a0 = _side0_frame(diameter)
+
+    # B's side 3 runs from P4 to P5 in B's local frame.
+    def _local_corner(i, diameter):
+        angle = math.pi / 3.0 - i * (math.pi / 3.0)
+        return (diameter / 2.0 * math.cos(angle),
+                diameter / 2.0 * math.sin(angle))
+    P4_b_local = _local_corner(3, diameter)
+    P5_b_local = _local_corner(4, diameter)
+    mid_b3 = ((P4_b_local[0] + P5_b_local[0]) / 2.0,
+              (P4_b_local[1] + P5_b_local[1]) / 2.0)
+    mag = math.hypot(*mid_b3)
+    out_b3 = (mid_b3[0] / mag, mid_b3[1] / mag)
+
+    # A's tab AABB centre vs B's hole AABB centre, in world coords.
+    tab_centre = _pos_along_side(
+        P1_a, P2_a, side_len, out_a0,
+        (u_tab_lo + u_tab_hi) / 2.0,
+        TAB_DEPTH_MM / 2.0,
+        TAB_HEIGHT_MM / 2.0,
+    )
+    hole_centre_local = _pos_along_side(
+        P4_b_local, P5_b_local, side_len, out_b3,
+        (u_hole_lo + u_hole_hi) / 2.0,
+        -hole_depth / 2.0,
+        hole_top / 2.0,
+    )
+    hole_centre = (hole_centre_local[0] + bx,
+                   hole_centre_local[1] + by,
+                   hole_centre_local[2])
+    # Centres differ at most by TOL on each axis (radial asymmetry contributes
+    # TOL/2, z asymmetry contributes TOL/2, u axis is exactly symmetric).
+    for axis in range(3):
+        assert abs(tab_centre[axis] - hole_centre[axis]) <= TAB_HOLE_TOLERANCE_MM + 1e-9, (
+            f"axis {axis}: tab={tab_centre}, hole={hole_centre}")
+
+    # Each of A's 4 outer tab corners (the corners that go INTO B's cavity)
+    # must sit inside B's hole AABB with ≥ 0 mm clearance on every axis-aligned
+    # constraint that the cavity imposes.
+    for u in (u_tab_lo, u_tab_hi):
+        for z in (0.0, TAB_HEIGHT_MM):
+            tab_corner = _pos_along_side(
+                P1_a, P2_a, side_len, out_a0, u, TAB_DEPTH_MM, z)
+            # Project into B's side-3 frame: (u_b, radial_b, z_b).
+            # u_b along B-side: distance from P4_b_local in world.
+            dx = tab_corner[0] - (P4_b_local[0] + bx)
+            dy = tab_corner[1] - (P4_b_local[1] + by)
+            side_dir_b = ((P5_b_local[0] - P4_b_local[0]) / side_len,
+                          (P5_b_local[1] - P4_b_local[1]) / side_len)
+            u_b = dx * side_dir_b[0] + dy * side_dir_b[1]
+            radial_b = dx * out_b3[0] + dy * out_b3[1]
+            z_b = tab_corner[2]
+            # Cavity in B-frame: u_b in [u_hole_lo, u_hole_hi],
+            # radial_b in [-hole_depth, 0], z_b in [0, hole_top].
+            assert u_hole_lo - 1e-9 <= u_b <= u_hole_hi + 1e-9, (
+                f"tab corner u_b={u_b} outside cavity [{u_hole_lo}, {u_hole_hi}]")
+            assert -hole_depth - 1e-9 <= radial_b <= 0 + 1e-9, (
+                f"tab corner radial_b={radial_b} outside cavity")
+            assert 0 - 1e-9 <= z_b <= hole_top + 1e-9, (
+                f"tab corner z_b={z_b} outside cavity")

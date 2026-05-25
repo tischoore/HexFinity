@@ -14,6 +14,17 @@ placed side-by-side join with a continuous tangent plane.
 import math
 
 
+# Inter-tile interlock geometry. Each side carries one rectangular tab sticking
+# radially outward and one matching cavity into the side. Neighbouring tiles
+# mate because tab and hole sit at symmetric positions on the shared edge.
+TAB_WIDTH_MM = 10.0              # along the side
+TAB_HEIGHT_MM = 8.0              # vertical (z)
+TAB_DEPTH_MM = 10.0              # radially outward
+TAB_OFFSET_FROM_CORNER_MM = 10.0  # tab is this far from the next corner;
+                                  # hole is this far from the previous corner.
+TAB_HOLE_TOLERANCE_MM = 0.2      # hole is +TOL in every axis vs tab so tiles slide together.
+
+
 def _hermite_basis(t):
     """Cubic Hermite basis: returns (H0, H1, G0, G1).
 
@@ -183,12 +194,28 @@ def build_hex_tile(
         raise ValueError(f"diameter_mm must be positive, got {diameter_mm}")
     if level_height_mm <= 0:
         raise ValueError(f"level_height_mm must be positive, got {level_height_mm}")
-    if base_thickness_mm <= 0:
-        raise ValueError(f"base_thickness_mm must be positive, got {base_thickness_mm}")
+    if base_thickness_mm < TAB_HEIGHT_MM + TAB_HOLE_TOLERANCE_MM:
+        raise ValueError(
+            f"base_thickness_mm must be at least "
+            f"{TAB_HEIGHT_MM + TAB_HOLE_TOLERANCE_MM} mm to fit the tab/hole "
+            f"interlock, got {base_thickness_mm}"
+        )
     if subdivisions < 0:
         raise ValueError(f"subdivisions must be >= 0, got {subdivisions}")
     if len(corner_levels) != 6:
         raise ValueError(f"corner_levels must have 6 entries, got {len(corner_levels)}")
+    # Diameter must be wide enough that the tab and hole on a single side don't
+    # overlap and leave a printable gap of solid material between them. The
+    # hole spans [OFFSET - TOL/2, OFFSET + TAB_WIDTH + TOL/2] and the tab spans
+    # [side_len - OFFSET - TAB_WIDTH, side_len - OFFSET]. Require >= 0.1 mm gap.
+    _side_len = diameter_mm / 2.0
+    _gap = _side_len - 2.0 * TAB_OFFSET_FROM_CORNER_MM - 2.0 * TAB_WIDTH_MM - TAB_HOLE_TOLERANCE_MM / 2.0
+    if _gap < 0.1:
+        raise ValueError(
+            f"diameter_mm={diameter_mm} too small for tab/hole interlock: "
+            f"side length {_side_len:.3f} mm leaves a gap of {_gap:.3f} mm "
+            f"between hole and tab (need >= 0.1 mm)"
+        )
 
     levels = tuple(max(0, int(L)) for L in corner_levels)
     N = subdivisions + 1
@@ -298,25 +325,17 @@ def build_hex_tile(
                 D = grid[(u_idx, v_idx + 1)]
                 faces.append((A, D, Cq, B))
 
-    # Bottom perimeter ring + bottom centre — XY matches the top rim exactly so
-    # side-wall quads connect 1:1, keeping the mesh manifold.
-    def bot_key(i, s):
-        if s == 0:
-            return ("bcorner", i)
-        if s == N:
-            return ("bcorner", (i + 1) % 6)
-        return ("brim", i, s)
-
-    bot_center_idx = add_vert(("bcenter",), (0.0, 0.0, 0.0))
-
-    for i in range(6):
-        ip1 = (i + 1) % 6
-        for s in range(N + 1):
-            wi = (N - s) / N
-            wj = s / N
-            x = wi * corner_pos[i][0] + wj * corner_pos[ip1][0]
-            y = wi * corner_pos[i][1] + wj * corner_pos[ip1][1]
-            add_vert(bot_key(i, s), (x, y, 0.0))
+    # Bottom of the tile carries inter-tile tab/hole interlocks (see module
+    # constants). Side-wall, base plate and per-side tab/cavity geometry are
+    # all driven off four u-coordinate breakpoints per side. The top surface
+    # built above is unaffected; only the bottom rim is densified.
+    side_len = R
+    u_hole_lo = TAB_OFFSET_FROM_CORNER_MM - TAB_HOLE_TOLERANCE_MM / 2.0
+    u_hole_hi = TAB_OFFSET_FROM_CORNER_MM + TAB_WIDTH_MM + TAB_HOLE_TOLERANCE_MM / 2.0
+    u_tab_lo = side_len - TAB_OFFSET_FROM_CORNER_MM - TAB_WIDTH_MM
+    u_tab_hi = side_len - TAB_OFFSET_FROM_CORNER_MM
+    hole_top_z = TAB_HEIGHT_MM + TAB_HOLE_TOLERANCE_MM
+    hole_depth = TAB_DEPTH_MM + TAB_HOLE_TOLERANCE_MM
 
     def top_rim_key(i, s):
         if s == 0:
@@ -325,20 +344,148 @@ def build_hex_tile(
             return ("corner", (i + 1) % 6)
         return ("rim", i, s)
 
-    # Side walls (quads, wound for outward-facing normal).
+    # Per-side outward and along-side unit vectors. Each side runs from P_i to
+    # P_(i+1) clockwise viewed from +Z; outward = rim_normals[i] (toward +Y of
+    # the hex centre); side_dir advances u from 0 to side_len along the rim.
+    side_dirs = []
     for i in range(6):
-        for s in range(N):
-            top_a = vert_index[top_rim_key(i, s)]
-            top_b = vert_index[top_rim_key(i, s + 1)]
-            bot_a = vert_index[bot_key(i, s)]
-            bot_b = vert_index[bot_key(i, s + 1)]
-            faces.append((top_a, bot_a, bot_b, top_b))
+        ip1 = (i + 1) % 6
+        dx = corner_pos[ip1][0] - corner_pos[i][0]
+        dy = corner_pos[ip1][1] - corner_pos[i][1]
+        mag = math.hypot(dx, dy)
+        side_dirs.append((dx / mag, dy / mag, 0.0))
 
-    # Bottom fan from bcenter to perimeter (wound for -Z normal).
+    bot_center_idx = add_vert(("bcenter",), (0.0, 0.0, 0.0))
+
+    def point_on_side(i, u, z):
+        ip1 = (i + 1) % 6
+        t = u / side_len
+        return (corner_pos[i][0] + t * (corner_pos[ip1][0] - corner_pos[i][0]),
+                corner_pos[i][1] + t * (corner_pos[ip1][1] - corner_pos[i][1]),
+                z)
+
+    # ----- Bottom rim corners + 4 breakpoints per side at z=0 on the rim -----
     for i in range(6):
-        for s in range(N):
-            bot_a = vert_index[bot_key(i, s)]
-            bot_b = vert_index[bot_key(i, s + 1)]
-            faces.append((bot_center_idx, bot_a, bot_b))
+        ip1 = (i + 1) % 6
+        add_vert(("bcorner", i), (corner_pos[i][0], corner_pos[i][1], 0.0))
+        add_vert(("bcorner", ip1), (corner_pos[ip1][0], corner_pos[ip1][1], 0.0))
+        for label, u in (("hole_lo", u_hole_lo), ("hole_hi", u_hole_hi),
+                         ("tab_lo", u_tab_lo), ("tab_hi", u_tab_hi)):
+            add_vert(("bbreak", i, label), point_on_side(i, u, 0.0))
+
+    # ----- Tab geometry: 6 new verts (2 share bbreak/tab_*) + 5 faces per side
+    for i in range(6):
+        outward = rim_normals[i]
+        inner_lo = point_on_side(i, u_tab_lo, 0.0)
+        inner_hi = point_on_side(i, u_tab_hi, 0.0)
+        ox = TAB_DEPTH_MM * outward[0]
+        oy = TAB_DEPTH_MM * outward[1]
+        H = TAB_HEIGHT_MM
+
+        # Two shared bottom-inner verts (already at bbreak/tab_lo, tab_hi).
+        v_inner_lo_bot = vert_index[("bbreak", i, "tab_lo")]
+        v_inner_hi_bot = vert_index[("bbreak", i, "tab_hi")]
+        # Six new verts.
+        v_inner_lo_top = add_vert(("tab_inner_top", i, "lo"),
+                                   (inner_lo[0], inner_lo[1], H))
+        v_inner_hi_top = add_vert(("tab_inner_top", i, "hi"),
+                                   (inner_hi[0], inner_hi[1], H))
+        v_outer_lo_bot = add_vert(("tab_outer_bot", i, "lo"),
+                                   (inner_lo[0] + ox, inner_lo[1] + oy, 0.0))
+        v_outer_hi_bot = add_vert(("tab_outer_bot", i, "hi"),
+                                   (inner_hi[0] + ox, inner_hi[1] + oy, 0.0))
+        v_outer_lo_top = add_vert(("tab_outer_top", i, "lo"),
+                                   (inner_lo[0] + ox, inner_lo[1] + oy, H))
+        v_outer_hi_top = add_vert(("tab_outer_top", i, "hi"),
+                                   (inner_hi[0] + ox, inner_hi[1] + oy, H))
+
+        # 5 faces — top, outer (front), bottom, lo end cap, hi end cap.
+        # Wound for outward normals (verified topologically; visual normal flip
+        # would be a single mesh.flip_normals away if any face came out wrong).
+        faces.append((v_inner_lo_top, v_inner_hi_top, v_outer_hi_top, v_outer_lo_top))  # top +Z
+        faces.append((v_outer_lo_bot, v_outer_hi_bot, v_outer_hi_top, v_outer_lo_top))  # outer +rim
+        faces.append((v_inner_lo_bot, v_outer_lo_bot, v_outer_hi_bot, v_inner_hi_bot))  # bottom -Z
+        faces.append((v_inner_lo_bot, v_inner_lo_top, v_outer_lo_top, v_outer_lo_bot))  # lo cap -side
+        faces.append((v_inner_hi_bot, v_outer_hi_bot, v_outer_hi_top, v_inner_hi_top))  # hi cap +side
+
+    # ----- Hole cavity: 6 new verts + 4 faces per side (no floor, no front) --
+    for i in range(6):
+        outward = rim_normals[i]
+        outer_lo = point_on_side(i, u_hole_lo, 0.0)
+        outer_hi = point_on_side(i, u_hole_hi, 0.0)
+        ix = -hole_depth * outward[0]
+        iy = -hole_depth * outward[1]
+        Hz = hole_top_z
+
+        v_outer_lo_bot = vert_index[("bbreak", i, "hole_lo")]
+        v_outer_hi_bot = vert_index[("bbreak", i, "hole_hi")]
+        v_outer_lo_top = add_vert(("hole_outer_top", i, "lo"),
+                                   (outer_lo[0], outer_lo[1], Hz))
+        v_outer_hi_top = add_vert(("hole_outer_top", i, "hi"),
+                                   (outer_hi[0], outer_hi[1], Hz))
+        v_inner_lo_bot = add_vert(("hole_inner_bot", i, "lo"),
+                                   (outer_lo[0] + ix, outer_lo[1] + iy, 0.0))
+        v_inner_hi_bot = add_vert(("hole_inner_bot", i, "hi"),
+                                   (outer_hi[0] + ix, outer_hi[1] + iy, 0.0))
+        v_inner_lo_top = add_vert(("hole_inner_top", i, "lo"),
+                                   (outer_lo[0] + ix, outer_lo[1] + iy, Hz))
+        v_inner_hi_top = add_vert(("hole_inner_top", i, "hi"),
+                                   (outer_hi[0] + ix, outer_hi[1] + iy, Hz))
+
+        # 4 faces — cavity ceiling, back wall, lo end cap, hi end cap. The
+        # outward (rim-facing) opening and the bottom are both absent.
+        faces.append((v_outer_lo_top, v_outer_hi_top, v_inner_hi_top, v_inner_lo_top))   # ceiling -Z
+        faces.append((v_inner_lo_bot, v_inner_lo_top, v_inner_hi_top, v_inner_hi_bot))   # back wall +outward
+        faces.append((v_outer_lo_bot, v_outer_lo_top, v_inner_lo_top, v_inner_lo_bot))   # lo cap +side
+        faces.append((v_outer_hi_bot, v_inner_hi_bot, v_inner_hi_top, v_outer_hi_top))   # hi cap -side
+
+    # ----- Side wall: one n-gon per side, walking the wall boundary CCW from
+    # outside the hex (top rim left→right, then bottom rim right→left with
+    # rectangular detours UP around the tab and hole openings).
+    for i in range(6):
+        ip1 = (i + 1) % 6
+        ngon = []
+        for s in range(N + 1):
+            ngon.append(vert_index[top_rim_key(i, s)])
+        ngon.append(vert_index[("bcorner", ip1)])
+        ngon.append(vert_index[("bbreak", i, "tab_hi")])
+        ngon.append(vert_index[("tab_inner_top", i, "hi")])
+        ngon.append(vert_index[("tab_inner_top", i, "lo")])
+        ngon.append(vert_index[("bbreak", i, "tab_lo")])
+        ngon.append(vert_index[("bbreak", i, "hole_hi")])
+        ngon.append(vert_index[("hole_outer_top", i, "hi")])
+        ngon.append(vert_index[("hole_outer_top", i, "lo")])
+        ngon.append(vert_index[("bbreak", i, "hole_lo")])
+        ngon.append(vert_index[("bcorner", i)])
+        faces.append(tuple(ngon))
+
+    # ----- Bottom plate: fan from bcenter to a reduced perimeter walk plus
+    # two ear triangles per side. The polygon "sector minus cavity" is not
+    # star-shaped from bcenter — straight lines from bcenter to either rim
+    # hole corner (hole_lo / hole_hi) cross the cavity interior at z=0.
+    # The ears cover the rim strips flanking each cavity without intruding
+    # into the cavity footprint.
+    for i in range(6):
+        ip1 = (i + 1) % 6
+        bcorner_lo = vert_index[("bcorner", i)]
+        bcorner_hi = vert_index[("bcorner", ip1)]
+        hole_lo_rim = vert_index[("bbreak", i, "hole_lo")]
+        hole_hi_rim = vert_index[("bbreak", i, "hole_hi")]
+        hole_inner_lo = vert_index[("hole_inner_bot", i, "lo")]
+        hole_inner_hi = vert_index[("hole_inner_bot", i, "hi")]
+        tab_lo_rim = vert_index[("bbreak", i, "tab_lo")]
+        tab_hi_rim = vert_index[("bbreak", i, "tab_hi")]
+        faces.append((bcorner_lo, hole_lo_rim, hole_inner_lo))
+        faces.append((hole_inner_hi, hole_hi_rim, tab_lo_rim))
+        walk = (
+            bcorner_lo,
+            hole_inner_lo,
+            hole_inner_hi,
+            tab_lo_rim,
+            tab_hi_rim,
+            bcorner_hi,
+        )
+        for k in range(len(walk) - 1):
+            faces.append((bot_center_idx, walk[k], walk[k + 1]))
 
     return verts_mm, faces
