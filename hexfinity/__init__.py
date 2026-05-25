@@ -21,7 +21,7 @@ def _classes():
 
 def register():
     import bpy
-    from . import properties
+    from . import properties, overlay
     for cls in _classes():
         bpy.utils.register_class(cls)
     bpy.types.Scene.hexfinity_map = bpy.props.PointerProperty(
@@ -30,10 +30,13 @@ def register():
     bpy.types.Object.hexfinity_tile = bpy.props.PointerProperty(
         type=properties.HexFinityProperties
     )
+    overlay.register()
 
 
 def unregister():
     import bpy
+    from . import overlay
+    overlay.unregister()
     if hasattr(bpy.types.Object, "hexfinity_tile"):
         del bpy.types.Object.hexfinity_tile
     if hasattr(bpy.types.Scene, "hexfinity_map"):
