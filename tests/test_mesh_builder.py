@@ -28,7 +28,7 @@ def _make_patches(corner_levels=(0, 1, 2, 1, 0, 0),
     levels = tuple(max(0, int(L)) for L in corner_levels)
     corners_xy = []
     for i in range(6):
-        angle = math.pi / 2.0 - i * (math.pi / 3.0)
+        angle = math.pi / 3.0 - i * (math.pi / 3.0)
         corners_xy.append((R * math.cos(angle), R * math.sin(angle)))
     corner_z = [base_thickness_mm + levels[i] * level_height_mm for i in range(6)]
     if center_level is not None:
@@ -152,7 +152,7 @@ def test_corner_z_formula():
     )
     R = 50.0
     for i in range(6):
-        angle = math.pi / 2.0 - i * (math.pi / 3.0)
+        angle = math.pi / 3.0 - i * (math.pi / 3.0)
         cx, cy = R * math.cos(angle), R * math.sin(angle)
         # Top vertex at this XY has Z > 0; bottom vertex shares XY but Z=0.
         top_matches = [
@@ -508,7 +508,7 @@ def test_clamp_center_to_hexagon_rim_midpoints():
     apothem = (diameter / 2.0) * math.sqrt(3.0) / 2.0
     limit = apothem - 1.0  # default safety_mm=1.0
     for i in range(6):
-        theta = math.pi / 3.0 - i * (math.pi / 3.0)
+        theta = math.pi / 6.0 - i * (math.pi / 3.0)
         nx, ny = math.cos(theta), math.sin(theta)
         # 5 mm outside the rim along the outward normal.
         x = (apothem + 5.0) * nx
@@ -527,7 +527,7 @@ def test_clamp_center_to_hexagon_far_outside_lands_inside():
     limit = apothem - 1.0
     cx, cy = clamp_center_to_hexagon(1000.0, 1000.0, diameter_mm=diameter)
     for i in range(6):
-        theta = math.pi / 3.0 - i * (math.pi / 3.0)
+        theta = math.pi / 6.0 - i * (math.pi / 3.0)
         nx, ny = math.cos(theta), math.sin(theta)
         d = nx * cx + ny * cy
         assert d <= limit + 1e-9

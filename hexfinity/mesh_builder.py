@@ -152,7 +152,7 @@ def clamp_center_to_hexagon(x_mm, y_mm, diameter_mm, safety_mm=1.0):
     x, y = x_mm, y_mm
     for _ in range(2):
         for i in range(6):
-            theta = math.pi / 3.0 - i * (math.pi / 3.0)
+            theta = math.pi / 6.0 - i * (math.pi / 3.0)
             nx = math.cos(theta)
             ny = math.sin(theta)
             d = nx * x + ny * y
@@ -195,10 +195,12 @@ def build_hex_tile(
     R = diameter_mm / 2.0
     apothem = R * math.sqrt(3.0) / 2.0  # rim midpoint distance from origin
 
-    # P1 at 12 o'clock (+Y), P2..P6 clockwise viewed from above.
+    # Flat-top hex: P1 at upper-right (1 o'clock), P2..P6 clockwise viewed
+    # from above. P2 sits at +X, P3 lower-right, P4 lower-left, P5 at -X,
+    # P6 upper-left.
     corners_xy = []
     for i in range(6):
-        angle = math.pi / 2.0 - i * (math.pi / 3.0)
+        angle = math.pi / 3.0 - i * (math.pi / 3.0)
         corners_xy.append((R * math.cos(angle), R * math.sin(angle)))
 
     corner_z = [base_thickness_mm + levels[i] * level_height_mm for i in range(6)]
