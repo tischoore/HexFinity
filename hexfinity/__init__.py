@@ -15,6 +15,7 @@ def _classes():
         operators.HEXFINITY_OT_generate_map,
         operators.HEXFINITY_OT_regenerate_map,
         panel.HEXFINITY_PT_panel,
+        gizmo.HEXFINITY_GT_center_sphere,
         gizmo.HEXFINITY_GGT_center,
     )
 
