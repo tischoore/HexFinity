@@ -2,6 +2,8 @@
 
 Blender 5.1+ extension that generates a grid of interlocking hexagonal terrain tiles with per-corner height control.
 
+## Ignore the ideas.md file. Only containing notes
+
 ## Run / build
 
 - **Tests** (uses Blender's bundled Python; three modules below are bpy-free so they import in plain CPython):
