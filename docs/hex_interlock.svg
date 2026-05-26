@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 720 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="hexInterlockTitle hexInterlockDesc">
+  <title id="hexInterlockTitle">HexFinity tile interlock (top view of one hex side)</title>
+  <desc id="hexInterlockDesc">Top-down view of one hex side running from corner Pi on the left to corner Pi+1 on the right. A rectangular hole is cut into the wall, inset TAB_OFFSET_FROM_CORNER_MM from Pi and TAB_WIDTH_MM wide. A matching rectangular tab protrudes outward, inset TAB_OFFSET_FROM_CORNER_MM from Pi+1 and TAB_WIDTH_MM wide. The tab and hole are mirror-symmetric across the side midpoint, so the tab on one tile's side fills the matching hole on the neighbour tile's side. The inset on the right shows two adjacent tiles mating across the shared edge.</desc>
+
+  <rect x="0" y="0" width="720" height="360" fill="#fafafa"/>
+
+  <defs>
+    <marker id="iArrowEnd" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 0 10 L 10 5 z" fill="#333"/>
+    </marker>
+    <marker id="iArrowStart" viewBox="0 0 10 10" refX="0" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 10 0 L 10 10 L 0 5 z" fill="#333"/>
+    </marker>
+  </defs>
+
+  <text x="360" y="28" text-anchor="middle" font-family="sans-serif" font-size="16" font-weight="bold" fill="#333">Tab/hole interlock — top view of one hex side</text>
+
+  <!-- ===== Main view: one side from Pi (left) to Pi+1 (right) =====
+       Scale: 6 SVG units per millimetre. At the default diameter (100 mm) side
+       length is 50 mm = 300 SVG units; the constants TAB_WIDTH_MM=10,
+       TAB_DEPTH_MM=10, TAB_OFFSET_FROM_CORNER_MM=10 all become 60 SVG units.
+       The hole's extra TAB_HOLE_TOLERANCE_MM=0.2 is invisible at this scale.
+       Inward (tile interior) = -y (up). Outward = +y (down). -->
+
+  <text x="240" y="62" text-anchor="middle" font-family="sans-serif" font-size="12" font-style="italic" fill="#666">tile interior (inward)</text>
+  <text x="240" y="282" text-anchor="middle" font-family="sans-serif" font-size="12" font-style="italic" fill="#666">outside (toward neighbour)</text>
+
+  <!-- Fills first so the outline overpaints them. -->
+  <rect x="150" y="110" width="60" height="60" fill="#fef0f0" stroke="none"/>
+  <rect x="270" y="170" width="60" height="60" fill="#eef6ee" stroke="none"/>
+
+  <!-- Side wall outline: hole notched up on the left, tab pushed down on the right. -->
+  <path d="M 90 170 L 150 170 L 150 110 L 210 110 L 210 170 L 270 170 L 270 230 L 330 230 L 330 170 L 390 170" fill="none" stroke="#333" stroke-width="2"/>
+
+  <!-- Corner markers + labels. -->
+  <circle cx="90"  cy="170" r="4" fill="#333"/>
+  <circle cx="390" cy="170" r="4" fill="#333"/>
+  <text x="80"  y="190" text-anchor="end"   font-family="sans-serif" font-size="14" fill="#333">Pi</text>
+  <text x="400" y="190" text-anchor="start" font-family="sans-serif" font-size="14" fill="#333">Pi+1</text>
+
+  <text x="180" y="145" text-anchor="middle" font-family="sans-serif" font-size="12" fill="#a33">hole</text>
+  <text x="300" y="205" text-anchor="middle" font-family="sans-serif" font-size="12" fill="#363">tab</text>
+
+  <!-- Above-edge dimensions: offset (Pi → hole_lo) and hole width. -->
+  <line x1="90"  y1="92" x2="150" y2="92" stroke="#333" stroke-width="1" marker-start="url(#iArrowStart)" marker-end="url(#iArrowEnd)"/>
+  <text x="120" y="86" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#333">offset</text>
+  <line x1="150" y1="92" x2="210" y2="92" stroke="#333" stroke-width="1" marker-start="url(#iArrowStart)" marker-end="url(#iArrowEnd)"/>
+  <text x="180" y="86" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#333">width</text>
+
+  <!-- Below-edge dimensions: tab width and offset (tab_hi → Pi+1). -->
+  <line x1="270" y1="252" x2="330" y2="252" stroke="#333" stroke-width="1" marker-start="url(#iArrowStart)" marker-end="url(#iArrowEnd)"/>
+  <text x="300" y="266" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#333">width</text>
+  <line x1="330" y1="252" x2="390" y2="252" stroke="#333" stroke-width="1" marker-start="url(#iArrowStart)" marker-end="url(#iArrowEnd)"/>
+  <text x="360" y="266" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#333">offset</text>
+
+  <!-- Depth dimensions: tab depth (outward), hole depth (inward). -->
+  <line x1="346" y1="170" x2="346" y2="230" stroke="#333" stroke-width="1" marker-start="url(#iArrowStart)" marker-end="url(#iArrowEnd)"/>
+  <text x="352" y="204" text-anchor="start" font-family="sans-serif" font-size="11" fill="#333">depth</text>
+  <line x1="226" y1="110" x2="226" y2="170" stroke="#333" stroke-width="1" marker-start="url(#iArrowStart)" marker-end="url(#iArrowEnd)"/>
+  <text x="232" y="144" text-anchor="start" font-family="sans-serif" font-size="11" fill="#333">depth</text>
+
+  <!-- ===== Inset: two tiles mating across a shared edge =====
+       A (left, green) and B (right, pink) share a vertical seam at local x=0.
+       A's tab (drawn as part of A's filled body, x in [0, 30], y in [-30, 30])
+       is overpainted by B's body everywhere except inside B's hole — so the
+       green you see inside B's outline IS A's tab nesting in B's hole. -->
+  <g transform="translate(540, 180)">
+    <text x="0" y="-110" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="bold" fill="#333">Two tiles mating</text>
+
+    <!-- Tile A body + right-side tab. -->
+    <path d="M -80 -80 L 0 -80 L 0 -30 L 30 -30 L 30 30 L 0 30 L 0 80 L -80 80 Z" fill="#eef6ee" stroke="#333" stroke-width="1.4"/>
+
+    <!-- Tile B body with the matching hole carved out (single concave path). -->
+    <path d="M 0 -80 L 80 -80 L 80 80 L 0 80 L 0 30 L 30 30 L 30 -30 L 0 -30 Z" fill="#fef0f0" stroke="#333" stroke-width="1.4"/>
+
+    <text x="-45" y="4"   text-anchor="middle" font-family="sans-serif" font-size="12" fill="#666">tile A</text>
+    <text x="55"  y="4"   text-anchor="middle" font-family="sans-serif" font-size="12" fill="#666">tile B</text>
+    <text x="0"   y="106" text-anchor="middle" font-family="sans-serif" font-size="11" font-style="italic" fill="#333">A's tab fills B's hole</text>
+  </g>
+</svg>

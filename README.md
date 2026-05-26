@@ -37,20 +37,9 @@ A single vertex `C` sits at the geometric centroid of each tile by default (tile
 
 ### Top surface
 
-The top is built from **six bicubic Hermite Coons patches**, one per `(C, Pi, Pi+1)` region. Each patch has its `u=0` parametric edge collapsed to the apex `C`, the `u=1` edge as the straight rim from `Pi` to `Pi+1`, and the `v=0` / `v=1` edges as the straight spokes from `C` to `Pi` and `C` to `Pi+1`. Cross-boundary tangents at the rim and across each spoke are horizontal vectors (`Tu1 = β·n_rim`, `Tv0 = γ·n_spoke`), with apex radial tangents `Tu0 = α·(P − C)_xy` linearly blended in `v`. Default magnitudes are `α = 1`, `β = γ = apothem`.
+The top is built from **six bicubic Hermite Coons patches**, one per `(C, Pi, Pi+1)` region, with the apex collapsed to `C` and shared spoke/rim curves so adjacent patches and tiles meet without a gap. Continuity is **C∞ inside each patch** and **G0 across spokes and tile-to-tile rim seams** — visually clean under shade-smooth, but not strict G1 across spokes (the construction math lives in `mesh_builder.py:_eval_coons`).
 
-The construction guarantees:
-
-- **G0 continuity at every internal spoke and along the rim.** Spoke and rim curves are straight lines shared by definition between adjacent patches and tiles.
-- **C∞ smoothness inside each patch.** The Coons evaluation `S = F_u + F_v − B` is an analytic function of `(u, v)`, so the interior of each patch has no creases.
-- **Vertex deduplication at every shared key** (`center`, `corner`, `spoke`, `rim`), so the mesh stays manifold across patch boundaries.
-
-What the construction does **not** deliver — and why:
-
-- **Not strict G1 across spokes.** The actual `∂S/∂v` at a spoke depends on the patch's own rim curve `c1`. Each adjacent patch sees a different rim, so the cross-spoke derivatives don't match at the spoke (the visible result is a faint slope change at the spoke under sharp directional lighting, hidden under Blender's shade-smooth for most settings).
-- **Tile-to-tile rim seams are G0, not G1.** The cross-rim derivative `∂S/∂u(1, v)` reduces to `H0(v)·(Pi − C) + H1(v)·(Pip1 − C)`, which uses each tile's own center `C`. Two tiles sharing a rim have different centers, so the cross-rim tangent planes don't match exactly across the seam. Shade-smooth still produces a visually acceptable join.
-
-For tiles with all corner levels equal (flat-top tiles), the surface degenerates to a flat horizontal disk at `z = base_thickness`, exactly. The unit tests verify this and the other invariants.
+For tiles with all corner levels equal, the surface degenerates to a flat horizontal disk at `z = base_thickness`, exactly. The unit tests verify this and the other invariants.
 
 The `subdivisions` parameter is the number of cells per patch direction (so the parametric grid is `(subdivisions+1) × (subdivisions+1)` per patch). Top face count per tile is `6·(subdivisions+1)²` — a mix of `6·(subdivisions+1)` apex-fan triangles and the rest as quads wound for `+Z` normal.
 
@@ -58,9 +47,30 @@ The `subdivisions` parameter is the number of cells per patch direction (so the 
 
 - The **bottom is a flat hexagon at Z = 0** for every tile, regardless of corner levels. Tiles always sit flush on a flat board and on each other.
 - **Base thickness** (mm) is the minimum gap between the bottom plane and the top surface.
-- Side walls are quads connecting each top-edge boundary loop to the matching bottom-edge loop, subdivided the same way along each hexagon side so the vertex counts agree.
-- The bottom face is a flat hexagonal cap.
+- Each side wall is built as a **single n-gon** that walks the top rim left→right and the bottom rim right→left, detouring up and over the tab and down into the hole cavity so the wall stays watertight around both openings.
+- The bottom is a **triangle fan from the tile centre** with two ear triangles per side that bypass the hole cavity footprint (a plain centre-fan would cross the cavity interior, which is no longer star-shaped from the centre after the holes are cut).
 - The mesh is **closed and 2-manifold**: every edge is shared by exactly two faces — verified programmatically after generation. A failure aborts loudly instead of silently producing a broken tile.
+
+### Tile interlocks (male/female tabs)
+
+Every hex side carries one rectangular **tab** sticking radially outward and one matching **hole** cut into the wall, placed mirror-symmetrically across the side midpoint so two neighbouring tiles click together — tab on one half lands in the hole on the other.
+
+![HexFinity tile interlock — top view of one hex side showing tab and hole positions, with an inset of two adjacent tiles mating across the shared edge](docs/hex_interlock.svg)
+
+Tab and hole dimensions are module-level constants in `mesh_builder.py` and are not user-editable:
+
+| Constant | Value (mm) | Meaning |
+|---|---|---|
+| `TAB_WIDTH_MM` | 10 | along the side |
+| `TAB_HEIGHT_MM` | 8 | vertical (Z) |
+| `TAB_DEPTH_MM` | 10 | radially outward |
+| `TAB_OFFSET_FROM_CORNER_MM` | 10 | tab/hole inset from a corner |
+| `TAB_HOLE_TOLERANCE_MM` | 0.2 | slack so tiles slide together |
+
+The interlock imposes two input constraints that `build_hex_tile` enforces with `ValueError`:
+
+- **`base_thickness_mm ≥ 8.2 mm`** (`TAB_HEIGHT_MM + TAB_HOLE_TOLERANCE_MM`) — the base has to be thick enough to host the hole.
+- **`diameter_mm` large enough** that a side leaves at least 0.1 mm of solid material between hole and tab. The side length is `diameter_mm / 2`, so the constraint is `diameter_mm / 2 − 2·offset − 2·width − tolerance / 2 ≥ 0.1 mm`. With the defaults above that is **`diameter_mm ≥ 80.4 mm`**.
 
 ---
 
@@ -172,7 +182,7 @@ HexFinity
        └─ Center Y (mm)
 ```
 
-The on-screen ring gizmo continues to drag the active tile's centre XY inside the hex.
+A floating sphere gizmo, hovering one *level height* above the tile's apex, drags the active tile's centre XY inside the hex. When a HexFinity tile is selected, the viewport also overlays `P1`–`P6` labels floating one *level height* above each corner so corner identity is unambiguous in the panel.
 
 ---
 
@@ -188,6 +198,7 @@ C:\Work\Hexfinity\
 │   ├─ operators.py            # generate_map / regenerate_map + cascade
 │   ├─ panel.py                # HEXFINITY_PT_panel (sidebar UI, two-branch)
 │   ├─ gizmo.py                # HEXFINITY_GGT_center (centre-XY drag gizmo)
+│   ├─ overlay.py              # floating P1..P6 labels on selected tiles
 │   ├─ mesh_builder.py         # pure-Python mesh construction (no bpy)
 │   ├─ map.py                  # pure-Python grid math + SHARED_CORNERS table
 │   └─ manifold_check.py       # post-build 2-manifold verification
