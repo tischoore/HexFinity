@@ -6,6 +6,28 @@ HexFinity generates an **X×Y map** of flat-top hexagonal tiles in one click. Ea
 
 All linear inputs are expressed in **millimeters**, and mesh vertices are emitted in millimeters too. Blender's STL exporter writes raw vertex values, so the exported `.stl` opens at true mm scale in any CAD program or slicer. In Blender's own viewport the tile appears at the numeric value — a 100 mm tile is 100 *units* wide — because Blender's default scene unit is metres; optionally switch the scene to *Metric · Millimeters* (`scale = 0.001`) for a friendlier on-screen display.
 
+## Contents
+
+- [Geometry](#geometry)
+  - [Anatomy](#anatomy)
+  - [Hexagon shape](#hexagon-shape)
+  - [Center vertex](#center-vertex)
+  - [Height / level system](#height--level-system)
+  - [Top surface](#top-surface)
+  - [Base, sides, bottom (manifold guarantee)](#base-sides-bottom-manifold-guarantee)
+  - [Tile interlocks (male/female tabs)](#tile-interlocks-malefemale-tabs)
+- [Terrain (X×Y map) generation](#terrain-xy-map-generation)
+  - [Map invariants](#map-invariants-uniform-across-every-tile)
+  - [X / Y semantics](#x--y-semantics)
+  - [Layout (odd-q offset, flat-top)](#layout-odd-q-offset-flat-top)
+  - [Shared corners](#shared-corners-editing-one-corner-edits-up-to-two-others)
+  - [Regenerate](#regenerate)
+- [UI](#ui)
+- [Project layout](#project-layout)
+- [Install (development)](#install-development)
+  - [Running the unit tests](#running-the-unit-tests)
+- [Verification](#verification)
+
 ---
 
 ## Geometry
