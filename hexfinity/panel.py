@@ -71,3 +71,6 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         col = sub.column(align=True)
         col.prop(tile, "center_x_mm")
         col.prop(tile, "center_y_mm")
+        col = sub.column(align=True)
+        col.prop(tile, "dome_area", slider=True)
+        col.prop(tile, "dome_damping", slider=True)

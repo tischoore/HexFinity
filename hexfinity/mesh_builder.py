@@ -72,6 +72,8 @@ def build_hex_tile(
     smoothness_passes,
     resample_density=0,
     center_xy=(0.0, 0.0),
+    dome_area=INNER_RING_FACTOR,
+    dome_damping=2.0 / 3.0,
 ):
     """Build a single HexFinity tile.
 
@@ -149,19 +151,22 @@ def build_hex_tile(
         rim_normals.append((mx / mag, my / mag, 0.0))
 
     # ---- 13-vert control mesh (C + P1..P6 + Q1..Q6) ----------------------
-    # Qi is auto-derived per build (phase 1; not user-editable):
-    #   Qi.xy = C.xy + INNER_RING_FACTOR · (midpoint(Pi, Pi+1) − C.xy)
-    #   Qi.z  = (Pi.z + Pi+1.z + C.z) / 3   (symmetric kite average)
-    # The latter is a fixed point of Loop's stencil at valence 3 (β = 3/16),
-    # so the Q ring keeps its height across subdivision iterations.
+    # Qi.xy = C.xy + dome_area · (midpoint(Pi, Pi+1) − C.xy)
+    # Qi.z  = dome_damping · edge_mid_z + (1 − dome_damping) · C.z
+    # At dome_damping = 2/3 this equals (Pi.z + Pi+1.z + C.z)/3 — the symmetric
+    # kite average that sits on Loop's valence-3 fixed point (β = 3/16), so
+    # the Q ring keeps its height across subdivision iterations at the
+    # default. Moving the slider off 2/3 deliberately walks off the fixed
+    # point: low values flatten the dome top, high values sharpen the peak.
     Q_pos = []
     for i in range(6):
         ip1 = (i + 1) % 6
         mid_x = 0.5 * (corner_pos[i][0] + corner_pos[ip1][0])
         mid_y = 0.5 * (corner_pos[i][1] + corner_pos[ip1][1])
-        qx = C_pos[0] + INNER_RING_FACTOR * (mid_x - C_pos[0])
-        qy = C_pos[1] + INNER_RING_FACTOR * (mid_y - C_pos[1])
-        qz = (corner_pos[i][2] + corner_pos[ip1][2] + C_pos[2]) / 3.0
+        qx = C_pos[0] + dome_area * (mid_x - C_pos[0])
+        qy = C_pos[1] + dome_area * (mid_y - C_pos[1])
+        edge_mid_z = 0.5 * (corner_pos[i][2] + corner_pos[ip1][2])
+        qz = dome_damping * edge_mid_z + (1.0 - dome_damping) * C_pos[2]
         Q_pos.append((qx, qy, qz))
 
     # Indexing: C = 0, Pi = 1 + i, Qi = 7 + i (i ∈ 0..5).

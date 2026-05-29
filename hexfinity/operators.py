@@ -62,6 +62,8 @@ def rebuild_tile(obj):
             smoothness_passes=map_props.smoothness_passes,
             resample_density=map_props.resample_density,
             center_xy=(cx, cy),
+            dome_area=tile_props.dome_area,
+            dome_damping=tile_props.dome_damping,
         )
         assert_two_manifold(verts, faces)
 

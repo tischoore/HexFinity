@@ -187,3 +187,26 @@ class HexFinityProperties(bpy.types.PropertyGroup):
         default=0.0,
         update=_on_tile_local_update,
     )
+    dome_area: bpy.props.FloatProperty(
+        name="Dome Area",
+        description="Radial position of the inner Q ring between the centre and the rim midpoint. "
+                    "Low = narrow tight dome; high = broad dome reaching toward the rim. "
+                    "Right-click → Copy to Selected to apply to multiple selected tiles.",
+        default=0.5,
+        min=0.1,
+        max=0.9,
+        subtype='FACTOR',
+        update=_on_tile_local_update,
+    )
+    dome_damping: bpy.props.FloatProperty(
+        name="Dome Damping",
+        description="How much the inner Q ring is pulled away from the centre toward the corner-edge midpoint. "
+                    "0 = Q sticks to the centre (flat-topped plateau); 1 = Q pulled fully to corner-edge midpoint "
+                    "(sharp peak with flat skirt). Default 2/3 reproduces the current smooth dome exactly. "
+                    "Right-click → Copy to Selected to apply to multiple selected tiles.",
+        default=2.0 / 3.0,
+        min=0.0,
+        max=1.0,
+        subtype='FACTOR',
+        update=_on_tile_local_update,
+    )

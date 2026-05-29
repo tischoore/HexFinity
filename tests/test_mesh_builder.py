@@ -4,6 +4,7 @@ import pytest
 from mesh_builder import (
     build_hex_tile,
     clamp_center_to_hexagon,
+    INNER_RING_FACTOR,
     TAB_WIDTH_MM,
     TAB_HEIGHT_MM,
     TAB_DEPTH_MM,
@@ -421,6 +422,135 @@ def test_bottom_plate_does_not_cover_cavity():
                     a, b, c = verts[tri[0]], verts[tri[1]], verts[tri[2]]
                     assert not strictly_inside((px, py), a, b, c), (
                         f"bottom triangle {tri} covers cavity {i} sample ({px}, {py})")
+
+
+# ---------------------------------------------------------------------------
+# Dome shape sliders — dome_area (Q ring radial position) and dome_damping
+# (Q ring vertical bias). Defaults must reproduce the pre-slider geometry
+# exactly; extremes must still produce a valid manifold.
+
+def test_dome_defaults_match_legacy_q_ring():
+    # At smoothness=0 the control mesh is emitted verbatim, so the six Q
+    # vertices are observable directly. With default args, each Qi must sit
+    # at the historical (P+P+C)/3 formula and at the historical 0.5 radial
+    # factor — i.e. the algebra of the new lerp formula collapses to the
+    # original at dome_area=0.5, dome_damping=2/3.
+    diameter = 100.0
+    base = 10.0
+    lh = 5.0
+    levels = (0, 1, 2, 1, 0, 0)
+    center_lvl = 3
+    verts, _ = build_hex_tile(
+        diameter_mm=diameter, level_height_mm=lh, base_thickness_mm=base,
+        corner_levels=levels, center_level=center_lvl,
+        smoothness_passes=0,
+    )
+    R = diameter / 2.0
+    corner_pos = []
+    for i in range(6):
+        angle = math.pi / 3.0 - i * (math.pi / 3.0)
+        corner_pos.append((R * math.cos(angle), R * math.sin(angle),
+                           base + levels[i] * lh))
+    C_z = base + center_lvl * lh
+    for i in range(6):
+        ip1 = (i + 1) % 6
+        mid_x = 0.5 * (corner_pos[i][0] + corner_pos[ip1][0])
+        mid_y = 0.5 * (corner_pos[i][1] + corner_pos[ip1][1])
+        qx = INNER_RING_FACTOR * mid_x  # C at origin → C + 0.5·(mid - C) = 0.5·mid
+        qy = INNER_RING_FACTOR * mid_y
+        qz = (corner_pos[i][2] + corner_pos[ip1][2] + C_z) / 3.0
+        assert _find_vertex(verts, (qx, qy, qz), tol=1e-9) is not None, (
+            f"Q{i+1} default position {(qx, qy, qz)} not found")
+
+
+def test_dome_damping_zero_pins_q_ring_to_center_height():
+    # damping=0 → qz = C.z exactly. With non-trivial corner levels, every Q
+    # vertex must sit at C_z (forming a flat-topped plateau at C's elevation).
+    base = 10.0
+    lh = 5.0
+    center_lvl = 4
+    C_z = base + center_lvl * lh
+    verts, _ = build_hex_tile(
+        diameter_mm=100.0, level_height_mm=lh, base_thickness_mm=base,
+        corner_levels=(0, 1, 2, 1, 0, 0), center_level=center_lvl,
+        smoothness_passes=0, dome_damping=0.0,
+    )
+    # At smoothness=0, the control mesh has 13 verts on top: 1 C + 6 P + 6 Q.
+    # The Q verts share C's z and are the only top verts at C_z besides C.
+    top_at_center_z = [v for v in verts if abs(v[2] - C_z) < 1e-9 and v[2] > 1e-6]
+    # Exactly C plus the six Q vertices.
+    assert len(top_at_center_z) == 7
+
+
+def test_dome_damping_one_pins_q_ring_to_corner_edge_mean():
+    # damping=1 → qz = edge_mid_z. Set up corners so each edge_mid_z is
+    # uniquely identifiable and verify the six Q vertices land on those.
+    base = 10.0
+    lh = 5.0
+    levels = (0, 1, 2, 3, 4, 5)  # all distinct → every edge_mid_z distinct
+    corner_z = [base + L * lh for L in levels]
+    verts, _ = build_hex_tile(
+        diameter_mm=100.0, level_height_mm=lh, base_thickness_mm=base,
+        corner_levels=levels, center_level=10,
+        smoothness_passes=0, dome_damping=1.0,
+    )
+    expected_q_z = sorted(
+        0.5 * (corner_z[i] + corner_z[(i + 1) % 6]) for i in range(6)
+    )
+    R = 50.0
+    q_verts = []
+    for v in verts:
+        r = math.hypot(v[0], v[1])
+        # Q ring sits at 0.5·apothem from origin (apothem ≈ 43.3 mm); corners
+        # at R=50 mm; tab/cavity geometry sits at z=0 or near base. The Q ring
+        # is the only ring at this radius with z above base.
+        if 1e-3 < r < R - 1e-3 and v[2] > base + 1e-6:
+            q_verts.append(v)
+    assert len(q_verts) == 6
+    actual_q_z = sorted(v[2] for v in q_verts)
+    for a, e in zip(actual_q_z, expected_q_z):
+        assert a == pytest.approx(e, abs=1e-9)
+
+
+@pytest.mark.parametrize("dome_area", [0.1, 0.5, 0.9])
+@pytest.mark.parametrize("dome_damping", [0.0, 0.5, 1.0])
+def test_dome_sliders_manifold_at_extremes(dome_area, dome_damping):
+    # Every (area, damping) combination on the slider grid must still produce
+    # a closed 2-manifold mesh — the existing geometry invariants (rim
+    # straight-edge / tab-hole / side wall) must survive both knobs.
+    verts, faces = build_hex_tile(
+        diameter_mm=100.0, level_height_mm=5.0, base_thickness_mm=10.0,
+        corner_levels=(0, 1, 2, 1, 0, 0), center_level=3,
+        smoothness_passes=2,
+        dome_area=dome_area, dome_damping=dome_damping,
+    )
+    assert_two_manifold(verts, faces)
+
+
+def test_dome_area_controls_q_ring_radius():
+    # dome_area scales the radial position of Q linearly between C (area=0)
+    # and rim midpoint (area=1). Verify two area values place the Q ring at
+    # the expected fraction of the way out.
+    diameter = 100.0
+    R = diameter / 2.0
+    apothem = R * math.sqrt(3.0) / 2.0  # distance from C to rim midpoint
+    for area in (0.2, 0.7):
+        verts, _ = build_hex_tile(
+            diameter_mm=diameter, level_height_mm=5.0, base_thickness_mm=10.0,
+            corner_levels=(0,) * 6, center_level=4,
+            smoothness_passes=0, dome_area=area,
+        )
+        # All six Q verts sit at radius = area · apothem from origin (C is at
+        # origin), since all corners are equidistant and at z=base. They are
+        # the only verts above base with non-zero radius.
+        q_radii = sorted(
+            math.hypot(v[0], v[1]) for v in verts
+            if v[2] > 10.0 + 1e-6 and math.hypot(v[0], v[1]) > 1e-6
+        )
+        assert len(q_radii) == 6
+        expected_r = area * apothem
+        for r in q_radii:
+            assert r == pytest.approx(expected_r, abs=1e-9)
 
 
 def test_tab_mates_with_ne_neighbour_hole():
