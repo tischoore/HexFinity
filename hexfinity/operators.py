@@ -59,7 +59,8 @@ def rebuild_tile(obj):
             base_thickness_mm=map_props.base_thickness_mm,
             corner_levels=corner_levels,
             center_level=center_level,
-            subdivisions=map_props.subdivisions,
+            smoothness_passes=map_props.smoothness_passes,
+            resample_density=map_props.resample_density,
             center_xy=(cx, cy),
         )
         assert_two_manifold(verts, faces)
