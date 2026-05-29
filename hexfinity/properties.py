@@ -46,12 +46,24 @@ class HexFinityMapProperties(bpy.types.PropertyGroup):
         soft_max=100.0,
         update=_on_global_update,
     )
-    subdivisions: bpy.props.IntProperty(
-        name="Subdivisions",
-        description="Number of cuts per top-triangle edge (uniform across the map)",
-        default=4,
+    smoothness_passes: bpy.props.IntProperty(
+        name="Smoothness Passes",
+        description="Loop subdivision iterations applied to the top surface "
+                    "(shape detail and smoothness). 2 passes = 288 tris/tile, "
+                    "3 = 1152, 4 = 4608 — bump until the dome looks right",
+        default=2,
         min=0,
-        soft_max=16,
+        soft_max=5,
+        update=_on_global_update,
+    )
+    resample_density: bpy.props.IntProperty(
+        name="Resample Density",
+        description="Extra linear-midpoint subdivision after Loop smoothing. "
+                    "Adds polycount via chord midpoints; does NOT introduce "
+                    "new smoothing (use this for downstream displacement)",
+        default=0,
+        min=0,
+        soft_max=3,
         update=_on_global_update,
     )
     grid_x: bpy.props.IntProperty(

@@ -22,7 +22,8 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         box.prop(map_props, "diameter_mm")
         box.prop(map_props, "level_height_mm")
         box.prop(map_props, "base_thickness_mm")
-        box.prop(map_props, "subdivisions")
+        box.prop(map_props, "smoothness_passes")
+        box.prop(map_props, "resample_density")
 
         # ---- Grid extent + (Re)generate ----------------------------------
         box = layout.box()

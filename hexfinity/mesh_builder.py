@@ -3,15 +3,24 @@
 No `bpy` imports — this module is unit-testable in plain CPython.
 All linear inputs and output vertex coordinates are in millimetres.
 
-Top surface: six bicubic Hermite Coons patches, one per `(C, Pi, Pi+1)` region.
-Each patch has its `u=0` boundary collapsed to the apex `C`. Boundary curves
-along internal spokes and cross-boundary tangent fields are shared between
-neighbouring patches by construction, giving strict G1 across every internal
-spoke for any corner heights. The cross-rim tangent is horizontal, so tiles
-placed side-by-side join with a continuous tangent plane.
+Top surface: Loop subdivision over a 13-vertex control mesh (centre `C`,
+six rim corners `P1..P6`, six auto-derived inner-ring vertices `Q1..Q6`).
+The six rim edges are tagged sharp so they stay perfectly straight under
+subdivision (mandatory for the side wall to attach and for adjacent tiles
+to meet without gaps). Everything else smooths via Loop's stencils, which
+naturally damps a centre displacement into a radial bump and eliminates
+the per-spoke creases that the previous Coons-patch construction had.
 """
 
 import math
+
+try:
+    # Package import path used by the Blender extension.
+    from .subdivision import subdivide_loop, linear_midpoint_subdivide
+except ImportError:
+    # Flat import path used by the unit-test conftest (adds hexfinity/ to
+    # sys.path so the bpy-free modules can be imported without the package).
+    from subdivision import subdivide_loop, linear_midpoint_subdivide
 
 
 # Inter-tile interlock geometry. Each side carries one rectangular tab sticking
@@ -24,131 +33,11 @@ TAB_OFFSET_FROM_CORNER_MM = 10.0  # tab is this far from the next corner;
                                   # hole is this far from the previous corner.
 TAB_HOLE_TOLERANCE_MM = 0.2      # hole is +TOL in every axis vs tab so tiles slide together.
 
-
-def _hermite_basis(t):
-    """Cubic Hermite basis: returns (H0, H1, G0, G1).
-
-    H0/H1 interpolate values at t=0/t=1; G0/G1 interpolate first derivatives.
-    """
-    t2 = t * t
-    t3 = t2 * t
-    H0 = 2.0 * t3 - 3.0 * t2 + 1.0
-    H1 = -2.0 * t3 + 3.0 * t2
-    G0 = t3 - 2.0 * t2 + t
-    G1 = t3 - t2
-    return (H0, H1, G0, G1)
-
-
-def _patch_data(i, C_pos, corner_pos, spoke_normals, rim_normals,
-                alpha, beta, gamma):
-    """Per-patch boundary endpoints and cross-boundary tangent vectors.
-
-    All tangent vectors have z=0 by construction (horizontal in XY); that is
-    what enforces horizontal tangent planes at the apex, rim, and corners.
-    """
-    ip1 = (i + 1) % 6
-    Pi = corner_pos[i]
-    Pip1 = corner_pos[ip1]
-    n_spoke_i = spoke_normals[i]
-    n_spoke_ip1 = spoke_normals[ip1]
-    n_rim_i = rim_normals[i]
-
-    # Apex radial peel-off endpoints (Pi - C and Pip1 - C, with z zeroed).
-    Tu0_at_v0 = (alpha * (Pi[0] - C_pos[0]),
-                 alpha * (Pi[1] - C_pos[1]),
-                 0.0)
-    Tu0_at_v1 = (alpha * (Pip1[0] - C_pos[0]),
-                 alpha * (Pip1[1] - C_pos[1]),
-                 0.0)
-
-    # Outward rim tangent — constant in v.
-    Tu1 = (beta * n_rim_i[0], beta * n_rim_i[1], 0.0)
-
-    # Cross-spoke tangents — constant in u, shared per-spoke with neighbours.
-    Tv0 = (gamma * n_spoke_i[0], gamma * n_spoke_i[1], 0.0)
-    Tv1 = (gamma * n_spoke_ip1[0], gamma * n_spoke_ip1[1], 0.0)
-
-    return {
-        "C": C_pos,
-        "Pi": Pi,
-        "Pip1": Pip1,
-        "Tu0_at_v0": Tu0_at_v0,
-        "Tu0_at_v1": Tu0_at_v1,
-        "Tu1": Tu1,
-        "Tv0": Tv0,
-        "Tv1": Tv1,
-    }
-
-
-def _eval_coons(u, v, pd):
-    """Evaluate the Coons patch S(u,v) = F_u + F_v - B at (u, v)."""
-    C = pd["C"]
-    Pi = pd["Pi"]
-    Pip1 = pd["Pip1"]
-    Tu1 = pd["Tu1"]
-    Tv0 = pd["Tv0"]
-    Tv1 = pd["Tv1"]
-    Tu0_v0 = pd["Tu0_at_v0"]
-    Tu0_v1 = pd["Tu0_at_v1"]
-
-    H0u, H1u, G0u, G1u = _hermite_basis(u)
-    H0v, H1v, G0v, G1v = _hermite_basis(v)
-
-    # Boundary curves at this (u,v).
-    # c0(v) = C (degenerate apex), c1(v) = (1-v)*Pi + v*Pip1.
-    c1v = ((1.0 - v) * Pi[0] + v * Pip1[0],
-           (1.0 - v) * Pi[1] + v * Pip1[1],
-           (1.0 - v) * Pi[2] + v * Pip1[2])
-    # d0(u) = (1-u)*C + u*Pi, d1(u) = (1-u)*C + u*Pip1.
-    d0u = ((1.0 - u) * C[0] + u * Pi[0],
-           (1.0 - u) * C[1] + u * Pi[1],
-           (1.0 - u) * C[2] + u * Pi[2])
-    d1u = ((1.0 - u) * C[0] + u * Pip1[0],
-           (1.0 - u) * C[1] + u * Pip1[1],
-           (1.0 - u) * C[2] + u * Pip1[2])
-
-    # Cross-boundary tangent fields at this (u,v).
-    # Tu0(v) is linear in v; Tu1(v), Tv0(u), Tv1(u) are constant.
-    Tu0v = ((1.0 - v) * Tu0_v0[0] + v * Tu0_v1[0],
-            (1.0 - v) * Tu0_v0[1] + v * Tu0_v1[1],
-            0.0)
-
-    # F_u(u,v) = H0(u)*c0 + H1(u)*c1(v) + G0(u)*Tu0(v) + G1(u)*Tu1(v)
-    Fu_x = H0u * C[0] + H1u * c1v[0] + G0u * Tu0v[0] + G1u * Tu1[0]
-    Fu_y = H0u * C[1] + H1u * c1v[1] + G0u * Tu0v[1] + G1u * Tu1[1]
-    Fu_z = H0u * C[2] + H1u * c1v[2] + G0u * Tu0v[2] + G1u * Tu1[2]
-
-    # F_v(u,v) = H0(v)*d0(u) + H1(v)*d1(u) + G0(v)*Tv0(u) + G1(v)*Tv1(u)
-    Fv_x = H0v * d0u[0] + H1v * d1u[0] + G0v * Tv0[0] + G1v * Tv1[0]
-    Fv_y = H0v * d0u[1] + H1v * d1u[1] + G0v * Tv0[1] + G1v * Tv1[1]
-    Fv_z = H0v * d0u[2] + H1v * d1u[2] + G0v * Tv0[2] + G1v * Tv1[2]
-
-    # B(u,v) = sum_{a,b} M[a][b] * bu[a] * bv[b]; twists = 0.
-    # Rows of M: 0→S(0,*), 1→S(1,*), 2→Tu0(*), 3→Tu1.
-    # Cols of M: 0→S(*,0), 1→S(*,1), 2→Tv0, 3→Tv1.
-    zero = (0.0, 0.0, 0.0)
-    M = (
-        (C,         C,         Tv0,     Tv1),
-        (Pi,        Pip1,      Tv0,     Tv1),
-        (Tu0_v0,    Tu0_v1,    zero,    zero),
-        (Tu1,       Tu1,       zero,    zero),
-    )
-    bu = (H0u, H1u, G0u, G1u)
-    bv = (H0v, H1v, G0v, G1v)
-    Bx = By = Bz = 0.0
-    for a in range(4):
-        row = M[a]
-        bua = bu[a]
-        for b in range(4):
-            coef = bua * bv[b]
-            m = row[b]
-            Bx += coef * m[0]
-            By += coef * m[1]
-            Bz += coef * m[2]
-
-    return (Fu_x + Fv_x - Bx,
-            Fu_y + Fv_y - By,
-            Fu_z + Fv_z - Bz)
+# Inner-ring control vertex placement. Qi sits between C and the midpoint of
+# rim segment Pi→Pi+1, at this fraction of the way out. 0.5 keeps the Q ring
+# concentric and reasonably tight to C; tuning this trades dome breadth for
+# spoke flatness.
+INNER_RING_FACTOR = 0.5
 
 
 def clamp_center_to_hexagon(x_mm, y_mm, diameter_mm, safety_mm=1.0):
@@ -180,7 +69,8 @@ def build_hex_tile(
     base_thickness_mm,
     corner_levels,
     center_level,
-    subdivisions,
+    smoothness_passes,
+    resample_density=0,
     center_xy=(0.0, 0.0),
 ):
     """Build a single HexFinity tile.
@@ -189,6 +79,10 @@ def build_hex_tile(
     millimetres and faces is a list of vertex-index tuples (triangles or
     quads). Default STL export from Blender writes raw vertex values, so
     keeping the mesh in mm makes the exported file imports at true mm scale.
+
+    `smoothness_passes` runs Loop subdivision (shape detail and smoothness);
+    `resample_density` then runs linear midpoint subdivision passes that
+    increase polycount via chord midpoints without further smoothing.
     """
     if diameter_mm <= 0:
         raise ValueError(f"diameter_mm must be positive, got {diameter_mm}")
@@ -200,8 +94,14 @@ def build_hex_tile(
             f"{TAB_HEIGHT_MM + TAB_HOLE_TOLERANCE_MM} mm to fit the tab/hole "
             f"interlock, got {base_thickness_mm}"
         )
-    if subdivisions < 0:
-        raise ValueError(f"subdivisions must be >= 0, got {subdivisions}")
+    if smoothness_passes < 0:
+        raise ValueError(
+            f"smoothness_passes must be >= 0, got {smoothness_passes}"
+        )
+    if resample_density < 0:
+        raise ValueError(
+            f"resample_density must be >= 0, got {resample_density}"
+        )
     if len(corner_levels) != 6:
         raise ValueError(f"corner_levels must have 6 entries, got {len(corner_levels)}")
     # Diameter must be wide enough that the tab and hole on a single side don't
@@ -218,9 +118,7 @@ def build_hex_tile(
         )
 
     levels = tuple(max(0, int(L)) for L in corner_levels)
-    N = subdivisions + 1
     R = diameter_mm / 2.0
-    apothem = R * math.sqrt(3.0) / 2.0  # rim midpoint distance from origin
 
     # Flat-top hex: P1 at upper-right (1 o'clock), P2..P6 clockwise viewed
     # from above. P2 sits at +X, P3 lower-right, P4 lower-left, P5 at -X,
@@ -240,15 +138,8 @@ def build_hex_tile(
     C_pos = (float(center_xy[0]), float(center_xy[1]), center_z)
     corner_pos = [(corners_xy[i][0], corners_xy[i][1], corner_z[i]) for i in range(6)]
 
-    # Per-spoke and per-rim unit XY normals (shared between adjacent patches).
-    spoke_normals = []
-    for i in range(6):
-        # rotate_90_ccw of unit(Pi - C)_xy0 = (-uy/mag, ux/mag, 0)
-        ux = corner_pos[i][0] - C_pos[0]
-        uy = corner_pos[i][1] - C_pos[1]
-        mag = math.hypot(ux, uy)
-        spoke_normals.append((-uy / mag, ux / mag, 0.0))
-
+    # Per-rim outward unit XY normals — still needed below for tab/hole
+    # placement and the side-wall n-gon construction.
     rim_normals = []
     for i in range(6):
         ip1 = (i + 1) % 6
@@ -257,17 +148,52 @@ def build_hex_tile(
         mag = math.hypot(mx, my)
         rim_normals.append((mx / mag, my / mag, 0.0))
 
-    # Tangent magnitudes. Only their consistency between patches/tiles matters
-    # for G1; these defaults give visually balanced curvature.
-    alpha = 1.0
-    beta = apothem
-    gamma = apothem
+    # ---- 13-vert control mesh (C + P1..P6 + Q1..Q6) ----------------------
+    # Qi is auto-derived per build (phase 1; not user-editable):
+    #   Qi.xy = C.xy + INNER_RING_FACTOR · (midpoint(Pi, Pi+1) − C.xy)
+    #   Qi.z  = (Pi.z + Pi+1.z + C.z) / 3   (symmetric kite average)
+    # The latter is a fixed point of Loop's stencil at valence 3 (β = 3/16),
+    # so the Q ring keeps its height across subdivision iterations.
+    Q_pos = []
+    for i in range(6):
+        ip1 = (i + 1) % 6
+        mid_x = 0.5 * (corner_pos[i][0] + corner_pos[ip1][0])
+        mid_y = 0.5 * (corner_pos[i][1] + corner_pos[ip1][1])
+        qx = C_pos[0] + INNER_RING_FACTOR * (mid_x - C_pos[0])
+        qy = C_pos[1] + INNER_RING_FACTOR * (mid_y - C_pos[1])
+        qz = (corner_pos[i][2] + corner_pos[ip1][2] + C_pos[2]) / 3.0
+        Q_pos.append((qx, qy, qz))
 
-    patches = [
-        _patch_data(i, C_pos, corner_pos, spoke_normals, rim_normals,
-                    alpha, beta, gamma)
-        for i in range(6)
-    ]
+    # Indexing: C = 0, Pi = 1 + i, Qi = 7 + i (i ∈ 0..5).
+    C_IDX = 0
+    def P_idx(i): return 1 + (i % 6)
+    def Q_idx(i): return 7 + (i % 6)
+
+    ctrl_verts = [C_pos] + list(corner_pos) + Q_pos
+
+    # Three triangles per kite (Pi, Pi+1, C) with Qi at the shared interior
+    # vertex — winding chosen so every face normal is +Z (CCW viewed from
+    # above), matching the rest of the mesh.
+    ctrl_faces = []
+    for i in range(6):
+        ctrl_faces.append((P_idx(i), Q_idx(i), P_idx(i + 1)))
+        ctrl_faces.append((P_idx(i), C_IDX,    Q_idx(i)))
+        ctrl_faces.append((Q_idx(i), C_IDX,    P_idx(i + 1)))
+
+    ctrl_sharp = [(P_idx(i), P_idx(i + 1)) for i in range(6)]
+
+    sub_verts, sub_faces, rim_chains = subdivide_loop(
+        ctrl_verts, ctrl_faces, ctrl_sharp, smoothness_passes
+    )
+    if resample_density > 0:
+        sub_verts, sub_faces, rim_chains = linear_midpoint_subdivide(
+            sub_verts, sub_faces, rim_chains, resample_density
+        )
+
+    # Number of vertices along a single rim segment after both subdivision
+    # stages. Each pass (Loop or linear) halves every segment via midpoint
+    # insertion, so segments_per_rim = 2 ** (smoothness + resample).
+    rim_density = 2 ** (smoothness_passes + resample_density) + 1
 
     verts_mm = []
     vert_index = {}
@@ -282,48 +208,33 @@ def build_hex_tile(
 
     faces = []
 
-    # Top surface: six bicubic Hermite Coons patches.
-    def top_key(i, u_idx, v_idx):
-        ip1 = (i + 1) % 6
-        if u_idx == 0:
-            return ("center",)
-        if u_idx == N and v_idx == 0:
-            return ("corner", i)
-        if u_idx == N and v_idx == N:
-            return ("corner", ip1)
-        if v_idx == 0:
-            return ("spoke", i, u_idx)
-        if v_idx == N:
-            return ("spoke", ip1, u_idx)
-        if u_idx == N:
-            return ("rim", i, v_idx)
-        return ("interior", i, u_idx, v_idx)
+    # ---- Register top-surface verts --------------------------------------
+    # Rim verts get keyed first under ("corner", i) / ("rim", i, j) so the
+    # side-wall n-gon below can look them up. Interior verts get a per-tile
+    # counter under ("top", k) — no dedup, just a unique key per vertex.
+    top_remap = {}
 
     for i in range(6):
-        pd = patches[i]
-        grid = {}
-        for u_idx in range(N + 1):
-            u = u_idx / N
-            for v_idx in range(N + 1):
-                v = v_idx / N
-                pos = _eval_coons(u, v, pd)
-                grid[(u_idx, v_idx)] = add_vert(top_key(i, u_idx, v_idx), pos)
+        chain = rim_chains[i]
+        for j, old_idx in enumerate(chain):
+            pos = sub_verts[old_idx]
+            if j == 0:
+                new_idx = add_vert(("corner", i), pos)
+            elif j == len(chain) - 1:
+                new_idx = add_vert(("corner", (i + 1) % 6), pos)
+            else:
+                new_idx = add_vert(("rim", i, j), pos)
+            top_remap[old_idx] = new_idx
 
-        # Apex triangle fan at u_idx=0 (degenerate row collapsed to center).
-        # Winding: C → grid[1,v+1] → grid[1,v] gives +Z normal.
-        apex = grid[(0, 0)]
-        for v_idx in range(N):
-            faces.append((apex, grid[(1, v_idx + 1)], grid[(1, v_idx)]))
+    top_counter = 0
+    for old_idx in range(len(sub_verts)):
+        if old_idx in top_remap:
+            continue
+        top_remap[old_idx] = add_vert(("top", top_counter), sub_verts[old_idx])
+        top_counter += 1
 
-        # Quad cells for u_idx >= 1. Winding: A,D,C,B (= reverse of parametric
-        # CCW) for +Z normal viewed from above.
-        for u_idx in range(1, N):
-            for v_idx in range(N):
-                A = grid[(u_idx, v_idx)]
-                B = grid[(u_idx + 1, v_idx)]
-                Cq = grid[(u_idx + 1, v_idx + 1)]
-                D = grid[(u_idx, v_idx + 1)]
-                faces.append((A, D, Cq, B))
+    for f in sub_faces:
+        faces.append(tuple(top_remap[v] for v in f))
 
     # Bottom of the tile carries inter-tile tab/hole interlocks (see module
     # constants). Side-wall, base plate and per-side tab/cavity geometry are
@@ -340,7 +251,7 @@ def build_hex_tile(
     def top_rim_key(i, s):
         if s == 0:
             return ("corner", i)
-        if s == N:
+        if s == rim_density - 1:
             return ("corner", (i + 1) % 6)
         return ("rim", i, s)
 
@@ -445,7 +356,7 @@ def build_hex_tile(
     for i in range(6):
         ip1 = (i + 1) % 6
         ngon = []
-        for s in range(N + 1):
+        for s in range(rim_density):
             ngon.append(vert_index[top_rim_key(i, s)])
         ngon.append(vert_index[("bcorner", ip1)])
         ngon.append(vert_index[("bbreak", i, "tab_hi")])
