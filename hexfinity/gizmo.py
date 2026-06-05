@@ -172,8 +172,8 @@ class HEXFINITY_GGT_center(bpy.types.GizmoGroup):
             p.center_x_mm, p.center_y_mm, self._apex_z_mm(p),
         ))
         # scale_basis is the sphere's world-space radius (unit-radius mesh),
-        # so diameter = 2 * scale_basis. 1% of hex diameter ⇒ * 0.005.
-        self._gz.scale_basis = context.scene.hexfinity_map.diameter_mm * 0.005
+        # so diameter = 2 * scale_basis. 0.2% of hex diameter ⇒ * 0.001.
+        self._gz.scale_basis = context.scene.hexfinity_map.diameter_mm * 0.001
 
     def _get_offset(self):
         obj = bpy.context.active_object

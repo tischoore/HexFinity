@@ -25,7 +25,7 @@ class HexFinityMapProperties(bpy.types.PropertyGroup):
     diameter_mm: bpy.props.FloatProperty(
         name="Diameter (mm)",
         description="Point-to-point diameter of every hex tile in the map (uniform across the map)",
-        default=100.0,
+        default=220.0,
         min=0.001,
         soft_max=1000.0,
         update=_on_global_update,
@@ -33,7 +33,7 @@ class HexFinityMapProperties(bpy.types.PropertyGroup):
     level_height_mm: bpy.props.FloatProperty(
         name="Level Height (mm)",
         description="Vertical distance for one level step (uniform across the map)",
-        default=5.0,
+        default=10.0,
         min=0.001,
         soft_max=100.0,
         update=_on_global_update,
