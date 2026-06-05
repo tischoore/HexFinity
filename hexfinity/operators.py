@@ -1,6 +1,6 @@
 import bpy
 
-from .mesh_builder import build_hex_tile, clamp_center_to_hexagon
+from .mesh_builder import build_hex_tile, clamp_center_to_hexagon, top_vertex_count
 from .manifold_check import assert_two_manifold, ManifoldError
 from .map import SHARED_CORNERS, neighbour_coord, tile_world_xy, find_tile
 
@@ -53,6 +53,20 @@ def rebuild_tile(obj):
                          tile_props.p4, tile_props.p5, tile_props.p6)
         center_level = tile_props.center_level if tile_props.override_center else None
 
+        # Terrain-brush displacement is a per-top-vertex z-offset layer stored on
+        # the Object (it outlives the mesh that gets replaced every rebuild). It
+        # is keyed to the current top-surface topology, so a subdivision/resample
+        # change that alters the top vert count invalidates it — drop the paint
+        # (the agreed "survives height edits only" contract) rather than apply a
+        # stale array against a different mesh.
+        num_top = top_vertex_count(map_props.smoothness_passes,
+                                   map_props.resample_density)
+        disp = obj.get("hf_brush_disp")
+        if disp is not None and len(disp) != num_top:
+            del obj["hf_brush_disp"]
+            disp = None
+        obj["hf_brush_ntop"] = num_top
+
         verts, faces = build_hex_tile(
             diameter_mm=map_props.diameter_mm,
             level_height_mm=map_props.level_height_mm,
@@ -64,6 +78,7 @@ def rebuild_tile(obj):
             center_xy=(cx, cy),
             dome_area=tile_props.dome_area,
             dome_damping=tile_props.dome_damping,
+            top_displacement=list(disp) if disp is not None else None,
         )
         assert_two_manifold(verts, faces)
 

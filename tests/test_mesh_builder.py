@@ -4,6 +4,8 @@ import pytest
 from mesh_builder import (
     build_hex_tile,
     clamp_center_to_hexagon,
+    rim_edge_distance,
+    top_vertex_count,
     INNER_RING_FACTOR,
     TAB_WIDTH_MM,
     TAB_HEIGHT_MM,
@@ -637,3 +639,122 @@ def test_tab_mates_with_ne_neighbour_hole():
                 f"tab corner radial_b={radial_b} outside cavity")
             assert 0 - 1e-9 <= z_b <= hole_top + 1e-9, (
                 f"tab corner z_b={z_b} outside cavity")
+
+
+# ---------------------------------------------------------------------------
+# Terrain brush support: top_vertex_count, top_displacement, rim_edge_distance.
+
+@pytest.mark.parametrize(
+    "smoothness_passes,resample_density,expected",
+    [
+        (0, 0, 13),
+        (1, 0, 43),
+        (2, 0, 157),
+        (3, 0, 601),
+        (0, 1, 43),    # one linear pass == one Loop pass topologically
+        (1, 1, 157),
+        (2, 1, 601),
+    ],
+)
+def test_top_vertex_count(smoothness_passes, resample_density, expected):
+    assert top_vertex_count(smoothness_passes, resample_density) == expected
+
+
+def test_top_vertex_count_matches_builder():
+    # Pin the closed-form helper to the real builder so the two can never drift.
+    # Bottom geometry is constant w.r.t. both pass counts, so the bottom vert
+    # count is (total at 0/0) minus the 13 control-mesh verts that form the
+    # un-subdivided top; subtract it to recover the true top count for any pass.
+    bottom = len(_build(smoothness_passes=0, resample_density=0)[0]) - 13
+    for s in range(4):
+        for r in range(3):
+            total = len(_build(smoothness_passes=s, resample_density=r)[0])
+            assert top_vertex_count(s, r) == total - bottom, (s, r)
+
+
+def test_top_displacement_raises_only_top_verts():
+    s = 2
+    base = 10.0
+    ntop = top_vertex_count(s)
+    plain, _ = _build(smoothness_passes=s, corner_levels=(0,) * 6,
+                      base_thickness_mm=base)
+    disp = [3.0] * ntop
+    painted = build_hex_tile(
+        diameter_mm=100.0, level_height_mm=5.0, base_thickness_mm=base,
+        corner_levels=(0,) * 6, center_level=None, smoothness_passes=s,
+        top_displacement=disp,
+    )[0]
+    assert len(painted) == len(plain)
+    # Every top vert is lifted by exactly the displacement; everything below
+    # the num_top boundary (base/side/tab) is untouched.
+    for i in range(ntop):
+        assert painted[i][2] == pytest.approx(plain[i][2] + 3.0, abs=1e-9)
+        assert painted[i][:2] == pytest.approx(plain[i][:2], abs=1e-9)
+    for i in range(ntop, len(painted)):
+        assert painted[i] == pytest.approx(plain[i], abs=1e-9)
+
+
+def test_top_displacement_clamps_to_base():
+    s = 2
+    base = 10.0
+    ntop = top_vertex_count(s)
+    # A huge "lower" stroke must not punch the top below the base plate.
+    disp = [-1000.0] * ntop
+    painted = build_hex_tile(
+        diameter_mm=100.0, level_height_mm=5.0, base_thickness_mm=base,
+        corner_levels=(2, 2, 2, 2, 2, 2), center_level=None, smoothness_passes=s,
+        top_displacement=disp,
+    )[0]
+    for i in range(ntop):
+        assert painted[i][2] == pytest.approx(base, abs=1e-9)
+    # Mesh stays a closed 2-manifold even with the whole top crushed to the base.
+    painted_verts, painted_faces = build_hex_tile(
+        diameter_mm=100.0, level_height_mm=5.0, base_thickness_mm=base,
+        corner_levels=(2, 2, 2, 2, 2, 2), center_level=None, smoothness_passes=s,
+        top_displacement=disp,
+    )
+    assert_two_manifold(painted_verts, painted_faces)
+
+
+def test_top_displacement_length_mismatch_ignored():
+    # A stale array from a different subdivision is dropped, not misapplied.
+    s = 2
+    plain, _ = _build(smoothness_passes=s, corner_levels=(0,) * 6)
+    for wrong_len in (top_vertex_count(s) - 1, top_vertex_count(s) + 1, 0):
+        painted, _ = build_hex_tile(
+            diameter_mm=100.0, level_height_mm=5.0, base_thickness_mm=10.0,
+            corner_levels=(0,) * 6, center_level=None, smoothness_passes=s,
+            top_displacement=[5.0] * wrong_len,
+        )
+        assert painted == plain
+
+
+def test_rim_edge_distance_centre_is_apothem():
+    diameter = 100.0
+    apothem = (diameter / 2.0) * math.sqrt(3.0) / 2.0
+    assert rim_edge_distance(0.0, 0.0, diameter) == pytest.approx(apothem, abs=1e-9)
+
+
+def test_rim_edge_distance_zero_on_edges():
+    # The midpoint of every rim edge sits exactly on that edge → distance 0.
+    diameter = 100.0
+    R = diameter / 2.0
+    for i in range(6):
+        a0 = math.pi / 3.0 - i * (math.pi / 3.0)
+        a1 = math.pi / 3.0 - ((i + 1) % 6) * (math.pi / 3.0)
+        mx = 0.5 * (R * math.cos(a0) + R * math.cos(a1))
+        my = 0.5 * (R * math.sin(a0) + R * math.sin(a1))
+        assert rim_edge_distance(mx, my, diameter) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_rim_edge_distance_symmetric():
+    # Sixfold rotational symmetry: rotating a point by 60° leaves the rim
+    # distance unchanged.
+    diameter = 100.0
+    x, y = 12.0, 7.0
+    base = rim_edge_distance(x, y, diameter)
+    for k in range(1, 6):
+        a = k * math.pi / 3.0
+        rx = x * math.cos(a) - y * math.sin(a)
+        ry = x * math.sin(a) + y * math.cos(a)
+        assert rim_edge_distance(rx, ry, diameter) == pytest.approx(base, abs=1e-9)

@@ -88,6 +88,50 @@ class HexFinityMapProperties(bpy.types.PropertyGroup):
 
 
 # ---------------------------------------------------------------------------
+# Scene-level — terrain brush settings. Read by the modal paint operator each
+# dab; no update callbacks (changing a brush setting never rebuilds a tile).
+
+class HexFinityBrushProperties(bpy.types.PropertyGroup):
+    radius_mm: bpy.props.FloatProperty(
+        name="Radius (mm)",
+        description="Brush size — top verts within this distance of the cursor are displaced",
+        default=40.0,
+        min=0.1,
+        soft_max=500.0,
+    )
+    strength_mm: bpy.props.FloatProperty(
+        name="Strength (mm/s)",
+        description="Millimetres of displacement applied per second of dragging at the brush centre",
+        default=20.0,
+        min=0.0,
+        soft_max=200.0,
+    )
+    direction: bpy.props.EnumProperty(
+        name="Direction",
+        description="Whether a stroke raises or lowers the surface",
+        items=[
+            ('RAISE', "Raise", "Push the surface up"),
+            ('LOWER', "Lower", "Pull the surface down"),
+        ],
+        default='RAISE',
+    )
+    preserve_edge: bpy.props.BoolProperty(
+        name="Preserve Edge",
+        description="Damp the brush to ~0 near a hex rim so the straight edges and "
+                    "shared corners stay put. Turn OFF to let a stroke flow across a "
+                    "seam onto the neighbouring tile",
+        default=True,
+    )
+    edge_falloff_mm: bpy.props.FloatProperty(
+        name="Edge Falloff (mm)",
+        description="Width of the rim damping band when Preserve Edge is on",
+        default=20.0,
+        min=0.001,
+        soft_max=200.0,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Per-Object (tile) — corner levels, optional centre override, and the
 # (q, r) coordinate the tile lives at within the map.
 

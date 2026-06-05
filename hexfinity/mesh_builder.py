@@ -63,6 +63,47 @@ def clamp_center_to_hexagon(x_mm, y_mm, diameter_mm, safety_mm=1.0):
     return x, y
 
 
+def rim_edge_distance(x_mm, y_mm, diameter_mm):
+    """Minimum perpendicular distance from a local-XY point to the hex rim.
+
+    Returns the distance (mm) from (x_mm, y_mm) to the nearest of the six rim
+    edges, measured in the tile's local frame (hex centred on the origin, same
+    flat-top orientation as `build_hex_tile`). Each edge lies at the apothem
+    along its outward unit normal n_i, so the signed distance to edge i is
+    `apothem - n_i·p`; the rim distance is the smallest of those six.
+
+    apothem at the centre, 0 on an edge, and symmetric across the hexagon. The
+    terrain brush uses this to damp its displacement to ~0 near the rim so the
+    straight edges and shared corners stay put. bpy-free for unit testing.
+    """
+    apothem = (diameter_mm / 2.0) * math.sqrt(3.0) / 2.0
+    best = None
+    for i in range(6):
+        theta = math.pi / 6.0 - i * (math.pi / 3.0)
+        d = apothem - (math.cos(theta) * x_mm + math.sin(theta) * y_mm)
+        if best is None or d < best:
+            best = d
+    return best
+
+
+def top_vertex_count(smoothness_passes, resample_density=0):
+    """Number of top-surface vertices `build_hex_tile` produces for these passes.
+
+    The top surface is the subdivision of a fixed 13-vertex / 30-edge / 18-face
+    control mesh. Both Loop and linear-midpoint subdivision are topologically
+    identical (one new vertex per edge, every triangle → 4), so each pass maps
+    (V, E, F) → (V + E, 2E + 3F, 4F). The vertex count therefore depends only on
+    the total pass count, never on the z-heights — which is exactly what makes a
+    `float[num_top]` displacement array a stable, topology-keyed layer.
+
+    Pinned to the real builder by `test_top_vertex_count_matches_builder`.
+    """
+    V, E, F = 13, 30, 18
+    for _ in range(smoothness_passes + resample_density):
+        V, E, F = V + E, 2 * E + 3 * F, 4 * F
+    return V
+
+
 def build_hex_tile(
     diameter_mm,
     level_height_mm,
@@ -74,6 +115,7 @@ def build_hex_tile(
     center_xy=(0.0, 0.0),
     dome_area=INNER_RING_FACTOR,
     dome_damping=2.0 / 3.0,
+    top_displacement=None,
 ):
     """Build a single HexFinity tile.
 
@@ -85,6 +127,16 @@ def build_hex_tile(
     `smoothness_passes` runs Loop subdivision (shape detail and smoothness);
     `resample_density` then runs linear midpoint subdivision passes that
     increase polycount via chord midpoints without further smoothing.
+
+    `top_displacement`, when given, is a per-top-vertex z-offset (mm) painted by
+    the terrain brush. Its length must equal `top_vertex_count(smoothness_passes,
+    resample_density)` (the number of top verts, which are registered first at
+    indices `0 .. num_top-1`); a mismatch is ignored so a stale array from a
+    different subdivision is dropped rather than misapplied. Each offset is added
+    to its top vert's z and the result is clamped to `>= base_thickness_mm` so a
+    deep "lower" stroke can never punch the top through the base and invert the
+    side walls. The displacement is z-only and topology-preserving, so the
+    `check_manifold()` run by the caller still validates the painted mesh.
     """
     if diameter_mm <= 0:
         raise ValueError(f"diameter_mm must be positive, got {diameter_mm}")
@@ -237,6 +289,15 @@ def build_hex_tile(
             continue
         top_remap[old_idx] = add_vert(("top", top_counter), sub_verts[old_idx])
         top_counter += 1
+
+    # All top-surface verts are now registered at indices 0 .. num_top-1, before
+    # any bottom/side/tab geometry. The brush's painted displacement is keyed to
+    # exactly this index range; apply it here (z-only, clamped to the base).
+    num_top = len(verts_mm)
+    if top_displacement is not None and len(top_displacement) == num_top:
+        for i in range(num_top):
+            x, y, z = verts_mm[i]
+            verts_mm[i] = (x, y, max(z + top_displacement[i], base_thickness_mm))
 
     for f in sub_faces:
         faces.append(tuple(top_remap[v] for v in f))

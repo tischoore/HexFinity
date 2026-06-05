@@ -74,3 +74,18 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         col = sub.column(align=True)
         col.prop(tile, "dome_area", slider=True)
         col.prop(tile, "dome_damping", slider=True)
+
+        # ---- Terrain Brush ------------------------------------------------
+        brush = scene.hexfinity_brush
+        box = layout.box()
+        box.label(text="Terrain Brush", icon='BRUSH_DATA')
+        box.prop(brush, "direction", expand=True)
+        col = box.column(align=True)
+        col.prop(brush, "radius_mm")
+        col.prop(brush, "strength_mm")
+        box.prop(brush, "preserve_edge")
+        row = box.row()
+        row.enabled = brush.preserve_edge
+        row.prop(brush, "edge_falloff_mm")
+        box.operator("hexfinity.paint_brush", text="Paint", icon='BRUSH_DATA')
+        box.label(text="Bump smoothness/resample clears paint.", icon='INFO')

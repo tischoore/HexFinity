@@ -26,6 +26,7 @@ Blender 5.1+ extension that generates a grid of interlocking hexagonal terrain t
 | `panel.py` | N-panel "HexFinity" sidebar UI (two branches: pre-map and post-map) |
 | `gizmo.py` | Floating-sphere gizmo for dragging a tile's center XY |
 | `overlay.py` | P1–P6 corner labels drawn above selected tiles |
+| `brush.py` | `HEXFINITY_OT_paint_brush` modal terrain brush — paints a per-top-vertex z-offset layer (`obj["hf_brush_disp"]`) re-applied by `build_hex_tile` on every rebuild |
 
 ## Invariants — preserve when editing
 
@@ -33,6 +34,7 @@ Blender 5.1+ extension that generates a grid of interlocking hexagonal terrain t
 - **Manifold guarantee**: every built tile is validated by `check_manifold()`; failure raises loudly so silent mesh corruption is caught.
 - **Tab geometry is hardcoded** in `mesh_builder.py` (`TAB_WIDTH_MM`, `TAB_HEIGHT_MM`, `TAB_DEPTH_MM`, `TAB_HOLE_TOLERANCE_MM`) — these constrain minimum base thickness and diameter. Check the constants before changing related values.
 - **Corner sync**: `SHARED_CORNERS` in `map.py` defines which neighbours share each corner; `on_global_update` propagates per-corner writes across seams.
+- **Brush displacement layer**: top-surface verts are registered first in `build_hex_tile` (indices `0 .. num_top-1`), and `num_top` depends only on `smoothness_passes + resample_density` (see `top_vertex_count`, pinned to the builder by `test_top_vertex_count_matches_builder`). `obj["hf_brush_disp"]` is a `float[num_top]` z-offset layer applied (clamped to `base_thickness_mm`) inside the builder and re-sampled on every rebuild; `rebuild_tile` drops it when the length no longer matches `num_top` (a subdivision/resample change), which is the intended "paint survives height edits only" contract.
 
 ## Deeper docs
 
