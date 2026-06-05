@@ -51,6 +51,7 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
                 box.label(text=f"Terrain Object: {obj.name}", icon='OBJECT_DATA')
                 box.operator("hexfinity.redrop_terrain_object",
                              text="Re-drop onto hex", icon='IMPORT')
+                box.prop(obj.hexfinity_terrain, "snap_subdiv", slider=True)
                 box.prop(obj.hexfinity_terrain, "snap_mm", slider=True)
             else:
                 layout.label(text="Select a HexTile to edit its corners.")

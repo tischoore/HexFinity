@@ -24,6 +24,16 @@ _PROPAGATING = False
 # ---------------------------------------------------------------------------
 # Mesh rebuild — single tile.
 
+def _effective_resample(tile, map_props):
+    """Linear-midpoint pass count for `tile`: the map-wide global plus the
+    optional per-tile snap bump stored in `tile["hf_local_resample"]`.
+
+    The bump densifies just this hex (uniformly — no T-junctions) so a snapped
+    model's footprint conforms more crisply; it adds resolution, not smoothing.
+    """
+    return map_props.resample_density + int(tile.get("hf_local_resample") or 0)
+
+
 def rebuild_tile(obj):
     """Rebuild the mesh data of `obj` from its tile props + scene map props.
 
@@ -64,8 +74,8 @@ def rebuild_tile(obj):
         # top vert count invalidates them — drop the stale layer (the agreed
         # "survives height edits only" contract) rather than misapply it. The two
         # layers are summed and applied together.
-        num_top = top_vertex_count(map_props.smoothness_passes,
-                                   map_props.resample_density)
+        resample = _effective_resample(obj, map_props)
+        num_top = top_vertex_count(map_props.smoothness_passes, resample)
 
         def _layer(key):
             arr = obj.get(key)
@@ -94,7 +104,7 @@ def rebuild_tile(obj):
             corner_levels=corner_levels,
             center_level=center_level,
             smoothness_passes=map_props.smoothness_passes,
-            resample_density=map_props.resample_density,
+            resample_density=resample,
             center_xy=(cx, cy),
             dome_area=tile_props.dome_area,
             dome_damping=tile_props.dome_damping,
@@ -669,12 +679,28 @@ def _drop_snap_cache(tile):
             del tile[k]
 
 
+def _reset_tile_snap(tile):
+    """Strip a tile's snap state — disp layer, gap cache, and local subdivision
+    bump — and rebuild it. Used when a model moves off a tile it had snapped."""
+    changed = False
+    if tile.get("hf_snap_disp") is not None:
+        del tile["hf_snap_disp"]
+        changed = True
+    if tile.get("hf_local_resample") is not None:
+        del tile["hf_local_resample"]
+        changed = True
+    _drop_snap_cache(tile)
+    if changed:
+        rebuild_tile(tile)
+
+
 def _snap_signature(model, tile, num_top, target_z):
     """Staleness key for the cached gap pass (a string, for id-prop storage)."""
     p = tile.hexfinity_tile
     mw = tuple(round(c, 4) for row in model.matrix_world for c in row)
     return repr((
         model.name, num_top, round(target_z, 4), mw,
+        int(tile.get("hf_local_resample") or 0),
         (p.p1, p.p2, p.p3, p.p4, p.p5, p.p6),
         round(p.center_x_mm, 4), round(p.center_y_mm, 4),
         bool(p.override_center), int(p.center_level),
@@ -701,7 +727,7 @@ def _compute_snap_gap(tile, map_props, model, mmin, mmax, base_z, target_z, num_
         corner_levels=(p.p1, p.p2, p.p3, p.p4, p.p5, p.p6),
         center_level=(p.center_level if p.override_center else None),
         smoothness_passes=map_props.smoothness_passes,
-        resample_density=map_props.resample_density,
+        resample_density=_effective_resample(tile, map_props),
         center_xy=(cx, cy),
         dome_area=p.dome_area,
         dome_damping=p.dome_damping,
@@ -753,19 +779,16 @@ def apply_terrain_snap(model, snap_mm):
     fc = (mmin + mmax) * 0.5
     tile = _tile_under_point(map_props, fc.x, fc.y)
 
-    # Clear a stale snap layer left on a tile the model no longer sits over.
+    # Clear stale snap state left on a tile the model no longer sits over.
     prev = tprops.snap_tile
-    if (prev is not None and prev is not tile
-            and prev.get("hf_snap_disp") is not None):
-        del prev["hf_snap_disp"]
-        _drop_snap_cache(prev)
-        rebuild_tile(prev)
+    if prev is not None and prev is not tile:
+        _reset_tile_snap(prev)
     tprops.snap_tile = tile  # PointerProperty has no update hook -> safe
     if tile is None:
         return
 
     num_top = top_vertex_count(map_props.smoothness_passes,
-                               map_props.resample_density)
+                               _effective_resample(tile, map_props))
     if len(tile.data.vertices) < num_top:
         return
 
@@ -808,3 +831,41 @@ def apply_terrain_snap(model, snap_mm):
     elif tile.get("hf_snap_disp") is not None:
         del tile["hf_snap_disp"]
     rebuild_tile(tile)
+
+
+def apply_terrain_subdiv(model, level):
+    """Set the per-tile local subdivision bump under `model`, then reconform.
+
+    Densifies just the hex the model sits over with `level` extra linear passes
+    (a crisper snap edge — no smoothing change), rebuilds it, and re-applies the
+    snap at the new resolution. 0 removes the bump. Off-map is a silent no-op
+    (callbacks can't report).
+    """
+    map_props = bpy.context.scene.hexfinity_map
+    if not map_props.is_generated:
+        return
+    tprops = model.hexfinity_terrain
+
+    mmin, mmax = _world_bbox([model])
+    fc = (mmin + mmax) * 0.5
+    tile = _tile_under_point(map_props, fc.x, fc.y)
+
+    # Clear a stale bump/snap on a tile the model no longer sits over.
+    prev = tprops.snap_tile
+    if prev is not None and prev is not tile:
+        _reset_tile_snap(prev)
+    tprops.snap_tile = tile
+    if tile is None:
+        return
+
+    if level <= 0:
+        if tile.get("hf_local_resample") is not None:
+            del tile["hf_local_resample"]
+    else:
+        tile["hf_local_resample"] = int(level)
+
+    # Rebuild at the new resolution first (drops the now-stale displacement
+    # layers and refreshes the mesh to the new vert count), then reconform the
+    # snap on top of it.
+    rebuild_tile(tile)
+    apply_terrain_snap(model, tprops.snap_mm)
