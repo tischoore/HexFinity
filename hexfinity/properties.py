@@ -311,6 +311,19 @@ class HexFinityTerrainProperties(bpy.types.PropertyGroup):
         subtype='NONE',
         update=_on_terrain_snap_update,
     )
+    snap_damp_mm: bpy.props.FloatProperty(
+        name="Snap damping (mm)",
+        description="Blend the snap into the surrounding terrain over this width "
+                    "in millimetres: the terrain around the model ramps smoothly "
+                    "up/down to the base (organic skirt) instead of a hard cliff "
+                    "at the footprint edge. 0 = no skirt. Faded near the hex rim "
+                    "so tile seams stay aligned.",
+        default=0.0,
+        min=0.0,
+        soft_max=100.0,
+        subtype='NONE',
+        update=_on_terrain_snap_update,
+    )
     # Remembers which tile this model last snapped, so moving it to another hex
     # clears the stale offset from the old one (operators.apply_terrain_snap).
     snap_tile: bpy.props.PointerProperty(

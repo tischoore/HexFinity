@@ -672,9 +672,18 @@ EMBED_MM = 0.2          # seat the surface this far past the base (overlap)
 SNAP_BASE_TOL_MM = 1.0  # an up-hit within this of base_z counts as "flat base"
 
 
+def _smooth_falloff(t):
+    """Smoothstep falloff: 1 at t=0, 0 at t=1, C1 at both ends.
+
+    Mirrors brush._smooth_falloff; kept local so operators doesn't import the
+    bpy brush module (which imports back into operators)."""
+    s = t * t * (3.0 - 2.0 * t)
+    return 1.0 - s
+
+
 def _drop_snap_cache(tile):
-    """Remove the cached snap gap/mask/signature id-properties from `tile`."""
-    for k in ("hf_snap_gap", "hf_snap_mask", "hf_snap_sig"):
+    """Remove the cached snap gap/weight/signature id-properties from `tile`."""
+    for k in ("hf_snap_gap", "hf_snap_weight", "hf_snap_sig"):
         if tile.get(k) is not None:
             del tile[k]
 
@@ -701,6 +710,7 @@ def _snap_signature(model, tile, num_top, target_z):
     return repr((
         model.name, num_top, round(target_z, 4), mw,
         int(tile.get("hf_local_resample") or 0),
+        round(model.hexfinity_terrain.snap_damp_mm, 4),
         (p.p1, p.p2, p.p3, p.p4, p.p5, p.p6),
         round(p.center_x_mm, 4), round(p.center_y_mm, 4),
         bool(p.override_center), int(p.center_level),
@@ -711,11 +721,15 @@ def _snap_signature(model, tile, num_top, target_z):
 def _compute_snap_gap(tile, map_props, model, mmin, mmax, base_z, target_z, num_top):
     """Expensive pass: undisplaced build + per-vertex up-raycast of the model.
 
-    Returns (gap, mask), both length num_top. `gap[i]` is the signed distance
-    `target_z - baseline` (baseline = undisplaced top Z + current brush offset);
-    `mask[i] == 1.0` where the vertex sits under the model's flat base — its
-    first up-hit is within SNAP_BASE_TOL_MM of base_z (so arch openings and
-    overhang shadows, whose first hit is far above base_z, stay 0.0).
+    Returns (gap, weight), both length num_top:
+    - `gap[i]` is the signed distance `target_z - baseline` (baseline =
+      undisplaced top Z + current brush offset), for every near vertex.
+    - `weight[i] in [0, 1]`: 1.0 for "core" verts under the model's flat base
+      (first up-hit within SNAP_BASE_TOL_MM of base_z — so arch openings and
+      overhang shadows stay 0); a smoothstep falloff of the XY distance to the
+      nearest core vertex out to `snap_damp_mm` for the organic skirt around the
+      footprint; 0 beyond. The skirt is faded toward the rim so a model near a
+      hex edge doesn't desync the seam with its neighbour.
     """
     p = tile.hexfinity_tile
     cx, cy = clamp_center_to_hexagon(
@@ -742,9 +756,13 @@ def _compute_snap_gap(tile, map_props, model, mmin, mmax, base_z, target_z, num_
     tx, ty = tile.location.x, tile.location.y
     eps = 1e-4
     gap = [0.0] * num_top
-    mask = [0.0] * num_top
+    weight = [0.0] * num_top
+
+    # Core pass: gap for every vert, and the binary footprint via up-raycast.
+    core_pts = []  # world XY of verts under the flat base
     for i in range(num_top):
         vx, vy, vz = undisp[i]
+        gap[i] = target_z - (vz + brush[i])
         xw, yw = tx + vx, ty + vy
         if (xw < mmin.x - eps or xw > mmax.x + eps
                 or yw < mmin.y - eps or yw > mmax.y + eps):
@@ -755,9 +773,39 @@ def _compute_snap_gap(tile, map_props, model, mmin, mmax, base_z, target_z, num_
             continue
         if abs((model.matrix_world @ loc).z - base_z) > SNAP_BASE_TOL_MM:
             continue
-        gap[i] = target_z - (vz + brush[i])
-        mask[i] = 1.0
-    return gap, mask
+        weight[i] = 1.0
+        core_pts.append((xw, yw))
+
+    # Skirt pass: smoothstep falloff of the distance to the nearest core vert,
+    # out to snap_damp_mm, faded toward the rim. Core verts keep weight 1.
+    damp = max(0.0, model.hexfinity_terrain.snap_damp_mm)
+    if damp > 0.0 and core_pts:
+        diameter = map_props.diameter_mm
+        damp2 = damp * damp
+        for i in range(num_top):
+            if weight[i] >= 1.0:
+                continue
+            vx, vy, _vz = undisp[i]
+            xw, yw = tx + vx, ty + vy
+            if (xw < mmin.x - damp or xw > mmax.x + damp
+                    or yw < mmin.y - damp or yw > mmax.y + damp):
+                continue
+            best2 = None
+            for (cxw, cyw) in core_pts:
+                d2 = (xw - cxw) ** 2 + (yw - cyw) ** 2
+                if best2 is None or d2 < best2:
+                    best2 = d2
+                    if best2 == 0.0:
+                        break
+            if best2 is None or best2 >= damp2:
+                continue
+            w = _smooth_falloff((best2 ** 0.5) / damp)
+            # Fade the skirt toward the rim so seams with neighbours stay put.
+            rim = rim_edge_distance(vx, vy, diameter)
+            w *= max(0.0, min(1.0, rim / damp))
+            if w > 0.0:
+                weight[i] = w
+    return gap, weight
 
 
 def apply_terrain_snap(model, snap_mm):
@@ -804,26 +852,28 @@ def apply_terrain_snap(model, snap_mm):
     # below the plate can't be reached — target there is the plate itself.
     target_z = max(base_z + EMBED_MM, map_props.base_thickness_mm)
 
-    # Reuse the cached gap/mask unless the model pose or tile shape changed.
+    # Reuse the cached gap/weight unless the model pose, tile shape, or damping
+    # changed (snap_damp_mm is part of the signature).
     sig = _snap_signature(model, tile, num_top, target_z)
     gap = tile.get("hf_snap_gap")
-    mask = tile.get("hf_snap_mask")
-    if (gap is None or mask is None or len(gap) != num_top
-            or len(mask) != num_top or tile.get("hf_snap_sig") != sig):
-        gap, mask = _compute_snap_gap(
+    weight = tile.get("hf_snap_weight")
+    if (gap is None or weight is None or len(gap) != num_top
+            or len(weight) != num_top or tile.get("hf_snap_sig") != sig):
+        gap, weight = _compute_snap_gap(
             tile, map_props, model, mmin, mmax, base_z, target_z, num_top)
         tile["hf_snap_gap"] = gap
-        tile["hf_snap_mask"] = mask
+        tile["hf_snap_weight"] = weight
         tile["hf_snap_sig"] = sig
 
     s = float(snap_mm)
     snap = [0.0] * num_top
     nonzero = False
     for i in range(num_top):
-        if mask[i] < 0.5:
+        w = weight[i]
+        if w <= 0.0:
             continue
         g = gap[i]
-        snap[i] = math.copysign(min(s, abs(g)), g)
+        snap[i] = w * math.copysign(min(s, abs(g)), g)
         if snap[i] != 0.0:
             nonzero = True
     if nonzero:
