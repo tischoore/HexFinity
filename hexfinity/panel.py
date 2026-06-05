@@ -43,7 +43,17 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         # ---- Per-tile section (only when a HexFinity tile is active) -----
         obj = context.active_object
         if obj is None or not obj.hexfinity_tile.is_generated:
-            layout.label(text="Select a HexTile to edit its corners.")
+            # A non-tile mesh is a dropped terrain object — offer to re-seat it
+            # onto the surface of whichever hex it currently sits over.
+            if (obj is not None and obj.type == 'MESH'
+                    and not obj.hexfinity_tile.is_generated):
+                box = layout.box()
+                box.label(text=f"Terrain Object: {obj.name}", icon='OBJECT_DATA')
+                box.operator("hexfinity.redrop_terrain_object",
+                             text="Re-drop onto hex", icon='IMPORT')
+                box.prop(obj.hexfinity_terrain, "snap_mm", slider=True)
+            else:
+                layout.label(text="Select a HexTile to edit its corners.")
             return
 
         tile = obj.hexfinity_tile
@@ -74,6 +84,9 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         col = sub.column(align=True)
         col.prop(tile, "dome_area", slider=True)
         col.prop(tile, "dome_damping", slider=True)
+
+        box.operator("hexfinity.import_terrain_object",
+                     text="Terrain Objects", icon='IMPORT')
 
         # ---- Terrain Brush ------------------------------------------------
         brush = scene.hexfinity_brush

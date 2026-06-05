@@ -13,8 +13,11 @@ def _classes():
         properties.HexFinityMapProperties,
         properties.HexFinityProperties,
         properties.HexFinityBrushProperties,
+        properties.HexFinityTerrainProperties,
         operators.HEXFINITY_OT_generate_map,
         operators.HEXFINITY_OT_regenerate_map,
+        operators.HEXFINITY_OT_import_terrain_object,
+        operators.HEXFINITY_OT_redrop_terrain_object,
         brush.HEXFINITY_OT_paint_brush,
         panel.HEXFINITY_PT_panel,
         gizmo.HEXFINITY_GT_center_sphere,
@@ -36,6 +39,9 @@ def register():
     bpy.types.Object.hexfinity_tile = bpy.props.PointerProperty(
         type=properties.HexFinityProperties
     )
+    bpy.types.Object.hexfinity_terrain = bpy.props.PointerProperty(
+        type=properties.HexFinityTerrainProperties
+    )
     overlay.register()
 
 
@@ -43,6 +49,8 @@ def unregister():
     import bpy
     from . import overlay
     overlay.unregister()
+    if hasattr(bpy.types.Object, "hexfinity_terrain"):
+        del bpy.types.Object.hexfinity_terrain
     if hasattr(bpy.types.Object, "hexfinity_tile"):
         del bpy.types.Object.hexfinity_tile
     if hasattr(bpy.types.Scene, "hexfinity_brush"):

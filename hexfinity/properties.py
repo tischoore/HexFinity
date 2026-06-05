@@ -254,3 +254,41 @@ class HexFinityProperties(bpy.types.PropertyGroup):
         subtype='FACTOR',
         update=_on_tile_local_update,
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-Object (loaded terrain model) — the snap-to-model slider. Lives on the
+# imported mesh, not the tile; changing it reshapes whichever hex the model
+# sits over (see operators.apply_terrain_snap).
+
+def _on_terrain_snap_update(self, context):
+    owner = self.id_data
+    if not isinstance(owner, bpy.types.Object):
+        return
+    from .operators import apply_terrain_snap
+    try:
+        apply_terrain_snap(owner, self.snap_mm)
+    except Exception:
+        pass
+
+
+class HexFinityTerrainProperties(bpy.types.PropertyGroup):
+    snap_mm: bpy.props.IntProperty(
+        name="Terrain snap to model",
+        description="Move the hex top surface under the model's flat base toward "
+                    "the base by this many millimetres, both up and down. "
+                    "0 = no snapping; verts stop once they reach the base "
+                    "(0.2 mm overlap). Arch openings and overhangs are left alone.",
+        default=0,
+        min=0,
+        soft_max=50,
+        step=1,
+        subtype='NONE',
+        update=_on_terrain_snap_update,
+    )
+    # Remembers which tile this model last snapped, so moving it to another hex
+    # clears the stale offset from the old one (operators.apply_terrain_snap).
+    snap_tile: bpy.props.PointerProperty(
+        type=bpy.types.Object,
+        options={'HIDDEN'},
+    )
