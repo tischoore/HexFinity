@@ -104,6 +104,17 @@ def top_vertex_count(smoothness_passes, resample_density=0):
     return V
 
 
+def effective_resample(global_density, local_subdiv):
+    """Total linear-midpoint passes for a tile: the map-wide global plus the
+    tile's own local subdivision (clamped to >= 0).
+
+    bpy-free so the per-tile density semantics are unit-testable and reusable by
+    other geometric operations. Feeds straight into `build_hex_tile`'s
+    `resample_density` (and therefore `top_vertex_count`).
+    """
+    return int(global_density) + max(0, int(local_subdiv))
+
+
 def build_hex_tile(
     diameter_mm,
     level_height_mm,

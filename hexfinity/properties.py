@@ -254,6 +254,18 @@ class HexFinityProperties(bpy.types.PropertyGroup):
         subtype='FACTOR',
         update=_on_tile_local_update,
     )
+    local_subdiv: bpy.props.IntProperty(
+        name="Local Subdivision",
+        description="Extra linear-midpoint subdivision applied to just this tile, "
+                    "on top of the map-wide Resample Density. Adds local mesh "
+                    "density only (no extra smoothing); each pass quadruples this "
+                    "tile's top faces, so keep it low. Changing it clears any "
+                    "painted/snapped displacement on this tile.",
+        default=0,
+        min=0,
+        soft_max=3,
+        update=_on_tile_local_update,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -272,32 +284,7 @@ def _on_terrain_snap_update(self, context):
         pass
 
 
-def _on_terrain_subdiv_update(self, context):
-    owner = self.id_data
-    if not isinstance(owner, bpy.types.Object):
-        return
-    from .operators import apply_terrain_subdiv
-    try:
-        apply_terrain_subdiv(owner, self.snap_subdiv)
-    except Exception:
-        pass
-
-
 class HexFinityTerrainProperties(bpy.types.PropertyGroup):
-    snap_subdiv: bpy.props.IntProperty(
-        name="Local subdivision",
-        description="Extra subdivision passes on just the hex this model sits "
-                    "over, so the snapped surface conforms more crisply to the "
-                    "base outline. 0 = none. Adds local mesh density only "
-                    "(no extra smoothing); each pass quadruples the tile's top "
-                    "faces, so keep it low.",
-        default=0,
-        min=0,
-        soft_max=3,
-        step=1,
-        subtype='NONE',
-        update=_on_terrain_subdiv_update,
-    )
     snap_mm: bpy.props.IntProperty(
         name="Terrain snap to model",
         description="Move the hex top surface under the model's flat base toward "

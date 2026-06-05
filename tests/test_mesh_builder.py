@@ -4,6 +4,7 @@ import pytest
 from mesh_builder import (
     build_hex_tile,
     clamp_center_to_hexagon,
+    effective_resample,
     rim_edge_distance,
     top_vertex_count,
     INNER_RING_FACTOR,
@@ -670,6 +671,45 @@ def test_top_vertex_count_matches_builder():
         for r in range(3):
             total = len(_build(smoothness_passes=s, resample_density=r)[0])
             assert top_vertex_count(s, r) == total - bottom, (s, r)
+
+
+@pytest.mark.parametrize(
+    "global_density,local_subdiv,expected",
+    [
+        (0, 0, 0),
+        (1, 2, 3),
+        (2, 0, 2),
+        (0, 3, 3),
+        (2, -5, 2),   # a negative local subdiv is clamped to 0
+    ],
+)
+def test_effective_resample(global_density, local_subdiv, expected):
+    assert effective_resample(global_density, local_subdiv) == expected
+
+
+def test_local_subdiv_densifies_tile():
+    # Per-tile local subdivision feeds build_hex_tile via effective_resample.
+    # Each extra local pass must add density (a strictly larger top-vert count
+    # matching the closed-form helper) and leave the tile a closed 2-manifold.
+    s = 2          # smoothness passes
+    g = 0          # map-wide resample density
+    bottom = len(_build(smoothness_passes=s, resample_density=0)[0]) \
+        - top_vertex_count(s, 0)
+
+    prev_top = None
+    for local in (0, 1, 2):
+        r = effective_resample(g, local)
+        verts, faces = _build(smoothness_passes=s, resample_density=r,
+                              corner_levels=(0,) * 6)
+        top = len(verts) - bottom
+        # Matches the closed-form count for global + local passes.
+        assert top == top_vertex_count(s, g + local)
+        # Each extra local pass strictly densifies the top surface.
+        if prev_top is not None:
+            assert top > prev_top
+        prev_top = top
+        # Local densification keeps the mesh a valid closed 2-manifold.
+        assert_two_manifold(verts, faces)
 
 
 def test_top_displacement_raises_only_top_verts():

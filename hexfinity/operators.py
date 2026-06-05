@@ -4,7 +4,8 @@ import bpy
 from mathutils import Matrix, Vector
 
 from .mesh_builder import (build_hex_tile, clamp_center_to_hexagon,
-                           rim_edge_distance, top_vertex_count)
+                           effective_resample, rim_edge_distance,
+                           top_vertex_count)
 from .manifold_check import assert_two_manifold, ManifoldError
 from .map import SHARED_CORNERS, neighbour_coord, tile_world_xy, find_tile
 
@@ -26,12 +27,14 @@ _PROPAGATING = False
 
 def _effective_resample(tile, map_props):
     """Linear-midpoint pass count for `tile`: the map-wide global plus the
-    optional per-tile snap bump stored in `tile["hf_local_resample"]`.
+    per-tile `local_subdiv` parameter (operators.HexFinityProperties).
 
-    The bump densifies just this hex (uniformly — no T-junctions) so a snapped
-    model's footprint conforms more crisply; it adds resolution, not smoothing.
+    The local bump densifies just this hex (uniformly — no T-junctions); it adds
+    resolution, not smoothing. Combine math lives in the bpy-free builder so it's
+    unit-testable.
     """
-    return map_props.resample_density + int(tile.get("hf_local_resample") or 0)
+    return effective_resample(map_props.resample_density,
+                              tile.hexfinity_tile.local_subdiv)
 
 
 def rebuild_tile(obj):
@@ -689,14 +692,14 @@ def _drop_snap_cache(tile):
 
 
 def _reset_tile_snap(tile):
-    """Strip a tile's snap state — disp layer, gap cache, and local subdivision
-    bump — and rebuild it. Used when a model moves off a tile it had snapped."""
+    """Strip a tile's snap state — disp layer and gap cache — and rebuild it.
+    Used when a model moves off a tile it had snapped.
+
+    Does NOT touch `local_subdiv`: that's a persistent per-tile parameter now,
+    not snap state, so a model leaving must not reset the tile's subdivision."""
     changed = False
     if tile.get("hf_snap_disp") is not None:
         del tile["hf_snap_disp"]
-        changed = True
-    if tile.get("hf_local_resample") is not None:
-        del tile["hf_local_resample"]
         changed = True
     _drop_snap_cache(tile)
     if changed:
@@ -709,7 +712,7 @@ def _snap_signature(model, tile, num_top, target_z):
     mw = tuple(round(c, 4) for row in model.matrix_world for c in row)
     return repr((
         model.name, num_top, round(target_z, 4), mw,
-        int(tile.get("hf_local_resample") or 0),
+        p.local_subdiv,
         round(model.hexfinity_terrain.snap_damp_mm, 4),
         (p.p1, p.p2, p.p3, p.p4, p.p5, p.p6),
         round(p.center_x_mm, 4), round(p.center_y_mm, 4),
@@ -881,41 +884,3 @@ def apply_terrain_snap(model, snap_mm):
     elif tile.get("hf_snap_disp") is not None:
         del tile["hf_snap_disp"]
     rebuild_tile(tile)
-
-
-def apply_terrain_subdiv(model, level):
-    """Set the per-tile local subdivision bump under `model`, then reconform.
-
-    Densifies just the hex the model sits over with `level` extra linear passes
-    (a crisper snap edge — no smoothing change), rebuilds it, and re-applies the
-    snap at the new resolution. 0 removes the bump. Off-map is a silent no-op
-    (callbacks can't report).
-    """
-    map_props = bpy.context.scene.hexfinity_map
-    if not map_props.is_generated:
-        return
-    tprops = model.hexfinity_terrain
-
-    mmin, mmax = _world_bbox([model])
-    fc = (mmin + mmax) * 0.5
-    tile = _tile_under_point(map_props, fc.x, fc.y)
-
-    # Clear a stale bump/snap on a tile the model no longer sits over.
-    prev = tprops.snap_tile
-    if prev is not None and prev is not tile:
-        _reset_tile_snap(prev)
-    tprops.snap_tile = tile
-    if tile is None:
-        return
-
-    if level <= 0:
-        if tile.get("hf_local_resample") is not None:
-            del tile["hf_local_resample"]
-    else:
-        tile["hf_local_resample"] = int(level)
-
-    # Rebuild at the new resolution first (drops the now-stale displacement
-    # layers and refreshes the mesh to the new vert count), then reconform the
-    # snap on top of it.
-    rebuild_tile(tile)
-    apply_terrain_snap(model, tprops.snap_mm)

@@ -51,7 +51,6 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
                 box.label(text=f"Terrain Object: {obj.name}", icon='OBJECT_DATA')
                 box.operator("hexfinity.redrop_terrain_object",
                              text="Re-drop onto hex", icon='IMPORT')
-                box.prop(obj.hexfinity_terrain, "snap_subdiv", slider=True)
                 box.prop(obj.hexfinity_terrain, "snap_mm", slider=True)
                 box.prop(obj.hexfinity_terrain, "snap_damp_mm", slider=True)
             else:
@@ -86,6 +85,7 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         col = sub.column(align=True)
         col.prop(tile, "dome_area", slider=True)
         col.prop(tile, "dome_damping", slider=True)
+        col.prop(tile, "local_subdiv")
 
         box.operator("hexfinity.import_terrain_object",
                      text="Terrain Objects", icon='IMPORT')
