@@ -152,6 +152,22 @@ def _surface_offset_for_regions(x, y, regions, origin_xy, seed):
     return total
 
 
+def resolve_center_z(corner_z, center_level, base_thickness_mm, level_height_mm):
+    """Z (mm) of the centre apex control point.
+
+    When `center_level` is None the centre is **not** overridden, so it follows
+    the corners — the mean of the six corner Zs — and is therefore recalculated
+    on every rebuild (raising or lowering corners moves the centre with them).
+    When `center_level` is an int the centre is pinned to that absolute level and
+    **ignores** corner changes. This encodes the "recalculate the centre height
+    unless it is set to ignore (overridden)" contract; kept bpy-free so it can be
+    unit-tested without Blender.
+    """
+    if center_level is not None:
+        return base_thickness_mm + max(0, int(center_level)) * level_height_mm
+    return sum(corner_z) / 6.0
+
+
 def build_hex_tile(
     diameter_mm,
     level_height_mm,
@@ -247,10 +263,8 @@ def build_hex_tile(
 
     corner_z = [base_thickness_mm + levels[i] * level_height_mm for i in range(6)]
 
-    if center_level is not None:
-        center_z = base_thickness_mm + max(0, int(center_level)) * level_height_mm
-    else:
-        center_z = sum(corner_z) / 6.0
+    center_z = resolve_center_z(corner_z, center_level,
+                                base_thickness_mm, level_height_mm)
 
     C_pos = (float(center_xy[0]), float(center_xy[1]), center_z)
     corner_pos = [(corners_xy[i][0], corners_xy[i][1], corner_z[i]) for i in range(6)]

@@ -10,7 +10,8 @@ from .mesh_builder import (build_hex_tile, clamp_center_to_hexagon,
                            effective_resample, rim_edge_distance,
                            top_vertex_count)
 from .manifold_check import assert_two_manifold, ManifoldError
-from .map import SHARED_CORNERS, neighbour_coord, tile_world_xy, find_tile
+from .map import (SHARED_CORNERS, neighbour_coord, tile_world_xy, find_tile,
+                  clamp_level)
 from .tile_export import (is_custom_tile, manifest_rows, short_hash,
                           tile_filename, tile_geometry_hash)
 
@@ -25,6 +26,54 @@ _REBUILDING = False
 # so the recursive call returns immediately without doing a redundant
 # (per-tile) rebuild; the outer cascade batch-rebuilds the affected tiles.
 _PROPAGATING = False
+
+# Guard for the multi-select parallel edit: when a corner is changed on the
+# active tile while several tiles are selected, the originating callback fans
+# the same delta out to every other selected tile by writing their pN. Those
+# writes re-fire each tile's corner callback; the guard makes those nested
+# calls skip the fan-out block (so the delta isn't re-applied) while still
+# letting each tile run its own seam cascade. See on_corner_changed.
+_MULTI_APPLYING = False
+
+# Snapshot of the active tile's six corner levels, captured before an edit so
+# the corner callback can recover the pre-edit value (Blender's update hook
+# only exposes the post-edit value). Re-seeded from the panel whenever the
+# active object changes, and after every handled edit. `_ACTIVE_SNAPSHOT_KEY`
+# records which object it belongs to so a stale snapshot degrades safely to a
+# single-tile edit instead of computing a bogus delta.
+_ACTIVE_SNAPSHOT = None
+_ACTIVE_SNAPSHOT_KEY = None
+
+
+def _corner_levels(obj):
+    """Return the (p1..p6) tuple for a tile object."""
+    tp = obj.hexfinity_tile
+    return (tp.p1, tp.p2, tp.p3, tp.p4, tp.p5, tp.p6)
+
+
+def seed_corner_snapshot(obj):
+    """Record `obj`'s current corner levels as the baseline for the next edit."""
+    global _ACTIVE_SNAPSHOT, _ACTIVE_SNAPSHOT_KEY
+    _ACTIVE_SNAPSHOT = _corner_levels(obj)
+    _ACTIVE_SNAPSHOT_KEY = obj.as_pointer()
+
+
+def seed_corner_snapshot_if_changed(obj):
+    """Re-seed the snapshot only when the active object differs from the one it
+    was captured for. Called from the panel draw, which runs whenever selection
+    changes, so the baseline is fresh before the user touches a slider."""
+    if obj is None:
+        return
+    if _ACTIVE_SNAPSHOT_KEY != obj.as_pointer():
+        seed_corner_snapshot(obj)
+
+
+def _selected_other_tiles(active):
+    """Generated HexFinity tiles in the current selection, excluding `active`.
+    Dropped terrain objects carry hexfinity_tile.is_generated == False, so they
+    are filtered out naturally."""
+    return [o for o in bpy.context.selected_objects
+            if o is not active and o.hexfinity_tile.is_generated]
 
 
 # ---------------------------------------------------------------------------
@@ -162,11 +211,34 @@ def on_corner_changed(obj, corner_idx):
     Edge-of-map corners are propagated silently: a missing neighbour just
     means there is nothing on the other side, which is correct behaviour.
     """
-    global _PROPAGATING
+    global _PROPAGATING, _MULTI_APPLYING
     if _PROPAGATING:
         # Inside a cascade — the outer call rebuilds all affected tiles
         # after all the neighbour writes have completed.
         return
+
+    # Multi-select parallel edit: when this is the originating edit (not a
+    # nested call from a seam cascade or from the fan-out itself) and more than
+    # one tile is selected, apply the same delta to the same corner index on
+    # every other selected tile. The fan-out runs *before* this tile's own seam
+    # cascade and strictly outside any _PROPAGATING window, so each target tile
+    # runs its own seam cascade + rebuild when its callback fires.
+    if not _MULTI_APPLYING:
+        targets = _selected_other_tiles(obj)
+        if targets and _ACTIVE_SNAPSHOT_KEY == obj.as_pointer():
+            delta = _corner_levels(obj)[corner_idx] - _ACTIVE_SNAPSHOT[corner_idx]
+            if delta != 0:
+                attr = f"p{corner_idx + 1}"
+                _MULTI_APPLYING = True
+                try:
+                    for o in targets:
+                        cur = getattr(o.hexfinity_tile, attr)
+                        setattr(o.hexfinity_tile, attr, clamp_level(cur + delta))
+                finally:
+                    _MULTI_APPLYING = False
+        # Refresh the baseline so a continuous slider drag computes incremental
+        # (not cumulative) deltas on each callback.
+        seed_corner_snapshot(obj)
 
     scene = bpy.context.scene
     if not scene.hexfinity_map.is_generated:

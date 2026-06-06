@@ -44,6 +44,22 @@ SHARED_CORNERS = (
 )
 
 
+def clamp_level(v, min_level=0):
+    """Floor a corner level at `min_level`. Mirrors the IntProperty(min=0)
+    constraint on the per-tile pN properties; kept bpy-free so the multi-select
+    delta logic stays unit-testable."""
+    return v if v > min_level else min_level
+
+
+def apply_corner_delta(values, corner_idx, delta, min_level=0):
+    """Return a new 6-tuple equal to `values` with `delta` added to the entry
+    at `corner_idx`, clamped at `min_level`. Used by the multi-select parallel
+    corner edit to compute each selected tile's new corner level."""
+    out = list(values)
+    out[corner_idx] = clamp_level(out[corner_idx] + delta, min_level)
+    return tuple(out)
+
+
 def neighbour_coord(q, r, direction):
     """Return (q', r') of the neighbour of tile (q, r) in `direction`.
     Odd-q offset (flat-top): odd columns are shifted +Y by half a row."""

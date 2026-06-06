@@ -53,7 +53,7 @@ All linear inputs are expressed in **millimeters**, and mesh vertices are emitte
 
 ### Center vertex (dome shaping)
 
-A single vertex `C` sits at the geometric centroid of each tile by default (tile-local X = 0, Y = 0). Its Z is the **average of the six corner Zs** by default. An optional **center level override** lets the user pin the centre to an explicit level (handy for domes, bowls, or plateaus). The centre XY can also be dragged inside the hex via the on-screen gizmo; it is clamped to a 1 mm safety buffer inside the rim.
+A single vertex `C` sits at the geometric centroid of each tile by default (tile-local X = 0, Y = 0). Its Z is the **average of the six corner Zs** by default, so it is **recalculated on every rebuild** — whenever the corners change (including a multi-select bulk edit) the centre follows them. An optional **center level override** lets the user pin the centre to an explicit level (handy for domes, bowls, or plateaus); a pinned centre **ignores** corner changes and stays put. The centre XY can also be dragged inside the hex via the on-screen gizmo; it is clamped to a 1 mm safety buffer inside the rim.
 
 Two per-tile knobs shape the bump that grows out of a raised centre (the inner `Q1..Q6` control ring between `C` and the rim drives it):
 
@@ -167,6 +167,12 @@ Edge-of-map corners propagate silently: a missing neighbour just means there is 
 
 The centre vertex of each tile (XY offset, override-level, override-toggle) is **purely tile-local** — centres do not propagate, because they never reach a seam.
 
+### Multi-tile parallel corner editing
+
+When **more than one** HexFinity tile is selected, changing a corner slider on the active tile applies the **same delta** to that *same corner index* on every selected tile. Raising the active tile's `P1` by +2 raises every selected tile's `P1` by +2 (each tile clamps independently at level 0, so a downward delta can bottom some tiles out while others keep dropping). This makes it quick to lift or lower a whole region by a uniform amount while still letting individual tiles differ.
+
+Only the six corner levels `P1`–`P6` fan out this way — centre level, dome, and XY remain per-tile (active object only). The Corner Levels panel shows an `N tiles selected — edits apply to all` hint while a multi-selection is active. Because the parallel edit touches the same *labelled* corner on each tile and seam sync then re-asserts equality on the *geometrically shared* corner (a different index), an adjacent multi-selection converges to a tear-free region lift.
+
 ### Regenerate
 
 Once a map exists, the **Generate** button becomes **Regenerate**. It opens Blender's built-in confirmation dialog (a Yes/No prompt with the operator name), then deletes the existing `HexFinity Map` collection and all its tiles and rebuilds from the current global parameters. **All per-tile edits are lost.** Use Regenerate to change `X` / `Y` (which the live-update callbacks intentionally ignore), or to start over after experimenting.
@@ -275,6 +281,7 @@ HexFinity
 ├─ If active object is a HexFinity tile:
 │  ├─ Editing: HexTile_qq_rr   (q=qq, r=rr)
 │  ├─ Corner Levels (clockwise from upper-right)
+│  │   ├─ "N tiles selected — edits apply to all"  (only when >1 selected)
 │  │   ├─ P1   [ int ≥ 0 ]   ← propagates to N.P3 + NE.P5
 │  │   ├─ P2   ...           ← propagates to NE.P4 + SE.P6
 │  │   ├─ P3                 ← propagates to SE.P5 + S.P1
@@ -377,6 +384,7 @@ After generating a map:
 2. **Manifold check (per tile)** — select any tile, Edit Mode → *Select → All by Trait → Non-Manifold*. Zero vertices selected = pass. (The plugin's own check already asserts this on build.)
 3. **Tessellation check** — visually inspect the seams: opposing edges should align with no gaps and no overlap.
 4. **Shared-corner check** — on tile `(0, 0)` set `P1 = 3`. Expect `(0, 1).P3` and `(1, 0).P5` to both jump to `3` and the top surface to stay continuous across the seam.
+   - **Multi-select check** — select `(0, 0)`, `(1, 1)`, `(2, 0)` (active = `(0, 0)`); drag `P1` from 0 → 3 and all three tiles' `P1` read 3 with seams continuous. Drag `P1` 3 → 1 and all drop to 1. Pre-set one selected tile's `P1 = 1`, others higher, apply −2: the low one floors at 0 while the others drop by 2, no seam tears.
 5. **Smoothness check** — shade-smooth the top faces (the per-patch interior is already C∞; shading just averages the patch-to-patch normals across the spokes). A Subdivision Surface modifier is not required for smoothness *within* a tile.
 6. **Terrain brush check** — *Terrain Brush → Paint*, left-drag on a tile to raise a hill, then switch to *Lower* and dig. With *Preserve Edge* on the rim stays put; turn it off and a stroke flows across the seam onto the neighbour. Edit a corner level afterwards — the painted shape survives; bump *Smoothness Passes* and it clears.
 7. **Terrain object check** — select a tile, *Terrain Objects*, pick an `.stl`; it drops centred and flush on the surface. Select the dropped object and raise *Terrain snap to model* — the ground rises to hug its base; add *Snap damping* for a skirt.

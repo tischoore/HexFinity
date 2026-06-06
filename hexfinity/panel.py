@@ -79,6 +79,13 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
             return
 
         tile = obj.hexfinity_tile
+
+        # Capture the active tile's corner levels before any slider edit so the
+        # corner callback can recover the pre-edit value and fan its delta out
+        # across a multi-selection. Re-seeds only when the active object changes.
+        from . import operators
+        operators.seed_corner_snapshot_if_changed(obj)
+
         box = layout.box()
         box.label(
             text=f"Editing: {obj.name}   (q={tile.coord_q}, r={tile.coord_r})"
@@ -86,6 +93,12 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
 
         sub = box.box()
         sub.label(text="Corner Levels (clockwise from upper-right)")
+        selected_tiles = sum(
+            1 for o in context.selected_objects if o.hexfinity_tile.is_generated
+        )
+        if selected_tiles > 1:
+            sub.label(text=f"{selected_tiles} tiles selected — edits apply to all",
+                      icon='INFO')
         col = sub.column(align=True)
         col.prop(tile, "p1")
         col.prop(tile, "p2")
