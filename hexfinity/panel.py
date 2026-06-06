@@ -48,6 +48,19 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
 
         layout.operator("hexfinity.regenerate_map", icon='FILE_REFRESH')
 
+        # Per-tile editing UI (selection-dependent); the export box below it is
+        # map-wide, so it always renders at the bottom regardless of selection.
+        self._draw_tile_section(context, layout, scene, map_props)
+
+        # ---- Export (map-wide, bottom of the panel) -----------------------
+        box = layout.box()
+        box.label(text="Export", icon='EXPORT')
+        box.operator("hexfinity.export_tiles",
+                     text="Export Tiles to STL", icon='EXPORT')
+        box.label(text="One STL per distinct tile; identical tiles merge.",
+                  icon='INFO')
+
+    def _draw_tile_section(self, context, layout, scene, map_props):
         # ---- Per-tile section (only when a HexFinity tile is active) -----
         obj = context.active_object
         if obj is None or not obj.hexfinity_tile.is_generated:

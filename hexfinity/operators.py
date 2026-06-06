@@ -1,4 +1,7 @@
+import csv
+import json
 import math
+import os
 
 import bpy
 from mathutils import Matrix, Vector
@@ -8,6 +11,8 @@ from .mesh_builder import (build_hex_tile, clamp_center_to_hexagon,
                            top_vertex_count)
 from .manifold_check import assert_two_manifold, ManifoldError
 from .map import SHARED_CORNERS, neighbour_coord, tile_world_xy, find_tile
+from .tile_export import (is_custom_tile, manifest_rows, short_hash,
+                          tile_filename, tile_geometry_hash)
 
 
 # Re-entrancy guard: writing clamped XY back to a tile's property group
@@ -913,3 +918,196 @@ def apply_terrain_snap(model, snap_mm):
     elif tile.get("hf_snap_disp") is not None:
         del tile["hf_snap_disp"]
     rebuild_tile(tile)
+
+
+# ---------------------------------------------------------------------------
+# Per-tile STL export.
+
+def _mesh_children(obj):
+    """Immediate mesh children of `obj` — the terrain objects parented to a tile
+    by the import operator (which parents them one level deep)."""
+    return [c for c in obj.children if c.type == 'MESH']
+
+
+def _eval_mesh_local(obj, depsgraph, matrix):
+    """Evaluated (verts, faces) of `obj`, with every vertex pre-multiplied by
+    `matrix`. Pass the identity to read an object's own local mesh, or
+    ``tile_world_inv @ child_world`` to land a child in its tile's local space.
+
+    Modifiers are applied via the depsgraph so the exported geometry matches the
+    viewport. The temporary evaluated mesh is always freed.
+    """
+    eval_obj = obj.evaluated_get(depsgraph)
+    mesh = eval_obj.to_mesh()
+    try:
+        verts = [tuple(matrix @ v.co) for v in mesh.vertices]
+        faces = [tuple(p.vertices) for p in mesh.polygons]
+    finally:
+        eval_obj.to_mesh_clear()
+    return verts, faces
+
+
+class HEXFINITY_OT_export_tiles(bpy.types.Operator):
+    bl_idname = "hexfinity.export_tiles"
+    bl_label = "Export Tiles to STL"
+    bl_description = ("Export every distinct hex tile (including its parented "
+                      "terrain objects) to an individual STL file. Identical "
+                      "tiles collapse to one file; a manifest.csv maps each "
+                      "coordinate to the file it uses.")
+    bl_options = {'REGISTER'}
+
+    # Populated by the file browser (fileselect_add, DIR_PATH mode).
+    directory: bpy.props.StringProperty(subtype='DIR_PATH')
+    subfolder: bpy.props.StringProperty(
+        name="Subfolder",
+        description=("Name of the folder created under the chosen directory to "
+                     "receive the STL files and manifest."),
+        default="hexfinity_export",
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return context.scene.hexfinity_map.is_generated
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def draw(self, context):
+        # Shown in the file browser's operator sidebar.
+        self.layout.prop(self, "subfolder")
+
+    def execute(self, context):
+        scene = context.scene
+        map_props = scene.hexfinity_map
+
+        if not map_props.is_generated or map_props.root_collection is None:
+            self.report({'ERROR'}, "Generate a map before exporting.")
+            return {'CANCELLED'}
+        if not self.directory:
+            self.report({'ERROR'}, "No export directory selected.")
+            return {'CANCELLED'}
+        if not hasattr(bpy.ops.wm, "stl_export"):
+            self.report({'ERROR'},
+                        "STL exporter (wm.stl_export) unavailable in this build.")
+            return {'CANCELLED'}
+
+        out_dir = os.path.join(self.directory, self.subfolder.strip()
+                               or "hexfinity_export")
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+        except OSError as exc:
+            self.report({'ERROR'}, f"Could not create export folder: {exc}")
+            return {'CANCELLED'}
+
+        tiles = [o for o in map_props.root_collection.objects
+                 if o.hexfinity_tile.is_generated]
+        if not tiles:
+            self.report({'ERROR'}, "No HexFinity tiles found to export.")
+            return {'CANCELLED'}
+
+        # Make sure all transforms are flushed before we read matrix_world.
+        context.view_layer.update()
+        depsgraph = context.evaluated_depsgraph_get()
+
+        # Remember and restore the selection/active object around the export.
+        prev_selected = list(context.selected_objects)
+        prev_active = context.view_layer.objects.active
+
+        exported_hashes = {}   # geometry hash -> filename already written
+        records = []           # one per tile, for the manifest
+        written = 0
+
+        try:
+            for tile in tiles:
+                tp = tile.hexfinity_tile
+                children = _mesh_children(tile)
+
+                # Hash the built geometry: hex mesh (tile-local) + each child
+                # terrain mesh transformed into the tile's local frame.
+                hex_verts, hex_faces = _eval_mesh_local(
+                    tile, depsgraph, Matrix.Identity(4))
+                tile_world_inv = tile.matrix_world.inverted()
+                child_meshes = [
+                    _eval_mesh_local(
+                        c, depsgraph,
+                        tile_world_inv @ c.evaluated_get(depsgraph).matrix_world)
+                    for c in children
+                ]
+                digest = tile_geometry_hash(hex_verts, hex_faces, child_meshes)
+
+                custom = is_custom_tile(
+                    has_children=bool(children),
+                    has_brush=tile.get("hf_brush_disp") is not None,
+                    has_snap=tile.get("hf_snap_disp") is not None,
+                    region_count=len(tp.surface_regions),
+                )
+
+                if digest in exported_hashes:
+                    fname = exported_hashes[digest]
+                else:
+                    fname = tile_filename(tp.coord_q, tp.coord_r, custom,
+                                          short_hash(digest))
+                    path = os.path.join(out_dir, fname)
+                    self._export_objects(context, [tile] + children, path)
+                    exported_hashes[digest] = fname
+                    written += 1
+
+                records.append({"q": tp.coord_q, "r": tp.coord_r,
+                                "file": fname, "custom": custom})
+        finally:
+            for o in context.selected_objects:
+                o.select_set(False)
+            for o in prev_selected:
+                o.select_set(True)
+            context.view_layer.objects.active = prev_active
+
+        self._write_manifest(out_dir, records)
+
+        self.report({'INFO'},
+                    f"Exported {written} unique STL file(s) from "
+                    f"{len(tiles)} tile(s) to {out_dir}")
+        return {'FINISHED'}
+
+    @staticmethod
+    def _export_objects(context, objs, path):
+        """Select `objs` and write them to `path` as one STL.
+
+        STL has no object concept, so the hex and its terrain children merge
+        into a single triangle soup. The tile's XY is temporarily zeroed so each
+        file is centered near the origin; children follow via parenting, and the
+        original location is restored in `finally`.
+        """
+        tile = objs[0]
+        saved_location = tile.location.copy()
+        for o in context.selected_objects:
+            o.select_set(False)
+        try:
+            tile.location = (0.0, 0.0, 0.0)
+            context.view_layer.update()
+            for o in objs:
+                o.select_set(True)
+            context.view_layer.objects.active = tile
+            bpy.ops.wm.stl_export(
+                filepath=path,
+                export_selected_objects=True,
+                apply_modifiers=True,
+            )
+        finally:
+            for o in objs:
+                o.select_set(False)
+            tile.location = saved_location
+            context.view_layer.update()
+
+    @staticmethod
+    def _write_manifest(out_dir, records):
+        """Write manifest.csv and manifest.json mapping coordinates to files."""
+        rows = manifest_rows(records)
+        with open(os.path.join(out_dir, "manifest.csv"), "w",
+                  newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=["q", "r", "file", "custom"])
+            writer.writeheader()
+            writer.writerows(rows)
+        with open(os.path.join(out_dir, "manifest.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump(rows, fh, indent=2)

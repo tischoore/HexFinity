@@ -23,6 +23,7 @@ All linear inputs are expressed in **millimeters**, and mesh vertices are emitte
   - [Shared corners](#shared-corners-editing-one-corner-edits-up-to-two-others)
   - [Regenerate](#regenerate)
 - [Procedural surface textures](#procedural-surface-textures)
+- [Export STLs](#export-stls)
 - [UI](#ui)
 - [Project layout](#project-layout)
 - [Install (development)](#install-development)
@@ -170,6 +171,31 @@ warns when a feature is too fine for the current subdivision.
 See **[docs/procedural_surfaces.md](docs/procedural_surfaces.md)** for the workflow,
 the scale model, the resolution ceiling, and how to add a new surface type.
 
+## Export STLs
+
+The **Export Tiles to STL** button at the bottom of the panel writes one `.stl`
+file per **distinct** hex tile into a folder you choose. Each file contains the hex
+*and everything parented to it* — imported terrain objects merge into the same STL
+(STL is just triangles, so no boolean union is performed). Each tile is centered at
+the origin in its file so it drops straight onto a printer bed.
+
+**Dedup & naming.** Identical tiles collapse to a single file, so you only slice each
+distinct tile once:
+
+- A tile's identity is a content hash of its **final built geometry** (hex mesh plus
+  every terrain object, in tile-local space). This captures corner heights, dome
+  shape, brush/snap displacement, and procedural surface regions automatically.
+- Plain tiles are named by coordinate — `hex_q00_r00.stl`.
+- Tiles with any customization (terrain objects, terrain brush, snap, or a drawn
+  surface region) get a short content-hash suffix — `hex_q00_r00_<hash>.stl` — so
+  two differing custom tiles never collide and byte-identical ones still share a file.
+
+**Manifest.** Alongside the STLs the exporter writes `manifest.csv` and
+`manifest.json` mapping every `(q, r)` coordinate to the file it uses, so you can
+place printed tiles correctly even after duplicates were merged away.
+
+See **[docs/export.md](docs/export.md)** for the dedup contract and manifest format.
+
 ## UI
 
 The plugin adds a **HexFinity** tab to the 3D Viewport's N-panel (sidebar). The panel has two branches.
@@ -214,11 +240,15 @@ HexFinity
    │   ├─ P4                 ← propagates to S.P6  + SW.P2
    │   ├─ P5                 ← propagates to SW.P1 + NW.P3
    │   └─ P6                 ← propagates to NW.P2 + N.P4
-   └─ Center
-       ├─ Override center level (toggle)
-       ├─ Center level (int, enabled when override is on)
-       ├─ Center X (mm)
-       └─ Center Y (mm)
+   ├─ Center
+   │   ├─ Override center level (toggle)
+   │   ├─ Center level (int, enabled when override is on)
+   │   ├─ Center X (mm)
+   │   └─ Center Y (mm)
+   ├─ … (Terrain Objects, Procedural Surface, Terrain Brush)
+   │
+   └─ Export                      (map-wide; always shown once a map exists)
+       └─ [ Export Tiles to STL ] (directory dialog → one STL per distinct tile + manifest)
 ```
 
 A floating sphere gizmo, hovering one *level height* above the tile's apex, drags the active tile's centre XY inside the hex. When a HexFinity tile is selected, the viewport also overlays `P1`–`P6` labels floating one *level height* above each corner so corner identity is unambiguous in the panel.
@@ -243,16 +273,18 @@ C:\Work\Hexfinity\
 │   ├─ mesh_builder.py         # pure-Python mesh construction (no bpy)
 │   ├─ procedural_surfaces.py  # pure-Python surface registry + masks (no bpy)
 │   ├─ map.py                  # pure-Python grid math + SHARED_CORNERS table
+│   ├─ tile_export.py          # pure-Python export hashing + naming (no bpy)
 │   └─ manifold_check.py       # post-build 2-manifold verification
 └─ tests\
     ├─ conftest.py
     ├─ test_mesh_builder.py
     ├─ test_procedural_surfaces.py
     ├─ test_map.py
+    ├─ test_tile_export.py
     └─ test_manifold_check.py
 ```
 
-`mesh_builder.py`, `procedural_surfaces.py`, `map.py`, and `manifold_check.py` deliberately contain no `bpy` imports so they can be unit-tested outside Blender (`__init__.py` defers its bpy imports into `register()` for the same reason).
+`mesh_builder.py`, `procedural_surfaces.py`, `map.py`, `tile_export.py`, and `manifold_check.py` deliberately contain no `bpy` imports so they can be unit-tested outside Blender (`__init__.py` defers its bpy imports into `register()` for the same reason).
 
 HexFinity is packaged as a **Blender extension** (see `blender_manifest.toml`), the format Blender 5.x ships with — there is no `bl_info` dict in `__init__.py`.
 
