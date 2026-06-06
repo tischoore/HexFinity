@@ -66,6 +66,15 @@ class HexFinityMapProperties(bpy.types.PropertyGroup):
         soft_max=3,
         update=_on_global_update,
     )
+    base_level: bpy.props.IntProperty(
+        name="Base Level",
+        default=0,
+        min=0,
+        soft_max=20,
+        description="Starting corner level for every tile when the map is generated. "
+                    "Raising it lets you carve depressions down to the base thickness "
+                    "(level 0) — no lower. Applied on (re)generate only.",
+    )
     grid_x: bpy.props.IntProperty(
         name="X (columns)",
         description="Number of tile columns; 0 means generate a single tile at (0, 0)",

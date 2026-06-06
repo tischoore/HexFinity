@@ -22,7 +22,7 @@ Blender 5.1+ extension that generates a grid of interlocking hexagonal terrain t
 | `mesh_builder.py` | **bpy-free** — `build_hex_tile()`, six Coons patches on top, side walls, interlock tabs/holes |
 | `map.py` | **bpy-free** — odd-q offset math, `SHARED_CORNERS` table, `neighbour_coord()`, `find_tile()` |
 | `manifold_check.py` | **bpy-free** — `check_manifold()` validator run after every build |
-| `operators.py` | `generate_map`, `regenerate_map`, `on_global_update` callback; `_REBUILDING` re-entrancy guard |
+| `operators.py` | `generate_map`, `regenerate_map`, `on_global_update` callback; `_REBUILDING` re-entrancy guard. `_build_map` seeds every new tile's P1–P6/center at `map_props.base_level` before the first build (corner callbacks short-circuit while `is_generated` is still `False`) |
 | `panel.py` | N-panel "HexFinity" sidebar UI (two branches: pre-map and post-map) |
 | `gizmo.py` | Floating-sphere gizmo for dragging a tile's center XY |
 | `overlay.py` | P1–P6 corner labels drawn above selected tiles |
