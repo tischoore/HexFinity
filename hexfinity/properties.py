@@ -84,7 +84,6 @@ class HexFinityMapProperties(bpy.types.PropertyGroup):
         default=28.0,
         min=0.1,
         soft_max=200.0,
-        subtype='DISTANCE',
         update=_on_global_update,
     )
     grid_x: bpy.props.IntProperty(
@@ -273,7 +272,6 @@ class HexFinitySurfaceRegion(bpy.types.PropertyGroup):
         default=2.0,
         min=0.001,
         soft_max=100.0,
-        subtype='DISTANCE',
         update=_on_region_update,
     )
     depth_mm: bpy.props.FloatProperty(
@@ -282,7 +280,6 @@ class HexFinitySurfaceRegion(bpy.types.PropertyGroup):
         default=2.0,
         min=0.0,
         soft_max=50.0,
-        subtype='DISTANCE',
         update=_on_region_update,
     )
     regularity: bpy.props.FloatProperty(
@@ -309,7 +306,6 @@ class HexFinitySurfaceRegion(bpy.types.PropertyGroup):
         default=5.0,
         min=0.0,
         soft_max=50.0,
-        subtype='DISTANCE',
         update=_on_region_update,
     )
     points: bpy.props.CollectionProperty(type=HexFinitySurfacePoint)
