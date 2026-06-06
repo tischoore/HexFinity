@@ -22,6 +22,7 @@ All linear inputs are expressed in **millimeters**, and mesh vertices are emitte
   - [Layout (odd-q offset, flat-top)](#layout-odd-q-offset-flat-top)
   - [Shared corners](#shared-corners-editing-one-corner-edits-up-to-two-others)
   - [Regenerate](#regenerate)
+- [Procedural surface textures](#procedural-surface-textures)
 - [UI](#ui)
 - [Project layout](#project-layout)
 - [Install (development)](#install-development)
@@ -155,6 +156,20 @@ Once a map exists, the **Generate** button becomes **Regenerate**. It opens Blen
 
 ---
 
+## Procedural surface textures
+
+Geometric micro-surfaces — **cobblestone, gravel, plough & furrow** — baked onto a
+tile top as real (printable) geometry. They are applied through **regions**: closed
+loops you draw on the tile, each with its own surface type, scale, and direction.
+Multiple regions per tile are supported (e.g. a cobblestone road across a furrowed
+field). Scale is driven by a map-wide **Man Height (mm)** reference, and the look of
+cobbles/gravel comes from jittered Voronoi cells (a **Regularity** knob). Because the
+surface is a heightfield, detail is bounded by the top-vertex spacing — the panel
+warns when a feature is too fine for the current subdivision.
+
+See **[docs/procedural_surfaces.md](docs/procedural_surfaces.md)** for the workflow,
+the scale model, the resolution ceiling, and how to add a new surface type.
+
 ## UI
 
 The plugin adds a **HexFinity** tab to the 3D Viewport's N-panel (sidebar). The panel has two branches.
@@ -218,22 +233,26 @@ C:\Work\Hexfinity\
 ├─ hexfinity\
 │   ├─ __init__.py             # register / unregister (lazy bpy import)
 │   ├─ blender_manifest.toml   # extension metadata (replaces bl_info)
-│   ├─ properties.py           # HexFinityMapProperties + HexFinityProperties
+│   ├─ properties.py           # HexFinityMapProperties + HexFinityProperties + surface regions
 │   ├─ operators.py            # generate_map / regenerate_map + cascade
 │   ├─ panel.py                # HEXFINITY_PT_panel (sidebar UI, two-branch)
 │   ├─ gizmo.py                # HEXFINITY_GGT_center (centre-XY drag gizmo)
-│   ├─ overlay.py              # floating P1..P6 labels on selected tiles
+│   ├─ overlay.py              # floating P1..P6 labels + region loops/direction
+│   ├─ brush.py                # modal terrain paint brush
+│   ├─ regions.py              # modal draw-region operator + region list UI
 │   ├─ mesh_builder.py         # pure-Python mesh construction (no bpy)
+│   ├─ procedural_surfaces.py  # pure-Python surface registry + masks (no bpy)
 │   ├─ map.py                  # pure-Python grid math + SHARED_CORNERS table
 │   └─ manifold_check.py       # post-build 2-manifold verification
 └─ tests\
     ├─ conftest.py
     ├─ test_mesh_builder.py
+    ├─ test_procedural_surfaces.py
     ├─ test_map.py
     └─ test_manifold_check.py
 ```
 
-`mesh_builder.py` and `map.py` deliberately contain no `bpy` imports so they can be unit-tested outside Blender (`__init__.py` defers its bpy imports into `register()` for the same reason).
+`mesh_builder.py`, `procedural_surfaces.py`, `map.py`, and `manifold_check.py` deliberately contain no `bpy` imports so they can be unit-tested outside Blender (`__init__.py` defers its bpy imports into `register()` for the same reason).
 
 HexFinity is packaged as a **Blender extension** (see `blender_manifest.toml`), the format Blender 5.x ships with — there is no `bl_info` dict in `__init__.py`.
 
@@ -275,3 +294,4 @@ After generating a map:
 3. **Tessellation check** — visually inspect the seams: opposing edges should align with no gaps and no overlap.
 4. **Shared-corner check** — on tile `(0, 0)` set `P1 = 3`. Expect `(0, 1).P3` and `(1, 0).P5` to both jump to `3` and the top surface to stay continuous across the seam.
 5. **Smoothness check** — shade-smooth the top faces (the per-patch interior is already C∞; shading just averages the patch-to-patch normals across the spokes). A Subdivision Surface modifier is not required for smoothness *within* a tile.
+6. **Procedural surface check** — raise *Local Subdivision* on a tile, *Procedural Surface → Draw Region*, click a loop, close it (Enter). The interior gains cobblestone; the rim stays flat (still interlocks). Add a whole-tile *Furrow* region and rotate its **Direction** — the ridges follow the arrow. See [docs/procedural_surfaces.md](docs/procedural_surfaces.md). (A headless smoke test of the full register→region→rebuild path lives in `tests/_headless_region_check.py`: `blender --background --factory-startup --python tests/_headless_region_check.py`.)

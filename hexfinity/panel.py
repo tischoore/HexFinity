@@ -1,4 +1,8 @@
+import math
+
 import bpy
+
+from .mesh_builder import effective_resample, top_vertex_count
 
 
 class HEXFINITY_PT_panel(bpy.types.Panel):
@@ -24,6 +28,7 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         box.prop(map_props, "base_thickness_mm")
         box.prop(map_props, "smoothness_passes")
         box.prop(map_props, "resample_density")
+        box.prop(map_props, "man_height_mm")
 
         # ---- Grid extent + (Re)generate ----------------------------------
         box = layout.box()
@@ -93,6 +98,9 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         box.operator("hexfinity.import_terrain_object",
                      text="Terrain Objects", icon='IMPORT')
 
+        # ---- Procedural Surface regions -----------------------------------
+        self._draw_surface_regions(context, layout, map_props, obj, tile)
+
         # ---- Terrain Brush ------------------------------------------------
         brush = scene.hexfinity_brush
         box = layout.box()
@@ -107,3 +115,49 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         row.prop(brush, "edge_falloff_mm")
         box.operator("hexfinity.paint_brush", text="Paint", icon='BRUSH_DATA')
         box.label(text="Bump smoothness/resample clears paint.", icon='INFO')
+
+    @staticmethod
+    def _draw_surface_regions(context, layout, map_props, obj, tile):
+        box = layout.box()
+        box.label(text="Procedural Surface", icon='TEXTURE')
+        box.operator("hexfinity.draw_region", text="Draw Region", icon='GREASEPENCIL')
+
+        row = box.row()
+        row.template_list(
+            "HEXFINITY_UL_surface_regions", "",
+            tile, "surface_regions",
+            tile, "active_surface_region_index",
+            rows=2,
+        )
+        col = row.column(align=True)
+        col.operator("hexfinity.add_region", text="", icon='ADD')
+        col.operator("hexfinity.remove_region", text="", icon='REMOVE')
+
+        idx = tile.active_surface_region_index
+        if not (0 <= idx < len(tile.surface_regions)):
+            return
+        reg = tile.surface_regions[idx]
+        sub = box.column(align=True)
+        sub.prop(reg, "surface_type")
+        if reg.surface_type == 'NONE':
+            return
+        sub.prop(reg, "feature_mm")
+        sub.prop(reg, "depth_mm")
+        sub.prop(reg, "regularity", slider=True)
+        sub.prop(reg, "direction_deg")
+        sub.prop(reg, "mask_falloff_mm")
+
+        # Resolution guidance: warn when the feature is finer than the mesh can
+        # resolve (heightfield detail is bounded by the top-vertex spacing).
+        resample = effective_resample(map_props.resample_density, tile.local_subdiv)
+        nverts = top_vertex_count(map_props.smoothness_passes, resample)
+        R = map_props.diameter_mm * 0.5
+        hex_area = (3.0 * math.sqrt(3.0) / 2.0) * R * R
+        spacing = math.sqrt(hex_area / max(nverts, 1))
+        if reg.feature_mm < 2.0 * spacing:
+            box.label(
+                text=f"Feature {reg.feature_mm:.1f}mm < 2x vert spacing "
+                     f"({spacing:.1f}mm) — raise Local Subdivision",
+                icon='ERROR')
+        else:
+            box.label(text=f"Vert spacing ~{spacing:.1f}mm", icon='INFO')

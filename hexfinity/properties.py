@@ -75,6 +75,18 @@ class HexFinityMapProperties(bpy.types.PropertyGroup):
                     "Raising it lets you carve depressions down to the base thickness "
                     "(level 0) — no lower. Applied on (re)generate only.",
     )
+    man_height_mm: bpy.props.FloatProperty(
+        name="Man Height (mm)",
+        description="Printed height of a human figure — the model scale reference. "
+                    "Procedural surface feature sizes (cobble/gravel/furrow pitch) "
+                    "default to their real-world size scaled by this. 28 mm ~ common "
+                    "wargaming scale. Editable per region afterwards.",
+        default=28.0,
+        min=0.1,
+        soft_max=200.0,
+        subtype='DISTANCE',
+        update=_on_global_update,
+    )
     grid_x: bpy.props.IntProperty(
         name="X (columns)",
         description="Number of tile columns; 0 means generate a single tile at (0, 0)",
@@ -190,6 +202,119 @@ _on_p5_update = _make_corner_callback(4)
 _on_p6_update = _make_corner_callback(5)
 
 
+# ---------------------------------------------------------------------------
+# Per-tile procedural surface regions. A region is a closed loop (polygon) drawn
+# on the tile top in tile-local mm, plus a surface type, its params, and a main
+# direction (used by anisotropic surfaces like furrows). Multiple regions per
+# tile are supported via a CollectionProperty on HexFinityProperties.
+
+# Guard: while auto-filling a region's params on a type change, suppress the
+# per-field rebuilds so the dropdown triggers a single rebuild, not several.
+_REGION_FILLING = False
+
+
+def _on_region_update(self, context):
+    if _REGION_FILLING:
+        return
+    owner = self.id_data
+    if not isinstance(owner, bpy.types.Object):
+        return
+    tile = getattr(owner, "hexfinity_tile", None)
+    if tile is None or not tile.is_generated:
+        return
+    from .operators import rebuild_tile
+    try:
+        rebuild_tile(owner)
+    except Exception:
+        pass
+
+
+def _on_region_type_update(self, context):
+    # Pick sensible mm defaults for the chosen surface from the registry +
+    # man-height, then rebuild once.
+    global _REGION_FILLING
+    from . import procedural_surfaces as ps
+    surf = ps.SURFACES.get(self.surface_type)
+    _REGION_FILLING = True
+    try:
+        d = ps.feature_mm_default(self.surface_type,
+                                  context.scene.hexfinity_map.man_height_mm)
+        if d > 0.0:
+            self.feature_mm = d
+        if surf is not None:
+            self.depth_mm = surf.default_depth_mm
+            self.regularity = surf.default_regularity
+    finally:
+        _REGION_FILLING = False
+    _on_region_update(self, context)
+
+
+def _surface_type_items(self, context):
+    from . import procedural_surfaces
+    return procedural_surfaces.enum_items()
+
+
+class HexFinitySurfacePoint(bpy.types.PropertyGroup):
+    x: bpy.props.FloatProperty(name="X", default=0.0)
+    y: bpy.props.FloatProperty(name="Y", default=0.0)
+
+
+class HexFinitySurfaceRegion(bpy.types.PropertyGroup):
+    surface_type: bpy.props.EnumProperty(
+        name="Surface",
+        description="Procedural surface applied inside this region",
+        items=_surface_type_items,
+        update=_on_region_type_update,
+    )
+    feature_mm: bpy.props.FloatProperty(
+        name="Feature Size (mm)",
+        description="Characteristic feature size — cobble width / pebble size / "
+                    "furrow pitch. Auto-filled from Man Height; editable here",
+        default=2.0,
+        min=0.001,
+        soft_max=100.0,
+        subtype='DISTANCE',
+        update=_on_region_update,
+    )
+    depth_mm: bpy.props.FloatProperty(
+        name="Depth (mm)",
+        description="Peak-to-trough height of the texture",
+        default=2.0,
+        min=0.0,
+        soft_max=50.0,
+        subtype='DISTANCE',
+        update=_on_region_update,
+    )
+    regularity: bpy.props.FloatProperty(
+        name="Regularity",
+        description="0 = irregular/varied, 1 = uniform. For cobblestone this is "
+                    "the cell jitter (neat courses vs random cobbles)",
+        default=0.5,
+        min=0.0,
+        max=1.0,
+        subtype='FACTOR',
+        update=_on_region_update,
+    )
+    direction_deg: bpy.props.FloatProperty(
+        name="Direction (deg)",
+        description="Main direction for anisotropic surfaces (e.g. the way "
+                    "furrows run). Ignored by isotropic surfaces",
+        default=0.0,
+        update=_on_region_update,
+    )
+    mask_falloff_mm: bpy.props.FloatProperty(
+        name="Edge Blend (mm)",
+        description="Width of the soft band that blends the texture in at the "
+                    "region boundary. 0 = hard edge",
+        default=5.0,
+        min=0.0,
+        soft_max=50.0,
+        subtype='DISTANCE',
+        update=_on_region_update,
+    )
+    points: bpy.props.CollectionProperty(type=HexFinitySurfacePoint)
+
+
 class HexFinityProperties(bpy.types.PropertyGroup):
     is_generated: bpy.props.BoolProperty(
         name="Is Generated",
@@ -267,13 +392,21 @@ class HexFinityProperties(bpy.types.PropertyGroup):
         name="Local Subdivision",
         description="Extra linear-midpoint subdivision applied to just this tile, "
                     "on top of the map-wide Resample Density. Adds local mesh "
-                    "density only (no extra smoothing); each pass quadruples this "
-                    "tile's top faces, so keep it low. Changing it clears any "
-                    "painted/snapped displacement on this tile.",
+                    "density only (no extra smoothing). Each pass QUADRUPLES this "
+                    "tile's top faces (4^n), so cost explodes: ~2-3 is plenty for "
+                    "cobblestone, ~4 for sharp tiles/cracks; beyond that a single "
+                    "tile reaches hundreds of thousands of verts. Changing it clears "
+                    "any painted/snapped displacement on this tile.",
         default=0,
         min=0,
-        soft_max=3,
+        soft_max=6,
         update=_on_tile_local_update,
+    )
+    surface_regions: bpy.props.CollectionProperty(type=HexFinitySurfaceRegion)
+    active_surface_region_index: bpy.props.IntProperty(
+        name="Active Region",
+        default=0,
+        options={'HIDDEN'},
     )
 
 
