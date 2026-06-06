@@ -46,11 +46,11 @@ def test_enum_items_track_registry():
 def test_feature_mm_default_scales_with_man_height(stype):
     ref = ps.SURFACES[stype].reference_mm
     assert ps.feature_mm_default(stype, 1800.0) == pytest.approx(ref)
-    assert ps.feature_mm_default(stype, 28.0) == pytest.approx(ref * 28.0 / 1800.0)
+    assert ps.feature_mm_default(stype, 10.0) == pytest.approx(ref * 10.0 / 1800.0)
 
 
 def test_feature_mm_default_none_is_zero():
-    assert ps.feature_mm_default("NONE", 28.0) == 0.0
+    assert ps.feature_mm_default("NONE", 10.0) == 0.0
 
 
 def test_unknown_surface_is_safe():

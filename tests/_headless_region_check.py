@@ -24,7 +24,7 @@ mp.level_height_mm = 10.0
 mp.base_thickness_mm = 10.0
 mp.smoothness_passes = 3      # enough resolution for a small feature
 mp.resample_density = 0
-mp.man_height_mm = 28.0
+mp.man_height_mm = 10.0
 mp.is_generated = True
 
 # A bare tile object.

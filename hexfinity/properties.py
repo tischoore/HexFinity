@@ -81,7 +81,7 @@ class HexFinityMapProperties(bpy.types.PropertyGroup):
                     "Procedural surface feature sizes (cobble/gravel/furrow pitch) "
                     "default to their real-world size scaled by this. 28 mm ~ common "
                     "wargaming scale. Editable per region afterwards.",
-        default=28.0,
+        default=10.0,
         min=0.1,
         soft_max=200.0,
         update=_on_global_update,
