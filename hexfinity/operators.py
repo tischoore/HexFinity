@@ -158,18 +158,33 @@ def rebuild_tile(obj):
         # Marshalled into plain dicts the bpy-free builder understands. Sampled
         # in global coords (origin = tile world XY) so patterns flow across seams;
         # a per-tile-but-reproducible seed varies the pattern between tiles.
+        from . import procedural_surfaces as ps
+        surface_seed = (tile_props.coord_q * 73856093) ^ (tile_props.coord_r * 19349663)
         surface_regions = []
-        for reg in tile_props.surface_regions:
+        for idx, reg in enumerate(tile_props.surface_regions):
+            # Marshal the registry's extra (surface-specific) params from the
+            # generic param0..param3 slots into a named dict the bpy-free /
+            # scatter code understands.
+            slots = (reg.param0, reg.param1, reg.param2, reg.param3)
+            extras = {spec.key: slots[i]
+                      for i, spec in enumerate(ps.extra_param_specs(reg.surface_type))
+                      if i < len(slots)}
             surface_regions.append({
                 "surface_type": reg.surface_type,
+                "kind": ps.surface_kind(reg.surface_type),
+                "name": reg.name or f"Area {idx + 1}",
                 "feature_mm": reg.feature_mm,
                 "depth_mm": reg.depth_mm,
                 "regularity": reg.regularity,
                 "direction_rad": math.radians(reg.direction_deg),
                 "polygon": [(p.x, p.y) for p in reg.points],
                 "mask_falloff_mm": reg.mask_falloff_mm,
+                "extras": extras,
+                "scatter_merge": reg.scatter_merge,
+                # Per-region seed so distinct regions scatter differently while
+                # staying reproducible across rebuilds.
+                "seed": surface_seed ^ (idx * 2654435761),
             })
-        surface_seed = (tile_props.coord_q * 73856093) ^ (tile_props.coord_r * 19349663)
 
         verts, faces = build_hex_tile(
             diameter_mm=map_props.diameter_mm,
@@ -197,6 +212,22 @@ def rebuild_tile(obj):
         obj.data = new_mesh
         if old_mesh is not None and old_mesh.users == 0:
             bpy.data.meshes.remove(old_mesh)
+
+        # Scatter surfaces place distinct objects on top of the finished tile.
+        # Regenerate them AFTER the new mesh is assigned + the depsgraph is
+        # re-evaluated, so the seating raycast samples the real (current)
+        # surface — not stale geometry. Full purge + recreate keeps it robust to
+        # region add/remove/reorder; deterministic seeds make rebuilds identical.
+        scatter_regions = [(i, rd) for i, rd in enumerate(surface_regions)
+                           if rd.get("kind") == 'scatter']
+        existing = any(c.get("hf_scatter_of") is not None for c in obj.children)
+        if scatter_regions or existing:
+            from . import scatter
+            scatter.purge_scatter(obj)
+            if scatter_regions:
+                bpy.context.view_layer.update()
+                for i, rd in scatter_regions:
+                    scatter.sync_scatter(obj, i, rd, rd["name"])
     finally:
         _REBUILDING = False
 

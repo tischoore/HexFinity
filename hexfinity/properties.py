@@ -228,21 +228,43 @@ def _on_region_update(self, context):
         pass
 
 
+def _default_region_name(region):
+    """Auto-name a region "Area N" from its 1-based index in the tile, so every
+    scattered object/area gets a stable, human label the user can override."""
+    owner = region.id_data
+    tile = getattr(owner, "hexfinity_tile", None)
+    if tile is None:
+        return "Area 1"
+    for i, r in enumerate(tile.surface_regions):
+        if r.as_pointer() == region.as_pointer():
+            return f"Area {i + 1}"
+    return f"Area {len(tile.surface_regions)}"
+
+
 def _on_region_type_update(self, context):
-    # Pick sensible mm defaults for the chosen surface from the registry +
-    # man-height, then rebuild once.
+    # Pick sensible defaults for the chosen surface from the registry +
+    # man-height (feature/depth/regularity for displace surfaces, the generic
+    # extra-param slots for any surface), then rebuild once.
     global _REGION_FILLING
     from . import procedural_surfaces as ps
     surf = ps.SURFACES.get(self.surface_type)
     _REGION_FILLING = True
     try:
-        d = ps.feature_mm_default(self.surface_type,
-                                  context.scene.hexfinity_map.man_height_mm)
+        man_h = context.scene.hexfinity_map.man_height_mm
+        d = ps.feature_mm_default(self.surface_type, man_h)
         if d > 0.0:
             self.feature_mm = d
         if surf is not None:
             self.depth_mm = surf.default_depth_mm
             self.regularity = surf.default_regularity
+        # Generic extra-param slots (param0..param3) carry each surface's own
+        # knobs (e.g. a scatter surface's min/max size, density, distribution).
+        defaults = ps.extra_param_defaults(self.surface_type, man_h)
+        for i, spec in enumerate(ps.extra_param_specs(self.surface_type)):
+            if i < len(_EXTRA_PARAM_SLOTS):
+                setattr(self, _EXTRA_PARAM_SLOTS[i], defaults[spec.key])
+        if not self.name:
+            self.name = _default_region_name(self)
     finally:
         _REGION_FILLING = False
     _on_region_update(self, context)
@@ -258,7 +280,21 @@ class HexFinitySurfacePoint(bpy.types.PropertyGroup):
     y: bpy.props.FloatProperty(name="Y", default=0.0)
 
 
+# Generic per-region slots that carry a surface's own (extra) parameters in
+# registry order. A scatter surface's min/max size, density and distribution map
+# onto param0..param3; the panel labels each slot from the surface's ParamSpec.
+_EXTRA_PARAM_SLOTS = ("param0", "param1", "param2", "param3")
+
+
 class HexFinitySurfaceRegion(bpy.types.PropertyGroup):
+    name: bpy.props.StringProperty(
+        name="Area Name",
+        description="Editable label for this region (used to name scattered "
+                    "objects, e.g. Boulders_<Area Name>). Auto-defaulted to "
+                    "\"Area N\" when the region is created",
+        default="",
+        update=_on_region_update,
+    )
     surface_type: bpy.props.EnumProperty(
         name="Surface",
         description="Procedural surface applied inside this region",
@@ -306,6 +342,24 @@ class HexFinitySurfaceRegion(bpy.types.PropertyGroup):
         default=5.0,
         min=0.0,
         soft_max=50.0,
+        update=_on_region_update,
+    )
+    # Generic surface-specific knobs (see _EXTRA_PARAM_SLOTS). Seeded from the
+    # registry on a type change; labelled per-surface by the panel.
+    param0: bpy.props.FloatProperty(name="Param 0", default=0.0,
+                                    update=_on_region_update)
+    param1: bpy.props.FloatProperty(name="Param 1", default=0.0,
+                                    update=_on_region_update)
+    param2: bpy.props.FloatProperty(name="Param 2", default=0.0,
+                                    update=_on_region_update)
+    param3: bpy.props.FloatProperty(name="Param 3", default=0.0,
+                                    update=_on_region_update)
+    scatter_merge: bpy.props.BoolProperty(
+        name="Merge into Tile",
+        description="When merging for print, boolean-union this region's scattered "
+                    "objects into the tile so the whole tile prints as one "
+                    "manifold piece. Off = keep the boulders as a loose object",
+        default=False,
         update=_on_region_update,
     )
     points: bpy.props.CollectionProperty(type=HexFinitySurfacePoint)

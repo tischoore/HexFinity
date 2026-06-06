@@ -163,18 +163,32 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         if not (0 <= idx < len(tile.surface_regions)):
             return
         reg = tile.surface_regions[idx]
+        from . import procedural_surfaces as ps
+        surf = ps.SURFACES.get(reg.surface_type)
+
         sub = box.column(align=True)
+        sub.prop(reg, "name")
         sub.prop(reg, "surface_type")
-        if reg.surface_type == 'NONE':
+        if reg.surface_type == 'NONE' or surf is None:
             return
-        sub.prop(reg, "feature_mm")
+
+        if surf.kind == 'scatter':
+            HEXFINITY_PT_panel._draw_scatter_params(box, reg, surf, map_props)
+            return
+
+        # ---- Displacement surface params ----------------------------------
+        sub.prop(reg, "mask_falloff_mm")
+        if surf.uses_feature:
+            sub.prop(reg, "feature_mm")
         sub.prop(reg, "depth_mm")
         sub.prop(reg, "regularity", slider=True)
-        sub.prop(reg, "direction_deg")
-        sub.prop(reg, "mask_falloff_mm")
+        if surf.uses_direction:
+            sub.prop(reg, "direction_deg")
 
         # Resolution guidance: warn when the feature is finer than the mesh can
         # resolve (heightfield detail is bounded by the top-vertex spacing).
+        if not surf.uses_feature:
+            return
         resample = effective_resample(map_props.resample_density, tile.local_subdiv)
         nverts = top_vertex_count(map_props.smoothness_passes, resample)
         R = map_props.diameter_mm * 0.5
@@ -187,3 +201,37 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
                 icon='ERROR')
         else:
             box.label(text=f"Vert spacing ~{spacing:.1f}mm", icon='INFO')
+
+    @staticmethod
+    def _draw_scatter_params(box, reg, surf, map_props):
+        # Each scatter knob rides a generic param0..param3 slot; label it from
+        # the surface's ParamSpec so the registry stays the single source of
+        # truth (no per-surface UI code).
+        from . import procedural_surfaces as ps
+        from . import scatter
+        slots = ("param0", "param1", "param2", "param3")
+        col = box.column(align=True)
+        vals = {}
+        for i, spec in enumerate(surf.extra_params):
+            if i >= len(slots):
+                break
+            col.prop(reg, slots[i], text=spec.label)
+            vals[spec.key] = getattr(reg, slots[i])
+
+        # Vertex-budget guidance: density x size over a big region can yield a
+        # very heavy joined mesh, so estimate it up front.
+        poly = [(p.x, p.y) for p in reg.points] or ps.hex_polygon(map_props.diameter_mm)
+        count = ps.estimate_boulder_count(
+            poly,
+            min_size_mm=vals.get("min_size_mm", 0.0),
+            max_size_mm=vals.get("max_size_mm", 0.0),
+            density=vals.get("density", 0.0))
+        verts_per = len(ps._icosphere(scatter.SUBDIV)[0])
+        total = count * verts_per
+        msg = f"~{count} boulders (~{total:,} verts)"
+        box.label(text=msg,
+                  icon='ERROR' if total > 200_000 else 'INFO')
+
+        box.prop(reg, "scatter_merge")
+        box.operator("hexfinity.merge_scatter",
+                     text="Merge Boulders into Tile", icon='MOD_BOOLEAN')

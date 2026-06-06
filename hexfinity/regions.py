@@ -225,5 +225,5 @@ class HEXFINITY_UL_surface_regions(bpy.types.UIList):
                   active_propname, index):
         npts = len(item.points)
         shape = f"{npts}-pt loop" if npts >= 3 else "whole tile"
-        label = item.surface_type.title()
-        layout.label(text=f"{label}  ({shape})", icon='MESH_GRID')
+        name = item.name or item.surface_type.title()
+        layout.label(text=f"{name}  ({shape})", icon='MESH_GRID')

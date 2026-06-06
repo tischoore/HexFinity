@@ -202,17 +202,31 @@ Like the brush, snap is stored as a displacement layer re-applied on rebuild, an
 
 ## Procedural surface textures
 
-Geometric micro-surfaces — **cobblestone, gravel, plough & furrow** — baked onto a
-tile top as real (printable) geometry. They are applied through **regions**: closed
-loops you draw on the tile, each with its own surface type, scale, and direction.
+Procedural surfaces are applied through **regions**: closed loops you draw on the
+tile (or a whole-tile region), each with its own surface type and parameters.
 Multiple regions per tile are supported (e.g. a cobblestone road across a furrowed
-field). Scale is driven by a map-wide **Man Height (mm)** reference, and the look of
-cobbles/gravel comes from jittered Voronoi cells (a **Regularity** knob). Because the
-surface is a heightfield, detail is bounded by the top-vertex spacing — the panel
-warns when a feature is too fine for the current subdivision.
+field), each with an editable **Area Name**. Scale is driven by a map-wide
+**Man Height (mm)** reference. Surfaces come in two *kinds*:
 
-See **[docs/procedural_surfaces.md](docs/procedural_surfaces.md)** for the workflow,
-the scale model, the resolution ceiling, and how to add a new surface type.
+- **Displacement surfaces** — **cobblestone, gravel, plough & furrow** — baked onto
+  the tile top as real (printable) heightfield geometry. The look of cobbles/gravel
+  comes from jittered Voronoi cells (a **Regularity** knob). Because the surface is a
+  heightfield, detail is bounded by the top-vertex spacing — the panel warns when a
+  feature is too fine for the current subdivision.
+- **Scatter surfaces** — **Boulder Field** — place *distinct objects* across the
+  region **without changing the tile surface**. Boulders are noise-deformed
+  icospheres, joined into one mesh `Boulders_<Area Name>` parented under the tile and
+  seated on the real terrain by a downward raycast. Knobs: **Min/Max Boulder Size
+  (mm)**, **Boulder Density**, **Size Distribution**. An optional **Merge** boolean-
+  unions them into the tile so the whole tile prints as one manifold piece.
+
+Both kinds share the same authoring UX (draw a region → pick a surface → tune
+params) and ride the same registry: adding a surface is one record plus its
+function(s), no UI/operator edits.
+
+See **[docs/procedural_surfaces.md](docs/procedural_surfaces.md)** for the
+displacement workflow and **[docs/boulder-field.md](docs/boulder-field.md)** for the
+scatter kind (algorithm, scene tree, merge-for-print, and manual checklist).
 
 ## Export STLs
 
@@ -296,6 +310,10 @@ HexFinity
 │  │   └─ Local Subdivision               (per-tile extra density)
 │  ├─ [ Terrain Objects ]      (import STL, drop on tile, parent)
 │  ├─ Procedural Surface       (region list + Draw Region — see below)
+│  │   ├─ Area Name + Surface type
+│  │   ├─ displace: Feature / Depth / Regularity / (Direction) + resolution warning
+│  │   └─ scatter:  Min/Max Size / Density / Distribution + budget warning
+│  │                + Merge into Tile / [ Merge Boulders into Tile ]
 │  └─ Terrain Brush            (Raise/Lower, Radius, Strength, Preserve Edge → Paint)
 │
 ├─ If active object is a dropped terrain object:
@@ -327,9 +345,10 @@ C:\Work\Hexfinity\
 │   ├─ overlay.py              # floating P1..P6 labels + region loops/direction
 │   ├─ brush.py                # modal terrain paint brush
 │   ├─ regions.py              # modal draw-region operator + region list UI
+│   ├─ scatter.py              # bpy shell for scatter surfaces (boulder objects + merge)
 │   ├─ mesh_builder.py         # pure-Python mesh construction (no bpy)
 │   ├─ subdivision.py          # pure-Python Loop + linear-midpoint subdivision (no bpy)
-│   ├─ procedural_surfaces.py  # pure-Python surface registry + masks (no bpy)
+│   ├─ procedural_surfaces.py  # pure-Python surface registry + masks + scatter geometry (no bpy)
 │   ├─ map.py                  # pure-Python grid math + SHARED_CORNERS table
 │   ├─ tile_export.py          # pure-Python export hashing + naming (no bpy)
 │   └─ manifold_check.py       # post-build 2-manifold verification
@@ -338,6 +357,7 @@ C:\Work\Hexfinity\
     ├─ test_mesh_builder.py
     ├─ test_subdivision.py
     ├─ test_procedural_surfaces.py
+    ├─ test_scatter.py
     ├─ test_map.py
     ├─ test_tile_export.py
     └─ test_manifold_check.py

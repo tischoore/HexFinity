@@ -94,9 +94,14 @@ def _draw_regions(context, region, rv3d, map_props, tiles):
             shader.uniform_float("color", _REGION_COLOR)
             batch_for_shader(shader, 'LINE_STRIP', {"pos": loop}).draw(shader)
 
-            # Direction arrow for the active region of the active tile.
+            # Direction arrow for the active region of the active tile — only
+            # for surfaces that actually use a direction (e.g. furrows), not
+            # isotropic or scatter surfaces.
+            from . import procedural_surfaces as ps
+            surf = ps.SURFACES.get(reg.surface_type)
             is_active = (obj == active_obj
-                         and ri == tile.active_surface_region_index)
+                         and ri == tile.active_surface_region_index
+                         and surf is not None and surf.uses_direction)
             if is_active:
                 cx = sum(p.x for p in pts) / len(pts)
                 cy = sum(p.y for p in pts) / len(pts)

@@ -83,7 +83,7 @@ def _smoothstep(t):
 # Surface generators. Each returns a Z offset (mm) with |offset| <= depth_mm,
 # roughly zero-mean so the texture rides on the macro terrain without lifting it.
 # ---------------------------------------------------------------------------
-def _cobblestone(x, y, *, feature_mm, depth_mm, regularity, seed, direction_rad=0.0):
+def _cobblestone(x, y, *, feature_mm, depth_mm, regularity, seed, direction_rad=0.0, **_):
     """Rounded Voronoi stones with recessed grout lines. `regularity` (0..1)
     sets cell jitter: low -> neat courses, high -> irregular cobbles.
     Isotropic — ignores `direction_rad`."""
@@ -96,7 +96,7 @@ def _cobblestone(x, y, *, feature_mm, depth_mm, regularity, seed, direction_rad=
     return (interior - 0.5) * depth_mm
 
 
-def _furrow(x, y, *, feature_mm, depth_mm, regularity, seed, direction_rad=0.0):
+def _furrow(x, y, *, feature_mm, depth_mm, regularity, seed, direction_rad=0.0, **_):
     """Parallel plough ridges (directional sine) with a little wander.
     Anisotropic — ridges run ALONG `direction_rad`, so the wave is measured
     across that axis. Structurally unlike the Voronoi surfaces, which is why it
@@ -112,7 +112,7 @@ def _furrow(x, y, *, feature_mm, depth_mm, regularity, seed, direction_rad=0.0):
     return 0.5 * math.sin(phase) * depth_mm
 
 
-def _gravel(x, y, *, feature_mm, depth_mm, regularity, seed, direction_rad=0.0):
+def _gravel(x, y, *, feature_mm, depth_mm, regularity, seed, direction_rad=0.0, **_):
     """Dense field of small rounded pebbles of varying height. `regularity`
     lowers the size spread (1 -> uniform pebbles, 0 -> very mixed).
     Isotropic — ignores `direction_rad`."""
@@ -126,23 +126,278 @@ def _gravel(x, y, *, feature_mm, depth_mm, regularity, seed, direction_rad=0.0):
 
 
 # ---------------------------------------------------------------------------
+# Scatter surfaces — a SECOND fundamental kind of parametric surface. Where a
+# `displace` surface returns a per-point Z offset (above), a `scatter` surface
+# places DISTINCT objects in the region and leaves the tile surface untouched.
+#
+# Everything below is still pure geometry math (no bpy): a placement planner, a
+# per-element mesh generator, and an assembler that joins the elements into one
+# (verts, faces) mesh. The bpy shell (`scatter.py`) only adds object lifecycle,
+# the raycast that seats each element on the real terrain, and the merge boolean.
+# ---------------------------------------------------------------------------
+def _clamp01(t):
+    return 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+
+
+def hex_polygon(diameter_mm):
+    """Flat-top hexagon outline (list of (x, y) tile-local mm) matching the rim
+    corners P1..P6 built by `mesh_builder.build_hex_tile`. Used as the implicit
+    polygon for a whole-tile scatter region (no drawn loop)."""
+    R = diameter_mm / 2.0
+    pts = []
+    for i in range(6):
+        angle = math.pi / 3.0 - i * (math.pi / 3.0)
+        pts.append((R * math.cos(angle), R * math.sin(angle)))
+    return pts
+
+
+def _normalize(v):
+    x, y, z = v
+    m = math.sqrt(x * x + y * y + z * z)
+    if m <= 1e-18:
+        return (0.0, 0.0, 0.0)
+    return (x / m, y / m, z / m)
+
+
+def _icosahedron():
+    """12-vertex / 20-face regular icosahedron on the unit sphere."""
+    t = (1.0 + math.sqrt(5.0)) / 2.0
+    verts = [
+        (-1.0,  t,  0.0), (1.0,  t,  0.0), (-1.0, -t,  0.0), (1.0, -t,  0.0),
+        (0.0, -1.0,  t), (0.0,  1.0,  t), (0.0, -1.0, -t), (0.0,  1.0, -t),
+        (t,  0.0, -1.0), (t,  0.0,  1.0), (-t,  0.0, -1.0), (-t,  0.0,  1.0),
+    ]
+    faces = [
+        (0, 11, 5), (0, 5, 1), (0, 1, 7), (0, 7, 10), (0, 10, 11),
+        (1, 5, 9), (5, 11, 4), (11, 10, 2), (10, 7, 6), (7, 1, 8),
+        (3, 9, 4), (3, 4, 2), (3, 2, 6), (3, 6, 8), (3, 8, 9),
+        (4, 9, 5), (2, 4, 11), (6, 2, 10), (8, 6, 7), (9, 8, 1),
+    ]
+    return [_normalize(v) for v in verts], faces
+
+
+def _icosphere(subdiv):
+    """Geodesic icosphere (unit radius) from `subdiv` edge-subdivision passes.
+    A shared midpoint cache keeps every edge between exactly two faces, so the
+    result stays a closed 2-manifold (validated by the test suite)."""
+    verts, faces = _icosahedron()
+    verts = [list(v) for v in verts]
+    for _ in range(max(0, int(subdiv))):
+        cache = {}
+        new_faces = []
+
+        def midpoint(a, b):
+            key = (a, b) if a < b else (b, a)
+            idx = cache.get(key)
+            if idx is not None:
+                return idx
+            va, vb = verts[a], verts[b]
+            m = _normalize(((va[0] + vb[0]) * 0.5,
+                            (va[1] + vb[1]) * 0.5,
+                            (va[2] + vb[2]) * 0.5))
+            verts.append(list(m))
+            idx = len(verts) - 1
+            cache[key] = idx
+            return idx
+
+        for (a, b, c) in faces:
+            ab = midpoint(a, b)
+            bc = midpoint(b, c)
+            ca = midpoint(c, a)
+            new_faces.extend([(a, ab, ca), (b, bc, ab),
+                              (c, ca, bc), (ab, bc, ca)])
+        faces = new_faces
+    return [tuple(v) for v in verts], faces
+
+
+def boulder_mesh(radius_mm, pid, *, roughness=0.35, subdiv=1):
+    """One boulder: an icosphere with per-vertex RADIAL noise so it looks like a
+    rough rock rather than a ball. Each unit vertex is scaled by
+    `radius_mm * (1 ± roughness/2)`; because every vertex moves only along its
+    own radius the topology (and hence 2-manifoldness) is preserved. The noise is
+    deterministic from `pid`, so a given placement rebuilds identically and two
+    boulders with different `pid` differ."""
+    unit_verts, faces = _icosphere(subdiv)
+    rough = max(0.0, float(roughness))
+    out = []
+    for i, (x, y, z) in enumerate(unit_verts):
+        n = _hash01(i, int(pid), 0x5EED2A17)
+        scale = radius_mm * (1.0 + rough * (n - 0.5))
+        out.append((x * scale, y * scale, z * scale))
+    return out, faces
+
+
+def scatter_boulders(polygon, *, min_size_mm, max_size_mm, density,
+                     distribution, seed):
+    """Plan boulder placements inside `polygon` (tile-local mm). Returns a list of
+    `(x_mm, y_mm, radius_mm, rot_rad, pid)` tuples — Z is resolved later by the
+    caller's raycast. Deterministic from `seed` so rebuilds are stable.
+
+    A jittered grid drives placement: the cell pitch and a per-cell presence
+    probability both tighten with `density` (so more density -> more boulders).
+    Each kept cell gets a radius drawn from `[min,max]` and shaped by
+    `distribution` (0 = many small + few large, 1 = uniform) plus a random
+    rotation. `min/max_size_mm` are DIAMETERS; the stored radius is half."""
+    if len(polygon) < 3:
+        return []
+    lo = max(0.0, min(min_size_mm, max_size_mm))
+    hi = max(0.0, max(min_size_mm, max_size_mm))
+    mean_size = 0.5 * (lo + hi)
+    if mean_size <= 0.0:
+        return []
+    density = _clamp01(density)
+    distribution = _clamp01(distribution)
+    seed = int(seed)
+
+    # density 1 -> pitch == mean size (packed); density 0 -> 4x (sparse).
+    pitch = mean_size * (1.0 + (1.0 - density) * 3.0)
+    # density 0 -> 40% of cells occupied; density 1 -> all occupied.
+    presence = 0.4 + 0.6 * density
+    # distribution 1 -> uniform (k=1); 0 -> strongly small-biased (k=4).
+    k = 1.0 + (1.0 - distribution) * 3.0
+
+    xs = [p[0] for p in polygon]
+    ys = [p[1] for p in polygon]
+    ix0 = int(math.floor(min(xs) / pitch))
+    ix1 = int(math.floor(max(xs) / pitch))
+    iy0 = int(math.floor(min(ys) / pitch))
+    iy1 = int(math.floor(max(ys) / pitch))
+
+    placements = []
+    for iy in range(iy0, iy1 + 1):
+        for ix in range(ix0, ix1 + 1):
+            if _hash01(ix, iy, seed ^ 0x0A53F00D) >= presence:
+                continue
+            cx, cy = _cell_center(ix, iy, pitch, 0.8, seed)
+            if not point_in_polygon(cx, cy, polygon):
+                continue
+            u = _hash01(ix, iy, seed ^ 0x1234ABCD)
+            size = lo + (hi - lo) * (u ** k)
+            rot = _hash01(ix, iy, seed ^ 0x0BEEF123) * 2.0 * math.pi
+            pid = ((ix * 73856093) ^ (iy * 19349663) ^ seed) & 0x7FFFFFFF
+            placements.append((cx, cy, 0.5 * size, rot, pid))
+    return placements
+
+
+def polygon_area(poly):
+    """Unsigned area (mm²) of polygon `poly` via the shoelace formula."""
+    n = len(poly)
+    if n < 3:
+        return 0.0
+    acc = 0.0
+    j = n - 1
+    for i in range(n):
+        acc += (poly[j][0] + poly[i][0]) * (poly[j][1] - poly[i][1])
+        j = i
+    return abs(acc) * 0.5
+
+
+def estimate_boulder_count(polygon, *, min_size_mm, max_size_mm, density):
+    """Rough expected boulder count for a scatter region — cheap enough for a
+    live panel warning. Mirrors `scatter_boulders`' grid: cells ≈ area / pitch²,
+    thinned by the per-cell presence probability. Approximate (no per-cell
+    inside-polygon test), so it's an estimate, not a guarantee."""
+    area = polygon_area(polygon)
+    mean_size = 0.5 * (max(0.0, min_size_mm) + max(0.0, max_size_mm))
+    if area <= 0.0 or mean_size <= 0.0:
+        return 0
+    density = _clamp01(density)
+    pitch = mean_size * (1.0 + (1.0 - density) * 3.0)
+    presence = 0.4 + 0.6 * density
+    return int(area / (pitch * pitch) * presence)
+
+
+def assemble_scatter_mesh(placements, z_of, *, sink_mm=1.0, roughness=0.35,
+                          subdiv=1):
+    """Join every boulder in `placements` into ONE `(verts, faces)` mesh.
+
+    For each placement the boulder mesh is rotated about Z, translated to the
+    placement XY, and seated in Z so its centre sits at `z_of(x, y) + radius -
+    sink_mm` — i.e. it rests on the terrain sampled under it with a small
+    `sink_mm` overlap (so a later boolean merge stays manifold). `z_of` is
+    injected by the caller (a bpy raycast in the shell) so this stays bpy-free
+    and unit-testable. The boulders share no vertices, so the concatenation of
+    closed 2-manifold boulders is itself 2-manifold."""
+    all_verts = []
+    all_faces = []
+    for (x, y, radius, rot, pid) in placements:
+        bverts, bfaces = boulder_mesh(radius, pid, roughness=roughness,
+                                      subdiv=subdiv)
+        base = len(all_verts)
+        c, s = math.cos(rot), math.sin(rot)
+        z0 = z_of(x, y) + radius - sink_mm
+        for (vx, vy, vz) in bverts:
+            rx = c * vx - s * vy
+            ry = s * vx + c * vy
+            all_verts.append((rx + x, ry + y, vz + z0))
+        for f in bfaces:
+            all_faces.append(tuple(base + idx for idx in f))
+    return all_verts, all_faces
+
+
+# ---------------------------------------------------------------------------
 # Registry — the single source of truth.
 # ---------------------------------------------------------------------------
+class ParamSpec:
+    """One extra (surface-specific) parameter, e.g. a scatter surface's
+    "Min Boulder Size". Carries everything the UI and the marshaller need:
+
+    key            attribute name used in the marshalled region dict
+    label / description   UI text
+    default        plain default (used directly for `unit='factor'`)
+    min / max      slider bounds
+    unit           'mm' (scales with man-height from `reference_mm`) or 'factor'
+    reference_mm   real-world size (mm) for an 'mm' param, scaled like a feature
+    """
+
+    def __init__(self, key, label, description, default, min, max, *,
+                 unit='factor', reference_mm=0.0):
+        self.key = key
+        self.label = label
+        self.description = description
+        self.default = default
+        self.min = min
+        self.max = max
+        self.unit = unit
+        self.reference_mm = reference_mm
+
+    def scaled_default(self, man_height_mm):
+        """Starting value at the given model scale: an 'mm' param scales its
+        `reference_mm` by man-height (like a feature size); otherwise the plain
+        default."""
+        if self.unit == 'mm' and self.reference_mm > 0.0:
+            return self.reference_mm * man_height_mm / REAL_MAN_HEIGHT_MM
+        return self.default
+
+
 class Surface:
-    """One registered procedural surface.
+    """One registered procedural surface — of one of two *kinds*:
+
+    kind == 'displace' (default): a heightfield. `generator(x, y, *, feature_mm,
+        depth_mm, regularity, seed, direction_rad) -> float` returns a Z offset
+        bounded by `depth_mm`; `surface_offset()` dispatches to it.
+    kind == 'scatter': places DISTINCT objects and leaves the surface flat.
+        `generator is None` (so it contributes ZERO displacement and is excluded
+        from the displacement test fan-out automatically); instead it carries
+        `placement_fn` + `element_mesh_fn` and a tuple of `extra_params`
+        (ParamSpec) consumed by the bpy shell `scatter.py`.
 
     key            EnumProperty identifier (also the dict key)
     label          UI label
     description    UI tooltip
     reference_mm   real-world feature size (mm); scaled by man-height for the
-                   default feature size. 0 for NONE.
-    generator      fn(x, y, *, feature_mm, depth_mm, regularity, seed) -> float,
-                   or None for the no-op NONE entry.
+                   default feature size. 0 for NONE / scatter.
+    generator      displace fn, or None (NONE entry and all scatter surfaces).
     default_depth_mm / default_regularity  sensible per-surface starting values.
+    uses_feature / uses_direction  whether the panel shows the Feature Size /
+                   Direction rows for this surface.
+    extra_params   tuple of ParamSpec — the surface-specific knobs (scatter).
     """
 
     def __init__(self, key, label, description, reference_mm, generator,
-                 default_depth_mm=2.0, default_regularity=0.5):
+                 default_depth_mm=2.0, default_regularity=0.5, *,
+                 kind='displace', placement_fn=None, element_mesh_fn=None,
+                 uses_feature=True, uses_direction=False, extra_params=()):
         self.key = key
         self.label = label
         self.description = description
@@ -150,6 +405,12 @@ class Surface:
         self.generator = generator
         self.default_depth_mm = default_depth_mm
         self.default_regularity = default_regularity
+        self.kind = kind
+        self.placement_fn = placement_fn
+        self.element_mesh_fn = element_mesh_fn
+        self.uses_feature = uses_feature
+        self.uses_direction = uses_direction
+        self.extra_params = tuple(extra_params)
 
 
 # Insertion order is preserved and drives the enum order. NONE stays first.
@@ -167,7 +428,28 @@ SURFACES = {
         Surface("FURROW", "Plough & Furrow",
                 "Parallel ploughed ridges",
                 reference_mm=700.0, generator=_furrow,
-                default_depth_mm=3.0, default_regularity=0.6),
+                default_depth_mm=3.0, default_regularity=0.6,
+                uses_direction=True),
+        Surface("BOULDERS", "Boulder Field",
+                "Scattered boulder objects across a range of sizes "
+                "(does not change the tile surface)",
+                reference_mm=0.0, generator=None,
+                kind='scatter', placement_fn=scatter_boulders,
+                element_mesh_fn=boulder_mesh, uses_feature=False,
+                extra_params=(
+                    ParamSpec("min_size_mm", "Min Boulder Size (mm)",
+                              "Diameter of the smallest boulders",
+                              8.0, 0.5, 200.0, unit='mm', reference_mm=80.0),
+                    ParamSpec("max_size_mm", "Max Boulder Size (mm)",
+                              "Diameter of the largest boulders",
+                              40.0, 0.5, 500.0, unit='mm', reference_mm=400.0),
+                    ParamSpec("density", "Boulder Density",
+                              "0 = sparse scatter, 1 = packed field",
+                              0.6, 0.0, 1.0, unit='factor'),
+                    ParamSpec("distribution", "Size Distribution",
+                              "0 = many small + few large, 1 = uniform sizes",
+                              0.3, 0.0, 1.0, unit='factor'),
+                )),
     )
 }
 
@@ -186,6 +468,26 @@ def feature_mm_default(surface_type, man_height_mm):
     if surf is None or surf.reference_mm <= 0.0:
         return 0.0
     return surf.reference_mm * man_height_mm / REAL_MAN_HEIGHT_MM
+
+
+def surface_kind(surface_type):
+    """The kind ('displace' / 'scatter') of a registered surface; 'displace' for
+    unknown keys (the safe default)."""
+    surf = SURFACES.get(surface_type)
+    return surf.kind if surf is not None else 'displace'
+
+
+def extra_param_specs(surface_type):
+    """Tuple of ParamSpec for a surface's extra (surface-specific) params."""
+    surf = SURFACES.get(surface_type)
+    return surf.extra_params if surf is not None else ()
+
+
+def extra_param_defaults(surface_type, man_height_mm):
+    """Mapping {param key -> starting value} for a surface's extra params at the
+    given model scale (mm params scale with man-height)."""
+    return {p.key: p.scaled_default(man_height_mm)
+            for p in extra_param_specs(surface_type)}
 
 
 def surface_offset(x_mm, y_mm, *, surface_type, feature_mm, depth_mm,
