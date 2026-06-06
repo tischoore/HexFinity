@@ -11,7 +11,7 @@ All linear inputs are expressed in **millimeters**, and mesh vertices are emitte
 - [Geometry](#geometry)
   - [Anatomy](#anatomy)
   - [Hexagon shape](#hexagon-shape)
-  - [Center vertex](#center-vertex)
+  - [Center vertex (dome shaping)](#center-vertex-dome-shaping)
   - [Height / level system](#height--level-system)
   - [Top surface](#top-surface)
   - [Base, sides, bottom (manifold guarantee)](#base-sides-bottom-manifold-guarantee)
@@ -22,6 +22,8 @@ All linear inputs are expressed in **millimeters**, and mesh vertices are emitte
   - [Layout (odd-q offset, flat-top)](#layout-odd-q-offset-flat-top)
   - [Shared corners](#shared-corners-editing-one-corner-edits-up-to-two-others)
   - [Regenerate](#regenerate)
+- [Terrain brush (sculpt)](#terrain-brush-sculpt)
+- [Terrain objects (import & snap)](#terrain-objects-import--snap)
 - [Procedural surface textures](#procedural-surface-textures)
 - [Export STLs](#export-stls)
 - [UI](#ui)
@@ -49,9 +51,18 @@ All linear inputs are expressed in **millimeters**, and mesh vertices are emitte
   - P2 is at the right (3 o'clock), P3 at the lower-right (5 o'clock), P4 lower-left (7 o'clock), P5 left (9 o'clock), P6 upper-left (11 o'clock).
 - Diameter is a **map-wide invariant**: every tile in the map shares the same point-to-point diameter so the tiles tessellate cleanly. See *Terrain (X×Y map) generation* below.
 
-### Center vertex
+### Center vertex (dome shaping)
 
 A single vertex `C` sits at the geometric centroid of each tile by default (tile-local X = 0, Y = 0). Its Z is the **average of the six corner Zs** by default. An optional **center level override** lets the user pin the centre to an explicit level (handy for domes, bowls, or plateaus). The centre XY can also be dragged inside the hex via the on-screen gizmo; it is clamped to a 1 mm safety buffer inside the rim.
+
+Two per-tile knobs shape the bump that grows out of a raised centre (the inner `Q1..Q6` control ring between `C` and the rim drives it):
+
+- **Dome Area** (0.1–0.9) — radial position of the inner ring. Low = a narrow, tight dome; high = a broad dome reaching toward the rim.
+- **Dome Damping** (0–1) — how far the inner ring is pulled from the centre toward the corner-edge midpoint. `0` = flat-topped plateau, `1` = sharp peak with a flat skirt; the default `2/3` is the smooth dome.
+
+Both support right-click → *Copy to Selected* to apply across many tiles at once.
+
+**Local Subdivision** is a per-tile integer that adds extra linear-midpoint mesh density to just that tile on top of the map-wide *Resample Density* — useful when one tile needs a fine procedural surface or sharp brush detail. Each pass quadruples the tile's top faces (`4ⁿ`), so a value of 2–3 is plenty for cobblestone and ~4 for cracks; changing it clears any painted or snapped displacement on that tile.
 
 ### Height / level system
 
@@ -61,11 +72,16 @@ A single vertex `C` sits at the geometric centroid of each tile by default (tile
 
 ### Top surface
 
-The top is built from **six bicubic Hermite Coons patches**, one per `(C, Pi, Pi+1)` region, with the apex collapsed to `C` and shared spoke/rim curves so adjacent patches and tiles meet without a gap. Continuity is **C∞ inside each patch** and **G0 across spokes and tile-to-tile rim seams** — visually clean under shade-smooth, but not strict G1 across spokes (the construction math lives in `mesh_builder.py:_eval_coons`).
+The top is built by **Loop subdivision** of a fixed 13-vertex control mesh — the centre `C`, the six rim corners `P1..P6`, and six auto-derived inner-ring vertices `Q1..Q6` (see *Center vertex* above). The six rim edges are tagged **sharp** so they stay perfectly straight under subdivision — mandatory for the side wall to attach and for neighbouring tiles to meet without gaps. Loop's stencils naturally damp a centre displacement into a smooth radial bump, with none of the per-spoke creasing the previous Coons-patch construction had (the math lives in `subdivision.py` / `mesh_builder.py`).
 
 For tiles with all corner levels equal, the surface degenerates to a flat horizontal disk at `z = base_thickness`, exactly. The unit tests verify this and the other invariants.
 
-The `subdivisions` parameter is the number of cells per patch direction (so the parametric grid is `(subdivisions+1) × (subdivisions+1)` per patch). Top face count per tile is `6·(subdivisions+1)²` — a mix of `6·(subdivisions+1)` apex-fan triangles and the rest as quads wound for `+Z` normal.
+Top-surface resolution is driven by two map-wide parameters:
+
+- **Smoothness Passes** — Loop subdivision iterations (shape detail *and* smoothness). 2 passes ≈ 288 tris/tile, 3 ≈ 1152, 4 ≈ 4608; bump until the dome looks right.
+- **Resample Density** — extra linear-midpoint subdivision applied *after* Loop smoothing. It only adds polygons (chord midpoints) without introducing new smoothing, giving downstream displacement (brush, snap, procedural surfaces) more vertices to work with. The per-tile *Local Subdivision* stacks on top of this.
+
+The top-vertex count depends only on the total pass count, never on the corner heights — which is what lets the brush/snap store a stable `float[num_top]` displacement layer (see `top_vertex_count`).
 
 ### Base, sides, bottom (manifold guarantee)
 
@@ -110,10 +126,10 @@ These four parameters live on the **scene-level** property group because changin
 |---|---|
 | **Diameter** (mm) | Drives the grid pitch — every tile in the map must have the same point-to-point diameter to close cleanly. |
 | **Level height** (mm) | A shared corner is shared at the *level* — different `level_height` values on the two sides would put the corner at two different Zs. |
-| **Base thickness** (mm) | Every tile sits flush on z = 0 with its top surface at `base_thickness + level × level_height`; differing base thickness would step the top across the seam. |
-| **Subdivisions** | The rim vertex count per tile is `subdivisions + 1`. Side walls only stay manifold if both sides of a seam share the same rim subdivision. |
+| **Base thickness** (mm) | Every tile sits flush on z = 0 with its top surface at `base_thickness + level × level_height`; differing base thickness would step the top across the seam. (UI minimum 10 mm so the tab/hole interlock fits inside the base.) |
+| **Smoothness Passes** + **Resample Density** | Both set the per-tile top-surface topology (see *Top surface*). Side walls only stay manifold if both sides of a seam share the same rim vertex count, so these are map-wide. |
 
-These four are edited on the **Map Globals** panel. Changes propagate live to every tile in the map — diameter changes also re-position every tile because the grid pitch depends on it.
+A fifth global, **Man Height (mm)**, is the model-scale reference (a printed human figure, 28 mm ≈ common wargaming scale). Procedural-surface feature sizes default to their real-world size scaled by it. These globals are edited on the **Map Globals** panel. Changes propagate live to every tile in the map — diameter changes also re-position every tile because the grid pitch depends on it.
 
 ### X / Y semantics
 
@@ -156,6 +172,27 @@ The centre vertex of each tile (XY offset, override-level, override-toggle) is *
 Once a map exists, the **Generate** button becomes **Regenerate**. It opens Blender's built-in confirmation dialog (a Yes/No prompt with the operator name), then deletes the existing `HexFinity Map` collection and all its tiles and rebuilds from the current global parameters. **All per-tile edits are lost.** Use Regenerate to change `X` / `Y` (which the live-update callbacks intentionally ignore), or to start over after experimenting.
 
 ---
+
+## Terrain brush (sculpt)
+
+A modal **Terrain Brush** lets you raise or lower the top surface freehand, sculpt-style. Press *Paint*, then left-drag across the tiles; right-click or `Esc` exits. The on-screen ring shows the brush size (blue = raise, orange = lower).
+
+- **Radius / Strength** — brush size (mm) and millimetres of displacement per second of dragging at the centre, with a smooth falloff to the rim.
+- **Raise / Lower** — stroke direction.
+- **Preserve Edge** — damps the brush to ~0 within an **Edge Falloff** band of the hex rim so straight edges and shared corners stay put. Turn it off to let a stroke flow across a seam onto the neighbouring tile.
+
+The result is stored as data, not baked geometry: a per-top-vertex z-offset layer (`hf_brush_disp`) that the builder re-applies (clamped to the base thickness) on every rebuild. So painted detail survives corner-height edits — but changing *Smoothness Passes*, *Resample Density*, or *Local Subdivision* changes the vertex count and therefore clears the paint.
+
+## Terrain objects (import & snap)
+
+The **Terrain Objects** button imports an `.stl` mesh, centres it over the selected tile, drops its base flush onto the top surface, and parents it to the tile so it travels with it. Imported objects live in the map collection beside the hex and are merged into that tile's STL on export.
+
+Selecting a dropped (non-tile) object shows a small panel to **Re-drop onto hex** — re-seat it onto the surface of whichever hex it currently sits over — plus two sliders that reshape the hex *under* the model:
+
+- **Terrain snap to model** (mm) — pull the hex top surface up/down toward the model's flat base by up to this many millimetres so the ground hugs the footprint (verts stop at the base, 0.2 mm overlap; arch openings and overhangs are left alone).
+- **Snap damping** (mm) — blend the snap into the surrounding terrain over this width for an organic skirt instead of a hard cliff at the footprint edge (faded near the rim so seams stay aligned).
+
+Like the brush, snap is stored as a displacement layer re-applied on rebuild, and is cleared by a subdivision/resample change.
 
 ## Procedural surface textures
 
@@ -208,7 +245,9 @@ HexFinity
 │   ├─ Diameter (mm)
 │   ├─ Level height (mm)
 │   ├─ Base thickness (mm)
-│   └─ Subdivisions
+│   ├─ Smoothness Passes
+│   ├─ Resample Density
+│   └─ Man Height (mm)
 ├─ Grid
 │   ├─ X (columns)   Y (rows)
 │   ├─ ⓘ X = 0 or Y = 0 → single tile at (0, 0)
@@ -225,30 +264,41 @@ HexFinity
 │   ├─ Diameter (mm)
 │   ├─ Level height (mm)
 │   ├─ Base thickness (mm)
-│   └─ Subdivisions
+│   ├─ Smoothness Passes
+│   ├─ Resample Density
+│   └─ Man Height (mm)
 ├─ Grid                         (X / Y only take effect on Regenerate)
 │   ├─ X (columns)   Y (rows)
 │   └─ ⓘ …
 ├─ [ Regenerate Map ]           (invoke_confirm prompt; rebuilds from scratch)
 │
-└─ If active object is a HexFinity tile:
-   ├─ Editing: HexTile_qq_rr   (q=qq, r=rr)
-   ├─ Corner Levels (clockwise from upper-right)
-   │   ├─ P1   [ int ≥ 0 ]   ← propagates to N.P3 + NE.P5
-   │   ├─ P2   ...           ← propagates to NE.P4 + SE.P6
-   │   ├─ P3                 ← propagates to SE.P5 + S.P1
-   │   ├─ P4                 ← propagates to S.P6  + SW.P2
-   │   ├─ P5                 ← propagates to SW.P1 + NW.P3
-   │   └─ P6                 ← propagates to NW.P2 + N.P4
-   ├─ Center
-   │   ├─ Override center level (toggle)
-   │   ├─ Center level (int, enabled when override is on)
-   │   ├─ Center X (mm)
-   │   └─ Center Y (mm)
-   ├─ … (Terrain Objects, Procedural Surface, Terrain Brush)
-   │
-   └─ Export                      (map-wide; always shown once a map exists)
-       └─ [ Export Tiles to STL ] (directory dialog → one STL per distinct tile + manifest)
+├─ If active object is a HexFinity tile:
+│  ├─ Editing: HexTile_qq_rr   (q=qq, r=rr)
+│  ├─ Corner Levels (clockwise from upper-right)
+│  │   ├─ P1   [ int ≥ 0 ]   ← propagates to N.P3 + NE.P5
+│  │   ├─ P2   ...           ← propagates to NE.P4 + SE.P6
+│  │   ├─ P3                 ← propagates to SE.P5 + S.P1
+│  │   ├─ P4                 ← propagates to S.P6  + SW.P2
+│  │   ├─ P5                 ← propagates to SW.P1 + NW.P3
+│  │   └─ P6                 ← propagates to NW.P2 + N.P4
+│  ├─ Center
+│  │   ├─ Override center level (toggle)
+│  │   ├─ Center level (int, enabled when override is on)
+│  │   ├─ Center X / Center Y (mm)
+│  │   ├─ Dome Area / Dome Damping        (bump shaping; Copy to Selected)
+│  │   └─ Local Subdivision               (per-tile extra density)
+│  ├─ [ Terrain Objects ]      (import STL, drop on tile, parent)
+│  ├─ Procedural Surface       (region list + Draw Region — see below)
+│  └─ Terrain Brush            (Raise/Lower, Radius, Strength, Preserve Edge → Paint)
+│
+├─ If active object is a dropped terrain object:
+│  └─ Terrain Object: <name>
+│      ├─ [ Re-drop onto hex ]
+│      ├─ Terrain snap to model (mm)
+│      └─ Snap damping (mm)
+│
+└─ Export                      (map-wide; always shown once a map exists)
+    └─ [ Export Tiles to STL ] (directory dialog → one STL per distinct tile + manifest)
 ```
 
 A floating sphere gizmo, hovering one *level height* above the tile's apex, drags the active tile's centre XY inside the hex. When a HexFinity tile is selected, the viewport also overlays `P1`–`P6` labels floating one *level height* above each corner so corner identity is unambiguous in the panel.
@@ -271,6 +321,7 @@ C:\Work\Hexfinity\
 │   ├─ brush.py                # modal terrain paint brush
 │   ├─ regions.py              # modal draw-region operator + region list UI
 │   ├─ mesh_builder.py         # pure-Python mesh construction (no bpy)
+│   ├─ subdivision.py          # pure-Python Loop + linear-midpoint subdivision (no bpy)
 │   ├─ procedural_surfaces.py  # pure-Python surface registry + masks (no bpy)
 │   ├─ map.py                  # pure-Python grid math + SHARED_CORNERS table
 │   ├─ tile_export.py          # pure-Python export hashing + naming (no bpy)
@@ -278,13 +329,14 @@ C:\Work\Hexfinity\
 └─ tests\
     ├─ conftest.py
     ├─ test_mesh_builder.py
+    ├─ test_subdivision.py
     ├─ test_procedural_surfaces.py
     ├─ test_map.py
     ├─ test_tile_export.py
     └─ test_manifold_check.py
 ```
 
-`mesh_builder.py`, `procedural_surfaces.py`, `map.py`, `tile_export.py`, and `manifold_check.py` deliberately contain no `bpy` imports so they can be unit-tested outside Blender (`__init__.py` defers its bpy imports into `register()` for the same reason).
+`mesh_builder.py`, `subdivision.py`, `procedural_surfaces.py`, `map.py`, `tile_export.py`, and `manifold_check.py` deliberately contain no `bpy` imports so they can be unit-tested outside Blender (`__init__.py` defers its bpy imports into `register()` for the same reason).
 
 HexFinity is packaged as a **Blender extension** (see `blender_manifest.toml`), the format Blender 5.x ships with — there is no `bl_info` dict in `__init__.py`.
 
@@ -308,7 +360,7 @@ The script reads the version from `blender_manifest.toml`, strips `__pycache__`,
 
 ### Running the unit tests
 
-`mesh_builder.py`, `map.py`, and `manifold_check.py` are unit-tested with `pytest`. You can run them against Blender's bundled Python (which contains no `bpy` dependency for these modules):
+The bpy-free modules (`mesh_builder.py`, `subdivision.py`, `procedural_surfaces.py`, `map.py`, `tile_export.py`, `manifold_check.py`) are unit-tested with `pytest`. You can run them against Blender's bundled Python (which contains no `bpy` dependency for these modules):
 
 ```
 "C:\Program Files\Blender Foundation\Blender 5.1\5.1\python\bin\python.exe" -m pip install --user pytest
@@ -321,9 +373,11 @@ The script reads the version from `blender_manifest.toml`, strips `__pycache__`,
 
 After generating a map:
 
-1. **Visual smoke test** — diameter = 100 mm, level height = 5 mm, base thickness = 3 mm, subdivisions = 4, X = 3, Y = 3. Expect nine flat-top hex tiles tessellated in odd-q offset, all level 0 (flat).
+1. **Visual smoke test** — diameter = 100 mm, level height = 5 mm, base thickness = 10 mm, smoothness passes = 2, X = 3, Y = 3. Expect nine flat-top hex tiles tessellated in odd-q offset, all level 0 (flat).
 2. **Manifold check (per tile)** — select any tile, Edit Mode → *Select → All by Trait → Non-Manifold*. Zero vertices selected = pass. (The plugin's own check already asserts this on build.)
 3. **Tessellation check** — visually inspect the seams: opposing edges should align with no gaps and no overlap.
 4. **Shared-corner check** — on tile `(0, 0)` set `P1 = 3`. Expect `(0, 1).P3` and `(1, 0).P5` to both jump to `3` and the top surface to stay continuous across the seam.
 5. **Smoothness check** — shade-smooth the top faces (the per-patch interior is already C∞; shading just averages the patch-to-patch normals across the spokes). A Subdivision Surface modifier is not required for smoothness *within* a tile.
-6. **Procedural surface check** — raise *Local Subdivision* on a tile, *Procedural Surface → Draw Region*, click a loop, close it (Enter). The interior gains cobblestone; the rim stays flat (still interlocks). Add a whole-tile *Furrow* region and rotate its **Direction** — the ridges follow the arrow. See [docs/procedural_surfaces.md](docs/procedural_surfaces.md). (A headless smoke test of the full register→region→rebuild path lives in `tests/_headless_region_check.py`: `blender --background --factory-startup --python tests/_headless_region_check.py`.)
+6. **Terrain brush check** — *Terrain Brush → Paint*, left-drag on a tile to raise a hill, then switch to *Lower* and dig. With *Preserve Edge* on the rim stays put; turn it off and a stroke flows across the seam onto the neighbour. Edit a corner level afterwards — the painted shape survives; bump *Smoothness Passes* and it clears.
+7. **Terrain object check** — select a tile, *Terrain Objects*, pick an `.stl`; it drops centred and flush on the surface. Select the dropped object and raise *Terrain snap to model* — the ground rises to hug its base; add *Snap damping* for a skirt.
+8. **Procedural surface check** — raise *Local Subdivision* on a tile, *Procedural Surface → Draw Region*, click a loop, close it (Enter). The interior gains cobblestone; the rim stays flat (still interlocks). Add a whole-tile *Furrow* region and rotate its **Direction** — the ridges follow the arrow. See [docs/procedural_surfaces.md](docs/procedural_surfaces.md). (A headless smoke test of the full register→region→rebuild path lives in `tests/_headless_region_check.py`: `blender --background --factory-startup --python tests/_headless_region_check.py`.)
