@@ -40,3 +40,8 @@ Blender 5.1+ extension that generates a grid of interlocking hexagonal terrain t
 
 - `README.md` — geometry theory (Coons patches, G0 continuity), UI tree, diagrams, verification checklist.
 - `terrain_creation_initial.md` — flat-top P1–P6 labelling decisions and kickoff design Q&A.
+
+
+## Development requirements
+* Always update the README documentation. Base level documentation update automatic. If needed subpages can be created/updated these are placed in the docs/ folder.
+* write tests and validation when implementing.
