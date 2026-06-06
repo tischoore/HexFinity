@@ -32,6 +32,9 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         row.prop(map_props, "grid_x")
         row.prop(map_props, "grid_y")
         box.label(text="X = 0 or Y = 0 → single tile at (0, 0)", icon='INFO')
+        box.prop(map_props, "base_level")
+        box.label(text="Base Level applies on (re)generate (wipes edits).",
+                  icon='INFO')
 
         if not map_props.is_generated:
             layout.operator("hexfinity.generate_map", icon='MESH_ICOSPHERE')
