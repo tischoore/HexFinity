@@ -170,7 +170,9 @@ HexFinity
 │   └─ Subdivisions
 ├─ Grid
 │   ├─ X (columns)   Y (rows)
-│   └─ ⓘ X = 0 or Y = 0 → single tile at (0, 0)
+│   ├─ ⓘ X = 0 or Y = 0 → single tile at (0, 0)
+│   ├─ Base Level                (seeds every corner at this level on generate)
+│   └─ ⓘ Base Level applies on (re)generate (wipes edits)
 └─ [ Generate Map ]
 ```
 

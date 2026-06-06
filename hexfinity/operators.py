@@ -231,8 +231,17 @@ def _build_map(context, operator):
             mesh = bpy.data.meshes.new(name)
             obj = bpy.data.objects.new(name, mesh)
             coll.objects.link(obj)
-            obj.hexfinity_tile.coord_q = q
-            obj.hexfinity_tile.coord_r = r
+            tp = obj.hexfinity_tile
+            tp.coord_q = q
+            tp.coord_r = r
+            # Seed every corner (and the centre override, for when it's later
+            # toggled on) at the map-wide base level. is_generated is still
+            # False here, so the corner/local update callbacks short-circuit —
+            # no premature seam propagation; the first rebuild below builds the
+            # raised surface directly.
+            bl = map_props.base_level
+            tp.p1 = tp.p2 = tp.p3 = tp.p4 = tp.p5 = tp.p6 = bl
+            tp.center_level = bl
             x, y = tile_world_xy(q, r, map_props.diameter_mm)
             obj.location = (x, y, 0.0)
             rebuild_tile(obj)
