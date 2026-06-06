@@ -17,10 +17,17 @@ import math
 try:
     # Package import path used by the Blender extension.
     from .subdivision import subdivide_loop, linear_midpoint_subdivide
+    from . import procedural_surfaces
 except ImportError:
     # Flat import path used by the unit-test conftest (adds hexfinity/ to
     # sys.path so the bpy-free modules can be imported without the package).
     from subdivision import subdivide_loop, linear_midpoint_subdivide
+    import procedural_surfaces
+
+
+# Default width (mm) of the band over which a procedural surface fades to flat at
+# the hex rim, so shared edges/corners keep their exact interlock heights.
+SURFACE_RIM_FALLOFF_MM = 15.0
 
 
 # Inter-tile interlock geometry. Each side carries one rectangular tab sticking
@@ -115,6 +122,36 @@ def effective_resample(global_density, local_subdiv):
     return int(global_density) + max(0, int(local_subdiv))
 
 
+def _surface_offset_for_regions(x, y, regions, origin_xy, seed):
+    """Sum the procedural-surface z-offset (mm) of every region at (x, y).
+
+    Each region contributes `region_mask · surface_offset`; a region with no
+    polygon covers the whole tile (mask 1). The rim fade is applied by the
+    caller. bpy-free helper kept here so the builder owns rim/region blending.
+    """
+    total = 0.0
+    for reg in regions:
+        poly = reg.get("polygon")
+        if poly:
+            mask = procedural_surfaces.region_mask(
+                x, y, poly, reg.get("mask_falloff_mm", 0.0))
+            if mask <= 0.0:
+                continue
+        else:
+            mask = 1.0
+        total += mask * procedural_surfaces.surface_offset(
+            x, y,
+            surface_type=reg.get("surface_type", "NONE"),
+            feature_mm=reg.get("feature_mm", 0.0),
+            depth_mm=reg.get("depth_mm", 0.0),
+            regularity=reg.get("regularity", 0.5),
+            seed=reg.get("seed", seed),
+            origin_xy=origin_xy,
+            direction_rad=reg.get("direction_rad", 0.0),
+        )
+    return total
+
+
 def build_hex_tile(
     diameter_mm,
     level_height_mm,
@@ -127,6 +164,10 @@ def build_hex_tile(
     dome_area=INNER_RING_FACTOR,
     dome_damping=2.0 / 3.0,
     top_displacement=None,
+    surface_regions=None,
+    surface_origin_xy=(0.0, 0.0),
+    surface_seed=0,
+    surface_rim_falloff_mm=SURFACE_RIM_FALLOFF_MM,
 ):
     """Build a single HexFinity tile.
 
@@ -148,6 +189,17 @@ def build_hex_tile(
     deep "lower" stroke can never punch the top through the base and invert the
     side walls. The displacement is z-only and topology-preserving, so the
     `check_manifold()` run by the caller still validates the painted mesh.
+
+    `surface_regions`, when given, is a list of procedural-surface regions, each a
+    dict: `surface_type`, `feature_mm`, `depth_mm`, `regularity`, `direction_rad`,
+    optional `polygon` (list of (x, y) tile-local mm — omitted/empty = whole tile),
+    optional `mask_falloff_mm` (boundary blend band), and optional `seed`. Each
+    top vert's z gets `Σ region_mask · surface_offset` (see `procedural_surfaces`)
+    added, scaled by a rim fade so the texture vanishes within
+    `surface_rim_falloff_mm` of the rim (seams stay flat for interlock). Sampled in
+    GLOBAL coords (`surface_origin_xy` = tile world XY) so patterns flow across
+    seams. Like `top_displacement` this is z-only and clamped to `base_thickness_mm`,
+    so the manifold guarantee holds.
     """
     if diameter_mm <= 0:
         raise ValueError(f"diameter_mm must be positive, got {diameter_mm}")
@@ -305,10 +357,20 @@ def build_hex_tile(
     # any bottom/side/tab geometry. The brush's painted displacement is keyed to
     # exactly this index range; apply it here (z-only, clamped to the base).
     num_top = len(verts_mm)
-    if top_displacement is not None and len(top_displacement) == num_top:
+    have_disp = top_displacement is not None and len(top_displacement) == num_top
+    regions = surface_regions or ()
+    falloff = max(surface_rim_falloff_mm, 1e-6)
+    if have_disp or regions:
         for i in range(num_top):
             x, y, z = verts_mm[i]
-            verts_mm[i] = (x, y, max(z + top_displacement[i], base_thickness_mm))
+            dz = top_displacement[i] if have_disp else 0.0
+            if regions:
+                fade = rim_edge_distance(x, y, diameter_mm) / falloff
+                fade = 0.0 if fade < 0.0 else (1.0 if fade > 1.0 else fade)
+                if fade > 0.0:
+                    dz += fade * _surface_offset_for_regions(
+                        x, y, regions, surface_origin_xy, surface_seed)
+            verts_mm[i] = (x, y, max(z + dz, base_thickness_mm))
 
     for f in sub_faces:
         faces.append(tuple(top_remap[v] for v in f))

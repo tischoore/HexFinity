@@ -10,11 +10,16 @@ import math
 
 import bpy
 import blf
+import gpu
+from gpu_extras.batch import batch_for_shader
 from bpy_extras import view3d_utils
 from mathutils import Vector
 
 
 _HANDLE = None
+
+_REGION_COLOR = (1.0, 0.8, 0.2, 0.9)
+_DIRECTION_COLOR = (0.3, 1.0, 0.5, 0.95)
 
 _FONT_ID = 0
 _FONT_SIZE = 14
@@ -51,6 +56,77 @@ def _tile_corner_world_positions(obj, map_props):
     return out
 
 
+def _region_hover_z(obj, map_props):
+    """A z (mm, tile-local) just above the tile top to float the region guide on."""
+    tile = obj.hexfinity_tile
+    levels = (tile.p1, tile.p2, tile.p3, tile.p4, tile.p5, tile.p6)
+    return map_props.base_thickness_mm + (max(levels) + 1) * map_props.level_height_mm
+
+
+def _draw_regions(context, region, rv3d, map_props, tiles):
+    """Draw each tile's region loops on the surface, plus a direction arrow for
+    the active region of the active tile (anisotropic surfaces use it)."""
+    active_obj = context.active_object
+    shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+    gpu.state.blend_set('ALPHA')
+    gpu.state.line_width_set(2.0)
+    shader.bind()
+
+    for obj in tiles:
+        tile = obj.hexfinity_tile
+        if not len(tile.surface_regions):
+            continue
+        mw = obj.matrix_world
+        z = _region_hover_z(obj, map_props)
+        for ri, reg in enumerate(tile.surface_regions):
+            pts = reg.points
+            if len(pts) < 3:
+                continue
+            loop = []
+            for p in pts:
+                s = view3d_utils.location_3d_to_region_2d(
+                    region, rv3d, mw @ Vector((p.x, p.y, z)))
+                if s is not None:
+                    loop.append((s.x, s.y))
+            if len(loop) < 2:
+                continue
+            loop.append(loop[0])
+            shader.uniform_float("color", _REGION_COLOR)
+            batch_for_shader(shader, 'LINE_STRIP', {"pos": loop}).draw(shader)
+
+            # Direction arrow for the active region of the active tile.
+            is_active = (obj == active_obj
+                         and ri == tile.active_surface_region_index)
+            if is_active:
+                cx = sum(p.x for p in pts) / len(pts)
+                cy = sum(p.y for p in pts) / len(pts)
+                length = map_props.diameter_mm * 0.18
+                ang = math.radians(reg.direction_deg)
+                dx, dy = math.cos(ang), math.sin(ang)
+                tip = (cx + dx * length, cy + dy * length)
+                # Two short barbs for an arrowhead.
+                back = length * 0.3
+                bx, by = -dx * back, -dy * back
+                px, py = -dy * back * 0.6, dx * back * 0.6
+                seg = [
+                    (cx, cy, z), (tip[0], tip[1], z),
+                    (tip[0] + bx + px, tip[1] + by + py, z), (tip[0], tip[1], z),
+                    (tip[0] + bx - px, tip[1] + by - py, z),
+                ]
+                arr = []
+                for (ax, ay, az) in seg:
+                    s = view3d_utils.location_3d_to_region_2d(
+                        region, rv3d, mw @ Vector((ax, ay, az)))
+                    if s is not None:
+                        arr.append((s.x, s.y))
+                if len(arr) >= 2:
+                    shader.uniform_float("color", _DIRECTION_COLOR)
+                    batch_for_shader(shader, 'LINE_STRIP', {"pos": arr}).draw(shader)
+
+    gpu.state.line_width_set(1.0)
+    gpu.state.blend_set('NONE')
+
+
 def _draw_callback():
     context = bpy.context
     scene = context.scene
@@ -72,6 +148,8 @@ def _draw_callback():
     tiles = [o for o in selected if o.hexfinity_tile.is_generated]
     if not tiles:
         return
+
+    _draw_regions(context, region, rv3d, map_props, tiles)
 
     blf.size(_FONT_ID, _FONT_SIZE)
     blf.enable(_FONT_ID, blf.SHADOW)

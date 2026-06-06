@@ -100,6 +100,23 @@ def rebuild_tile(obj):
             s = snap if snap is not None else [0.0] * num_top
             combined = [b[i] + s[i] for i in range(num_top)]
 
+        # Procedural surface regions: closed polygons (tile-local mm) + params.
+        # Marshalled into plain dicts the bpy-free builder understands. Sampled
+        # in global coords (origin = tile world XY) so patterns flow across seams;
+        # a per-tile-but-reproducible seed varies the pattern between tiles.
+        surface_regions = []
+        for reg in tile_props.surface_regions:
+            surface_regions.append({
+                "surface_type": reg.surface_type,
+                "feature_mm": reg.feature_mm,
+                "depth_mm": reg.depth_mm,
+                "regularity": reg.regularity,
+                "direction_rad": math.radians(reg.direction_deg),
+                "polygon": [(p.x, p.y) for p in reg.points],
+                "mask_falloff_mm": reg.mask_falloff_mm,
+            })
+        surface_seed = (tile_props.coord_q * 73856093) ^ (tile_props.coord_r * 19349663)
+
         verts, faces = build_hex_tile(
             diameter_mm=map_props.diameter_mm,
             level_height_mm=map_props.level_height_mm,
@@ -112,6 +129,9 @@ def rebuild_tile(obj):
             dome_area=tile_props.dome_area,
             dome_damping=tile_props.dome_damping,
             top_displacement=combined,
+            surface_regions=surface_regions,
+            surface_origin_xy=(obj.location.x, obj.location.y),
+            surface_seed=surface_seed,
         )
         assert_two_manifold(verts, faces)
 
