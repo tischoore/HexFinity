@@ -13,6 +13,8 @@ from mesh_builder import (
     TAB_DEPTH_MM,
     TAB_OFFSET_FROM_CORNER_MM,
     TAB_HOLE_TOLERANCE_MM,
+    TAB_FILLET_MM,
+    TAB_FILLET_SEGMENTS,
 )
 from manifold_check import assert_two_manifold
 from map import neighbour_coord, tile_world_xy, NE
@@ -38,37 +40,45 @@ def _build(
     )
 
 
+# Bottom region counts depend on the tab fillet tessellation. Per side the tab
+# contributes 2 + 4·(SEG+1) verts and 2 + (2·SEG+3) faces (see mesh_builder).
+_TAB_VERTS = 6 * (2 + 4 * (TAB_FILLET_SEGMENTS + 1))
+_TAB_FACES = 6 * (2 + (2 * TAB_FILLET_SEGMENTS + 3))
+# 6 bcorners + 24 bbreaks + 1 bcenter + tab + 36 hole (shared keys deduped).
+_BOTTOM_VERTS = 6 + 24 + 1 + _TAB_VERTS + 36
+# 6 side-wall n-gons + tab + 24 cavity faces (4/side) + 42 bottom-plate (7/side).
+_BOTTOM_FACES = 6 + _TAB_FACES + 24 + 42
+
+
 @pytest.mark.parametrize(
-    "smoothness_passes,expected_v",
+    "smoothness_passes,top_v",
     [
         # Top: Loop subdivision of the 13/18/30 control mesh. V grows by
-        # +E each pass; E grows by 2·E + 3·F. Bottom: 103 verts (6 bcorners
-        # + 24 bbreaks + 1 bcenter + 36 tab + 36 hole, with shared keys).
-        (0, 13 + 103),    # control mesh (13)
-        (1, 43 + 103),
-        (2, 157 + 103),
-        (3, 601 + 103),
+        # +E each pass; E grows by 2·E + 3·F.
+        (0, 13),    # control mesh (13)
+        (1, 43),
+        (2, 157),
+        (3, 601),
     ],
 )
-def test_vertex_count(smoothness_passes, expected_v):
+def test_vertex_count(smoothness_passes, top_v):
     verts, _ = _build(smoothness_passes=smoothness_passes)
-    assert len(verts) == expected_v
+    assert len(verts) == top_v + _BOTTOM_VERTS
 
 
 @pytest.mark.parametrize(
-    "smoothness_passes,expected_f",
+    "smoothness_passes,top_f",
     [
-        # Top: 18 · 4^L. Bottom region: 6 side-wall n-gons + 30 tab faces
-        # (5/side) + 24 cavity faces (4/side) + 42 bottom-plate (7/side) = 102.
-        (0, 18 + 102),
-        (1, 72 + 102),
-        (2, 288 + 102),
-        (3, 1152 + 102),
+        # Top: 18 · 4^L.
+        (0, 18),
+        (1, 72),
+        (2, 288),
+        (3, 1152),
     ],
 )
-def test_face_count(smoothness_passes, expected_f):
+def test_face_count(smoothness_passes, top_f):
     _, faces = _build(smoothness_passes=smoothness_passes)
-    assert len(faces) == expected_f
+    assert len(faces) == top_f + _BOTTOM_FACES
 
 
 @pytest.mark.parametrize("smoothness_passes", [0, 1, 2, 3])
@@ -344,19 +354,64 @@ def _find_vertex(verts, target, tol=1e-6):
     return None
 
 
-def test_tab_corners_placed_on_side_0():
-    # Side 0 tab is 10 mm from P2 (the clockwise-next corner of side 0). All
-    # 8 tab corners must exist in the mesh at the spec-derived positions.
+def test_tab_inner_corners_sharp_outer_corners_filleted():
+    # Side 0 tab is 10 mm from P2 (the clockwise-next corner of side 0). The two
+    # inner corners (radial 0, at the wall) stay sharp; the two outer (leading)
+    # vertical edges are replaced by a TAB_FILLET_MM fillet, so the sharp outer
+    # corners are gone and the fillet tangent points appear instead.
     P1, P2, side_len, outward = _side0_frame()
     u_lo = side_len - TAB_OFFSET_FROM_CORNER_MM - TAB_WIDTH_MM
     u_hi = side_len - TAB_OFFSET_FROM_CORNER_MM
+    r = TAB_FILLET_MM
     verts, _ = build_hex_tile(100.0, 5.0, 10.0, (0,) * 6, None, 0)
-    for u in (u_lo, u_hi):
-        for radial in (0.0, TAB_DEPTH_MM):
-            for z in (0.0, TAB_HEIGHT_MM):
-                target = _pos_along_side(P1, P2, side_len, outward, u, radial, z)
-                assert _find_vertex(verts, target) is not None, (
-                    f"no tab vertex at {target}")
+
+    for z in (0.0, TAB_HEIGHT_MM):
+        # Inner corners (against the wall) remain sharp at both z levels.
+        for u in (u_lo, u_hi):
+            target = _pos_along_side(P1, P2, side_len, outward, u, 0.0, z)
+            assert _find_vertex(verts, target) is not None, (
+                f"missing sharp inner tab corner at {target}")
+        # Sharp outer corners must be gone.
+        for u in (u_lo, u_hi):
+            gone = _pos_along_side(P1, P2, side_len, outward, u, TAB_DEPTH_MM, z)
+            assert _find_vertex(verts, gone) is None, (
+                f"sharp outer tab corner should be filleted away: {gone}")
+        # Fillet tangent points: on the outer face (u_lo+r / u_hi-r at full
+        # depth) and on the end caps (u_lo / u_hi at depth D-r).
+        tangents = [
+            (u_lo + r, TAB_DEPTH_MM),
+            (u_hi - r, TAB_DEPTH_MM),
+            (u_lo, TAB_DEPTH_MM - r),
+            (u_hi, TAB_DEPTH_MM - r),
+        ]
+        for u, radial in tangents:
+            target = _pos_along_side(P1, P2, side_len, outward, u, radial, z)
+            assert _find_vertex(verts, target) is not None, (
+                f"missing fillet tangent vertex at {target}")
+
+
+def test_tab_outer_face_width_and_max_depth():
+    # The fillet shrinks the flat outer face by r on each end but the tab still
+    # reaches its full radial depth at the fillet tangent points.
+    P1, P2, side_len, outward = _side0_frame()
+    u_lo = side_len - TAB_OFFSET_FROM_CORNER_MM - TAB_WIDTH_MM
+    u_hi = side_len - TAB_OFFSET_FROM_CORNER_MM
+    r = TAB_FILLET_MM
+    verts, _ = build_hex_tile(100.0, 5.0, 10.0, (0,) * 6, None, 0)
+
+    # Flat outer face spans [u_lo+r, u_hi-r] => width = TAB_WIDTH - 2r.
+    lo = _pos_along_side(P1, P2, side_len, outward, u_lo + r, TAB_DEPTH_MM, 0.0)
+    hi = _pos_along_side(P1, P2, side_len, outward, u_hi - r, TAB_DEPTH_MM, 0.0)
+    width = math.hypot(hi[0] - lo[0], hi[1] - lo[1])
+    assert abs(width - (TAB_WIDTH_MM - 2.0 * r)) < 1e-6
+
+    # No vertex extends past the nominal tab depth (fillet only removes material).
+    # The side-0 outer face is the outermost feature in the `outward` direction;
+    # its tangent points sit exactly TAB_DEPTH beyond the rim line.
+    max_depth = max(v[0] * outward[0] + v[1] * outward[1] for v in verts)
+    tip = _pos_along_side(P1, P2, side_len, outward, u_lo + r, TAB_DEPTH_MM, 0.0)
+    tip_depth = tip[0] * outward[0] + tip[1] * outward[1]
+    assert abs(max_depth - tip_depth) < 1e-6
 
 
 def test_hole_corners_placed_on_side_0():

@@ -39,6 +39,10 @@ TAB_DEPTH_MM = 10.0              # radially outward
 TAB_OFFSET_FROM_CORNER_MM = 10.0  # tab is this far from the next corner;
                                   # hole is this far from the previous corner.
 TAB_HOLE_TOLERANCE_MM = 0.2      # hole is +TOL in every axis vs tab so tiles slide together.
+TAB_FILLET_MM = 4.0              # radius rounding the two outer (leading) vertical
+                                 # edges of each tab so tiles mate more easily; the
+                                 # square hole is left sharp.
+TAB_FILLET_SEGMENTS = 3          # arc tessellation per rounded outer corner.
 
 # Inner-ring control vertex placement. Qi sits between C and the midpoint of
 # rim segment Pi→Pi+1, at this fraction of the way out. 0.5 keeps the Q ring
@@ -249,6 +253,13 @@ def build_hex_tile(
             f"side length {_side_len:.3f} mm leaves a gap of {_gap:.3f} mm "
             f"between hole and tab (need >= 0.1 mm)"
         )
+    # Outer-corner fillet must fit inside the tab footprint: two fillets can't
+    # eat more than the tab width, and one can't exceed the tab depth.
+    if TAB_FILLET_MM >= TAB_WIDTH_MM / 2.0 or TAB_FILLET_MM >= TAB_DEPTH_MM:
+        raise ValueError(
+            f"TAB_FILLET_MM={TAB_FILLET_MM} too large for tab "
+            f"{TAB_WIDTH_MM}x{TAB_DEPTH_MM} mm footprint"
+        )
 
     levels = tuple(max(0, int(L)) for L in corner_levels)
     R = diameter_mm / 2.0
@@ -437,40 +448,64 @@ def build_hex_tile(
                          ("tab_lo", u_tab_lo), ("tab_hi", u_tab_hi)):
             add_vert(("bbreak", i, label), point_on_side(i, u, 0.0))
 
-    # ----- Tab geometry: 6 new verts (2 share bbreak/tab_*) + 5 faces per side
+    # ----- Tab geometry: a vertical extrusion of a rounded-rectangle profile in
+    # the per-side (u, depth) plane. The two OUTER (leading) vertical edges are
+    # filleted with radius TAB_FILLET_MM so tiles mate more easily; the inner
+    # edge (the wall junction) and the two inner corners stay sharp, and most of
+    # the outer face stays flat for a solid connection. Per side this is
+    # 2 + 4*(SEG+1) new verts and 2 + (2*SEG+3) faces.
+    r = TAB_FILLET_MM
+    seg = TAB_FILLET_SEGMENTS
+    H = TAB_HEIGHT_MM
+    D = TAB_DEPTH_MM
+
+    def _arc(cu, cv, start_deg, end_deg):
+        # SEG+1 (u, depth) points sweeping start->end about (cu, cv) at radius r.
+        pts = []
+        for k in range(seg + 1):
+            a = math.radians(start_deg + (end_deg - start_deg) * k / seg)
+            pts.append((cu + r * math.cos(a), cv + r * math.sin(a)))
+        return pts
+
     for i in range(6):
         outward = rim_normals[i]
-        inner_lo = point_on_side(i, u_tab_lo, 0.0)
-        inner_hi = point_on_side(i, u_tab_hi, 0.0)
-        ox = TAB_DEPTH_MM * outward[0]
-        oy = TAB_DEPTH_MM * outward[1]
-        H = TAB_HEIGHT_MM
 
-        # Two shared bottom-inner verts (already at bbreak/tab_lo, tab_hi).
-        v_inner_lo_bot = vert_index[("bbreak", i, "tab_lo")]
-        v_inner_hi_bot = vert_index[("bbreak", i, "tab_hi")]
-        # Six new verts.
-        v_inner_lo_top = add_vert(("tab_inner_top", i, "lo"),
-                                   (inner_lo[0], inner_lo[1], H))
-        v_inner_hi_top = add_vert(("tab_inner_top", i, "hi"),
-                                   (inner_hi[0], inner_hi[1], H))
-        v_outer_lo_bot = add_vert(("tab_outer_bot", i, "lo"),
-                                   (inner_lo[0] + ox, inner_lo[1] + oy, 0.0))
-        v_outer_hi_bot = add_vert(("tab_outer_bot", i, "hi"),
-                                   (inner_hi[0] + ox, inner_hi[1] + oy, 0.0))
-        v_outer_lo_top = add_vert(("tab_outer_top", i, "lo"),
-                                   (inner_lo[0] + ox, inner_lo[1] + oy, H))
-        v_outer_hi_top = add_vert(("tab_outer_top", i, "hi"),
-                                   (inner_hi[0] + ox, inner_hi[1] + oy, H))
+        def tab_world(u, depth, z):
+            base = point_on_side(i, u, 0.0)
+            return (base[0] + depth * outward[0],
+                    base[1] + depth * outward[1], z)
 
-        # 5 faces — top, outer (front), bottom, lo end cap, hi end cap.
-        # Wound for outward normals (verified topologically; visual normal flip
-        # would be a single mesh.flip_normals away if any face came out wrong).
-        faces.append((v_inner_lo_top, v_inner_hi_top, v_outer_hi_top, v_outer_lo_top))  # top +Z
-        faces.append((v_outer_lo_bot, v_outer_hi_bot, v_outer_hi_top, v_outer_lo_top))  # outer +rim
-        faces.append((v_inner_lo_bot, v_outer_lo_bot, v_outer_hi_bot, v_inner_hi_bot))  # bottom -Z
-        faces.append((v_inner_lo_bot, v_inner_lo_top, v_outer_lo_top, v_outer_lo_bot))  # lo cap -side
-        faces.append((v_inner_hi_bot, v_outer_hi_bot, v_outer_hi_top, v_inner_hi_top))  # hi cap +side
+        # Free-perimeter profile, walking the lo end cap, the lo fillet, the
+        # outer face, the hi fillet and the hi end cap. The closing inner edge
+        # (inner_hi -> inner_lo at depth 0) is the wall junction and is left
+        # uncapped here — the side-wall n-gon and bottom plate already span it.
+        arc_lo = _arc(u_tab_lo + r, D - r, 180.0, 90.0)   # (u_lo,D-r) -> (u_lo+r,D)
+        arc_hi = _arc(u_tab_hi - r, D - r, 90.0, 0.0)      # (u_hi-r,D) -> (u_hi,D-r)
+        profile = [(u_tab_lo, 0.0)] + arc_lo + arc_hi + [(u_tab_hi, 0.0)]
+        last = len(profile) - 1
+
+        ring_bot = []
+        ring_top = []
+        for j, (u, depth) in enumerate(profile):
+            if j == 0:                       # inner_lo (shared with wall/plate)
+                bot = vert_index[("bbreak", i, "tab_lo")]
+                top = add_vert(("tab_inner_top", i, "lo"), tab_world(u, depth, H))
+            elif j == last:                  # inner_hi (shared with wall/plate)
+                bot = vert_index[("bbreak", i, "tab_hi")]
+                top = add_vert(("tab_inner_top", i, "hi"), tab_world(u, depth, H))
+            else:
+                bot = add_vert(("tab_ring_bot", i, j), tab_world(u, depth, 0.0))
+                top = add_vert(("tab_ring_top", i, j), tab_world(u, depth, H))
+            ring_bot.append(bot)
+            ring_top.append(top)
+
+        # Caps (wound for outward normals — top +Z, bottom -Z) and one outward
+        # wall quad per free profile segment.
+        faces.append(tuple(reversed(ring_top)))   # top +Z
+        faces.append(tuple(ring_bot))             # bottom -Z
+        for j in range(last):
+            faces.append((ring_bot[j], ring_bot[j + 1],
+                          ring_top[j + 1], ring_top[j]))
 
     # ----- Hole cavity: 6 new verts + 4 faces per side (no floor, no front) --
     for i in range(6):
