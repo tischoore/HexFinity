@@ -26,6 +26,7 @@ All linear inputs are expressed in **millimeters**, and mesh vertices are emitte
 - [Terrain objects (import & snap)](#terrain-objects-import--snap)
 - [Procedural surface textures](#procedural-surface-textures)
 - [Export STLs](#export-stls)
+- [Slice to G-code (Bambu Studio)](#slice-to-g-code-bambu-studio)
 - [UI](#ui)
 - [Project layout](#project-layout)
 - [Install (development)](#install-development)
@@ -252,6 +253,35 @@ distinct tile once:
 place printed tiles correctly even after duplicates were merged away.
 
 See **[docs/export.md](docs/export.md)** for the dedup contract and manifest format.
+
+## Slice to G-code (Bambu Studio)
+
+Once you have exported a folder of STLs, the standalone **`scripts/slice_tiles.py`**
+batch-slices every tile to G-code with a locally installed **Bambu Studio**,
+naming each output with its print quantity:
+
+```
+python scripts/slice_tiles.py [export_folder] [--settings path.json]
+```
+
+There is **no UI** — every parameter lives in `scripts/slice_tiles_settings.json`:
+the export folder, **sparse infill density** (5–20%) and **pattern** (default
+Honeycomb), plus **printer**, **nozzle**, **filament**, and **quality**. The
+four preset keys may be left `""` to auto-pick the install's defaults (first
+printer, 0.4 nozzle, the machine's default filament/process); naming a preset
+that does not exist fails with the list of valid options. The file also carries
+a `possible_values` reference block (ignored at slice time) listing every valid
+value for each setting — regenerate it from the live install with
+`python scripts/slice_tiles.py --refresh`. For each STL it writes a `.gcode.3mf`
+(what Bambu printers ingest natively) *and* an extracted plain `.gcode`, both
+named `hex_q00_r00.<count>.gcode[.3mf]` where `<count>` (read from
+`manifest.json`) is how many copies of that tile the map needs.
+
+No `bpy` is involved — the script runs in plain CPython. Its pure logic is
+covered by `scripts/tests/test_slice_tiles.py`.
+
+See **[docs/slicing.md](docs/slicing.md)** for parameters, the Bambu CLI
+caveats this works around, and troubleshooting.
 
 ## UI
 
