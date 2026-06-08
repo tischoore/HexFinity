@@ -23,8 +23,13 @@ Auto generate an edge for all of the terrain
 ## Top surface texture
 Creating a brush that applies "plowed field", brushes, cobblestones, sheer rock surface
 
-## easier fit.
-making the tabs rounded along the z-axis for the tabs to help this fits.
 
 ## Removable terrain features
 When having trees, bushes, and other features where infantry normally can enter (warmaster rules) a good way of handling this is to remove certain parts of the terrain features. Design a methodology where it is possible to model the tile with the trees, but when printing they are printed next to the tile and have some kind of "lego-like" interface so they can be removed.
+
+
+
+# implemented
+
+## easier fit.
+making the tabs rounded along the z-axis for the tabs to help this fits.
