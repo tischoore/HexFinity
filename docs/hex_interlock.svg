@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg viewBox="0 0 720 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="hexInterlockTitle hexInterlockDesc">
   <title id="hexInterlockTitle">HexFinity tile interlock (top view of one hex side)</title>
-  <desc id="hexInterlockDesc">Top-down view of one hex side running from corner Pi on the left to corner Pi+1 on the right. A rectangular hole is cut into the wall, inset TAB_OFFSET_FROM_CORNER_MM from Pi and TAB_WIDTH_MM wide. A matching rectangular tab protrudes outward, inset TAB_OFFSET_FROM_CORNER_MM from Pi+1 and TAB_WIDTH_MM wide. The tab and hole are mirror-symmetric across the side midpoint, so the tab on one tile's side fills the matching hole on the neighbour tile's side. The inset on the right shows two adjacent tiles mating across the shared edge.</desc>
+  <desc id="hexInterlockDesc">Top-down view of one hex side running from corner Pi on the left to corner Pi+1 on the right. A rectangular hole is cut into the wall, inset TAB_OFFSET_FROM_CORNER_MM from Pi and TAB_WIDTH_MM wide. A matching tab protrudes outward, inset TAB_OFFSET_FROM_CORNER_MM from Pi+1 and TAB_WIDTH_MM wide; its two outer (leading) vertical edges are rounded with a TAB_FILLET_MM radius so tiles mate more easily, leaving a flat outer face of TAB_WIDTH_MM minus twice the fillet. The hole is left sharp. The tab and hole are mirror-symmetric across the side midpoint, so the tab on one tile's side fills the matching hole on the neighbour tile's side. The inset on the right shows two adjacent tiles mating across the shared edge.</desc>
 
   <rect x="0" y="0" width="720" height="360" fill="#fafafa"/>
 
@@ -26,12 +26,14 @@
   <text x="240" y="62" text-anchor="middle" font-family="sans-serif" font-size="12" font-style="italic" fill="#666">tile interior (inward)</text>
   <text x="240" y="282" text-anchor="middle" font-family="sans-serif" font-size="12" font-style="italic" fill="#666">outside (toward neighbour)</text>
 
-  <!-- Fills first so the outline overpaints them. -->
+  <!-- Fills first so the outline overpaints them. Hole stays square; the tab's
+       two outer corners are filleted (r = 24 SVG units = 4 mm). -->
   <rect x="150" y="110" width="60" height="60" fill="#fef0f0" stroke="none"/>
-  <rect x="270" y="170" width="60" height="60" fill="#eef6ee" stroke="none"/>
+  <path d="M 270 170 L 270 206 A 24 24 0 0 0 294 230 L 306 230 A 24 24 0 0 0 330 206 L 330 170 Z" fill="#eef6ee" stroke="none"/>
 
-  <!-- Side wall outline: hole notched up on the left, tab pushed down on the right. -->
-  <path d="M 90 170 L 150 170 L 150 110 L 210 110 L 210 170 L 270 170 L 270 230 L 330 230 L 330 170 L 390 170" fill="none" stroke="#333" stroke-width="2"/>
+  <!-- Side wall outline: hole notched up on the left, tab pushed down on the
+       right with rounded outer corners (TAB_FILLET_MM). -->
+  <path d="M 90 170 L 150 170 L 150 110 L 210 110 L 210 170 L 270 170 L 270 206 A 24 24 0 0 0 294 230 L 306 230 A 24 24 0 0 0 330 206 L 330 170 L 390 170" fill="none" stroke="#333" stroke-width="2"/>
 
   <!-- Corner markers + labels. -->
   <circle cx="90"  cy="170" r="4" fill="#333"/>
@@ -60,6 +62,10 @@
   <line x1="226" y1="110" x2="226" y2="170" stroke="#333" stroke-width="1" marker-start="url(#iArrowStart)" marker-end="url(#iArrowEnd)"/>
   <text x="232" y="144" text-anchor="start" font-family="sans-serif" font-size="11" fill="#333">depth</text>
 
+  <!-- Fillet callout: leader from the rounded left outer corner of the tab. -->
+  <line x1="277" y1="223" x2="170" y2="312" stroke="#363" stroke-width="1"/>
+  <text x="166" y="324" text-anchor="end" font-family="sans-serif" font-size="11" fill="#363">4 mm fillet (outer corners)</text>
+
   <!-- ===== Inset: two tiles mating across a shared edge =====
        A (left, green) and B (right, pink) share a vertical seam at local x=0.
        A's tab (drawn as part of A's filled body, x in [0, 30], y in [-30, 30])
@@ -68,8 +74,9 @@
   <g transform="translate(540, 180)">
     <text x="0" y="-110" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="bold" fill="#333">Two tiles mating</text>
 
-    <!-- Tile A body + right-side tab. -->
-    <path d="M -80 -80 L 0 -80 L 0 -30 L 30 -30 L 30 30 L 0 30 L 0 80 L -80 80 Z" fill="#eef6ee" stroke="#333" stroke-width="1.4"/>
+    <!-- Tile A body + right-side tab with filleted outer corners (r = 12 SVG
+         units = 4 mm at the inset's 3 units/mm scale). -->
+    <path d="M -80 -80 L 0 -80 L 0 -30 L 18 -30 A 12 12 0 0 1 30 -18 L 30 18 A 12 12 0 0 1 18 30 L 0 30 L 0 80 L -80 80 Z" fill="#eef6ee" stroke="#333" stroke-width="1.4"/>
 
     <!-- Tile B body with the matching hole carved out (single concave path). -->
     <path d="M 0 -80 L 80 -80 L 80 80 L 0 80 L 0 30 L 30 30 L 30 -30 L 0 -30 Z" fill="#fef0f0" stroke="#333" stroke-width="1.4"/>

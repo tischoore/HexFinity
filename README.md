@@ -107,15 +107,15 @@ Tab and hole dimensions are module-level constants in `mesh_builder.py` and are 
 | `TAB_DEPTH_MM` | 10 | radially outward |
 | `TAB_OFFSET_FROM_CORNER_MM` | 10 | tab/hole inset from a corner |
 | `TAB_HOLE_TOLERANCE_MM` | 0.2 | slack so tiles slide together |
-| `TAB_FILLET_MM` | 0.4 | rounding on the tab's two outer vertical edges |
+| `TAB_FILLET_MM` | 4 | rounding on the tab's two outer vertical edges |
 | `TAB_FILLET_SEGMENTS` | 3 | arc tessellation per rounded corner |
 
 The tab's two **outer (leading) vertical edges** — the corners that enter the
 hole first — are filleted with a `TAB_FILLET_MM` radius running the full tab
 height, so neighbouring tiles align and seat more easily. The inner edge (the
 wall junction) and both inner corners stay square, and the flat outer face keeps
-a width of `TAB_WIDTH_MM − 2·TAB_FILLET_MM`, so the joint is still a solid
-near-rectangular fit. The tab is built as a vertical extrusion of this
+a width of `TAB_WIDTH_MM − 2·TAB_FILLET_MM` (2 mm at the defaults), so the joint
+is still a solid fit. The tab is built as a vertical extrusion of this
 rounded-rectangle profile; the square hole is left sharp (the smaller filleted
 tab simply fits the existing tolerance). The rounding removes material only, so
 the tab never extends past `TAB_DEPTH_MM`.
