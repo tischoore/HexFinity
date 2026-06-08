@@ -408,11 +408,13 @@ class HEXFINITY_OT_generate_map(bpy.types.Operator):
         return _build_map(context, self)
 
 
-class HEXFINITY_OT_regenerate_map(bpy.types.Operator):
-    bl_idname = "hexfinity.regenerate_map"
-    bl_label = "Regenerate Map"
-    bl_description = ("Delete the existing HexFinity map and rebuild it from "
-                      "the current settings. All per-tile edits are lost.")
+class HEXFINITY_OT_clear_map(bpy.types.Operator):
+    bl_idname = "hexfinity.clear_map"
+    bl_label = "Clear Map"
+    bl_description = ("Destructively delete the entire HexFinity map — every "
+                      "tile, terrain object, scattered boulder and procedural "
+                      "surface — and return to the editable Generate state. "
+                      "Nothing is rebuilt; all edits are lost.")
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -428,14 +430,19 @@ class HEXFINITY_OT_regenerate_map(bpy.types.Operator):
         map_props = scene.hexfinity_map
         coll = map_props.root_collection
         if coll is not None:
-            # Drop each tile first so removing the collection doesn't leave
-            # orphaned objects linked to it in other collections.
+            # Removing each object linked to the collection also clears the
+            # terrain imports and scatter boulders — both are linked into the
+            # map's root_collection (see import_terrain_object / sync_scatter),
+            # so this single pass tears the whole map down. Drop the objects
+            # first so removing the collection leaves nothing orphaned.
             for o in list(coll.objects):
                 bpy.data.objects.remove(o, do_unlink=True)
             bpy.data.collections.remove(coll)
         map_props.root_collection = None
         map_props.is_generated = False
-        return _build_map(context, self)
+        # Collapse the (now editable again) globals back to the default state.
+        map_props.show_globals = False
+        return {'FINISHED'}
 
 
 # ---------------------------------------------------------------------------

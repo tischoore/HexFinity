@@ -17,7 +17,7 @@ def _classes():
         properties.HexFinityBrushProperties,
         properties.HexFinityTerrainProperties,
         operators.HEXFINITY_OT_generate_map,
-        operators.HEXFINITY_OT_regenerate_map,
+        operators.HEXFINITY_OT_clear_map,
         operators.HEXFINITY_OT_import_terrain_object,
         operators.HEXFINITY_OT_redrop_terrain_object,
         operators.HEXFINITY_OT_export_tiles,

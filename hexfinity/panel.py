@@ -17,36 +17,28 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         scene = context.scene
         map_props = scene.hexfinity_map
 
-        # ---- Globals (shown in both branches) -----------------------------
-        # These four are uniform across the map by design (their values drive
-        # either the grid pitch or the per-tile vertex layout — diverging
-        # them per tile would tear the tessellation open).
-        box = layout.box()
-        box.label(text="Map Globals")
-        box.prop(map_props, "diameter_mm")
-        box.prop(map_props, "level_height_mm")
-        box.prop(map_props, "base_thickness_mm")
-        box.prop(map_props, "smoothness_passes")
-        box.prop(map_props, "resample_density")
-        box.prop(map_props, "man_height_mm")
-
-        # ---- Grid extent + (Re)generate ----------------------------------
-        box = layout.box()
-        box.label(text="Grid")
-        row = box.row(align=True)
-        row.prop(map_props, "grid_x")
-        row.prop(map_props, "grid_y")
-        box.label(text="X = 0 or Y = 0 → single tile at (0, 0)", icon='INFO')
-        box.prop(map_props, "base_level")
-        box.label(text="Base Level applies on (re)generate (wipes edits).",
-                  icon='INFO')
-
+        # ---- Pre-map: editable globals + grid + Generate ------------------
         if not map_props.is_generated:
+            self._draw_globals(layout, map_props, enabled=True)
+            self._draw_grid(layout, map_props, enabled=True)
             layout.operator("hexfinity.generate_map", icon='MESH_ICOSPHERE')
             layout.label(text="Select a HexTile after generation to edit it.")
             return
 
-        layout.operator("hexfinity.regenerate_map", icon='FILE_REFRESH')
+        # ---- Post-map: Clear + collapsed read-only settings ---------------
+        # Once a map exists the generate-time globals are locked (editing them
+        # would force a map-wide rebuild) and auto-collapsed to free space; the
+        # only action is the destructive Clear, which returns to the pre-map
+        # state where the globals become editable again.
+        layout.operator("hexfinity.clear_map", icon='TRASH')
+
+        box = layout.box()
+        box.prop(map_props, "show_globals",
+                 icon='TRIA_DOWN' if map_props.show_globals else 'TRIA_RIGHT',
+                 emboss=False, text="Map Settings (read-only)")
+        if map_props.show_globals:
+            self._draw_globals(box, map_props, enabled=False)
+            self._draw_grid(box, map_props, enabled=False)
 
         # Per-tile editing UI (selection-dependent); the export box below it is
         # map-wide, so it always renders at the bottom regardless of selection.
@@ -58,6 +50,39 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         box.operator("hexfinity.export_tiles",
                      text="Export Tiles to STL", icon='EXPORT')
         box.label(text="One STL per distinct tile; identical tiles merge.",
+                  icon='INFO')
+
+    @staticmethod
+    def _draw_globals(parent, map_props, enabled):
+        # The map-wide mesh globals. Uniform across the map by design (their
+        # values drive either the grid pitch or the per-tile vertex layout —
+        # diverging them per tile would tear the tessellation open). Drawn
+        # editable before generation, disabled (read-only) afterwards.
+        box = parent.box()
+        box.label(text="Map Globals")
+        col = box.column()
+        col.enabled = enabled
+        col.prop(map_props, "diameter_mm")
+        col.prop(map_props, "level_height_mm")
+        col.prop(map_props, "base_thickness_mm")
+        col.prop(map_props, "smoothness_passes")
+        col.prop(map_props, "resample_density")
+        col.prop(map_props, "man_height_mm")
+
+    @staticmethod
+    def _draw_grid(parent, map_props, enabled):
+        # Grid extent + base level — only take effect on Generate, so they are
+        # locked (read-only) once a map exists.
+        box = parent.box()
+        box.label(text="Grid")
+        col = box.column()
+        col.enabled = enabled
+        row = col.row(align=True)
+        row.prop(map_props, "grid_x")
+        row.prop(map_props, "grid_y")
+        col.label(text="X = 0 or Y = 0 → single tile at (0, 0)", icon='INFO')
+        col.prop(map_props, "base_level")
+        col.label(text="Base Level applies on generate (wipes edits).",
                   icon='INFO')
 
     def _draw_tile_section(self, context, layout, scene, map_props):

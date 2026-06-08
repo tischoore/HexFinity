@@ -21,7 +21,7 @@ All linear inputs are expressed in **millimeters**, and mesh vertices are emitte
   - [X / Y semantics](#x--y-semantics)
   - [Layout (odd-q offset, flat-top)](#layout-odd-q-offset-flat-top)
   - [Shared corners](#shared-corners-editing-one-corner-edits-up-to-two-others)
-  - [Regenerate](#regenerate)
+  - [Clear](#clear)
 - [Terrain brush (sculpt)](#terrain-brush-sculpt)
 - [Terrain objects (import & snap)](#terrain-objects-import--snap)
 - [Procedural surface textures](#procedural-surface-textures)
@@ -152,7 +152,7 @@ The grid extent is two integers `X` and `Y`:
 - `Y = number of rows` (r-coordinate ranges over `[0, Y-1]`).
 - If either is `0`, HexFinity generates a **single tile** at (q=0, r=0) — the original one-tile workflow is preserved.
 
-`X` and `Y` only take effect on **Regenerate** (see below); the live update callbacks fire only for the four map-wide invariants. Edit the integers, then press *Regenerate*.
+`X` and `Y` only take effect on the next **Generate** (see [Clear](#clear) below); the live update callbacks fire only for the map-wide invariants. To change them once a map exists, press *Clear*, edit the integers, then *Generate* again.
 
 ### Layout (odd-q offset, flat-top)
 
@@ -186,9 +186,11 @@ When **more than one** HexFinity tile is selected, changing a corner slider on t
 
 Only the six corner levels `P1`–`P6` fan out this way — centre level, dome, and XY remain per-tile (active object only). The Corner Levels panel shows an `N tiles selected — edits apply to all` hint while a multi-selection is active. Because the parallel edit touches the same *labelled* corner on each tile and seam sync then re-asserts equality on the *geometrically shared* corner (a different index), an adjacent multi-selection converges to a tear-free region lift.
 
-### Regenerate
+### Clear
 
-Once a map exists, the **Generate** button becomes **Regenerate**. It opens Blender's built-in confirmation dialog (a Yes/No prompt with the operator name), then deletes the existing `HexFinity Map` collection and all its tiles and rebuilds from the current global parameters. **All per-tile edits are lost.** Use Regenerate to change `X` / `Y` (which the live-update callbacks intentionally ignore), or to start over after experimenting.
+Once a map exists, the global parameters auto-collapse into a single read-only **Map Settings** header (expand it to view the values the map was generated with — every field is disabled) and the only action button is **Clear Map**. This keeps the panel compact and stops generate-time settings from being edited mid-map.
+
+**Clear Map** opens Blender's built-in confirmation dialog (a Yes/No prompt), then destructively deletes the entire `HexFinity Map` collection — every tile, imported terrain object, scattered boulder and procedural surface (all linked into that collection). It does **not** rebuild anything: `is_generated` flips back to `False`, so the panel returns to **Branch A**, where the globals and grid become editable again and the **Generate** button reappears. Use Clear to change `X` / `Y` or any global (which the live-update callbacks otherwise ignore), or to start over completely. **All edits are lost.**
 
 ---
 
@@ -299,6 +301,12 @@ caveats this works around, and troubleshooting.
 
 The plugin adds a **HexFinity** tab to the 3D Viewport's N-panel (sidebar). The panel has two branches.
 
+### Generation menu
+
+Before a map exists, the panel shows the **generation menu**: the editable **Map Globals** (diameter, level height, base thickness, smoothness, resample, man height) and **Grid** (X / Y / base level) settings, with a single **Generate Map** button at the bottom. Set everything here, then press *Generate*. Once a map exists these settings collapse to a read-only **Map Settings** header and the button becomes **Clear** (see [Clear](#clear)).
+
+![HexFinity generation menu](docs/main_menu.jpg)
+
 ### Branch A — before any map exists
 
 ```
@@ -322,17 +330,10 @@ HexFinity
 
 ```
 HexFinity
-├─ Map Globals                  (editable; live-propagates to every tile)
-│   ├─ Diameter (mm)
-│   ├─ Level height (mm)
-│   ├─ Base thickness (mm)
-│   ├─ Smoothness Passes
-│   ├─ Resample Density
-│   └─ Man Height (mm)
-├─ Grid                         (X / Y only take effect on Regenerate)
-│   ├─ X (columns)   Y (rows)
-│   └─ ⓘ …
-├─ [ Regenerate Map ]           (invoke_confirm prompt; rebuilds from scratch)
+├─ [ Clear Map ]                (invoke_confirm prompt; destructive delete)
+├─ ▸ Map Settings (read-only)   (collapsed by default; expand to view, fields disabled)
+│   ├─ Map Globals              (Diameter / Level / Base thickness / Smoothness / Resample / Man Height)
+│   └─ Grid                     (X / Y / Base Level — only take effect on the next Generate)
 │
 ├─ If active object is a HexFinity tile:
 │  ├─ Editing: HexTile_qq_rr   (q=qq, r=rr)
@@ -381,7 +382,7 @@ C:\Work\Hexfinity\
 │   ├─ __init__.py             # register / unregister (lazy bpy import)
 │   ├─ blender_manifest.toml   # extension metadata (replaces bl_info)
 │   ├─ properties.py           # HexFinityMapProperties + HexFinityProperties + surface regions
-│   ├─ operators.py            # generate_map / regenerate_map + cascade
+│   ├─ operators.py            # generate_map / clear_map + cascade
 │   ├─ panel.py                # HEXFINITY_PT_panel (sidebar UI, two-branch)
 │   ├─ gizmo.py                # HEXFINITY_GGT_center (centre-XY drag gizmo)
 │   ├─ overlay.py              # floating P1..P6 labels + region loops/direction

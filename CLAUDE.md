@@ -22,8 +22,8 @@ Blender 5.1+ extension that generates a grid of interlocking hexagonal terrain t
 | `mesh_builder.py` | **bpy-free** — `build_hex_tile()`, six Coons patches on top, side walls, interlock tabs/holes |
 | `map.py` | **bpy-free** — odd-q offset math, `SHARED_CORNERS` table, `neighbour_coord()`, `find_tile()` |
 | `manifold_check.py` | **bpy-free** — `check_manifold()` validator run after every build |
-| `operators.py` | `generate_map`, `regenerate_map`, `on_global_update` callback; `_REBUILDING` re-entrancy guard. `_build_map` seeds every new tile's P1–P6/center at `map_props.base_level` before the first build (corner callbacks short-circuit while `is_generated` is still `False`). `on_corner_changed` also fans a corner edit's **delta** across a multi-selection: `_MULTI_APPLYING` guards the fan-out, and `_ACTIVE_SNAPSHOT`/`seed_corner_snapshot*` (seeded from `panel.py`) recover the pre-edit value Blender's update hook hides |
-| `panel.py` | N-panel "HexFinity" sidebar UI (two branches: pre-map and post-map) |
+| `operators.py` | `generate_map`, `clear_map` (destructive-only — deletes the whole map collection + all tiles/terrain/scatter, resets `is_generated`/`show_globals`; does **not** rebuild), `on_global_update` callback; `_REBUILDING` re-entrancy guard. `_build_map` seeds every new tile's P1–P6/center at `map_props.base_level` before the first build (corner callbacks short-circuit while `is_generated` is still `False`). `on_corner_changed` also fans a corner edit's **delta** across a multi-selection: `_MULTI_APPLYING` guards the fan-out, and `_ACTIVE_SNAPSHOT`/`seed_corner_snapshot*` (seeded from `panel.py`) recover the pre-edit value Blender's update hook hides |
+| `panel.py` | N-panel "HexFinity" sidebar UI (two branches: pre-map shows editable globals+grid+Generate; post-map shows the `clear_map` button + a collapsed read-only "Map Settings" section gated by `map_props.show_globals`, via `_draw_globals`/`_draw_grid`) |
 | `gizmo.py` | Floating-sphere gizmo for dragging a tile's center XY |
 | `overlay.py` | P1–P6 corner labels drawn above selected tiles |
 | `brush.py` | `HEXFINITY_OT_paint_brush` modal terrain brush — paints a per-top-vertex z-offset layer (`obj["hf_brush_disp"]`) re-applied by `build_hex_tile` on every rebuild |
@@ -50,3 +50,26 @@ Blender 5.1+ extension that generates a grid of interlocking hexagonal terrain t
 ## Development requirements
 * Always update the README documentation. Base level documentation update automatic. If needed subpages can be created/updated these are placed in the docs/ folder.
 * write tests and validation when implementing.
+
+## PR Plans
+
+Plan lifecycle is driven by two trigger phrases in my prompts:
+
+**Start:** `plan <name>.md: <prompt>`
+→ Create `plans/brewing/<name>.md` containing the prompt and the proposed plan. Work proceeds against this file.
+
+**End:** `end plan`
+→ Move the active plan from `plans/brewing/` to `plans/implemented/` and append the Token Usage Report.
+
+### Token Usage Report (appended on `end plan`)
+Counts come from the API `usage` object on each response — never self-estimate.
+Aggregate across all requests made since the matching `plan` trigger:
+
+- Input tokens (prompt): sum of `usage.input_tokens`
+- Cache tokens: `cache_creation_input_tokens` + `cache_read_input_tokens`
+- Output tokens (answer): sum of `usage.output_tokens`
+- MCP / tool-call tokens: input+output of requests issuing tool_use/tool_result
+- Web request tokens: input+output of requests invoking web tools
+- Source-search tokens: input+output of requests doing code/file search
+- Project files read: count of distinct files opened
+- Total tokens: input + output + cache

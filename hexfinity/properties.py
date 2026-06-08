@@ -105,6 +105,14 @@ class HexFinityMapProperties(bpy.types.PropertyGroup):
         type=bpy.types.Collection,
         options={'HIDDEN'},
     )
+    show_globals: bpy.props.BoolProperty(
+        name="Show Map Settings",
+        description="Expand the (read-only) map-wide settings the map was "
+                    "generated with. They are locked while a map exists — "
+                    "press Clear to edit them and generate a fresh map",
+        default=False,
+        options={'SKIP_SAVE'},
+    )
 
 
 # ---------------------------------------------------------------------------
