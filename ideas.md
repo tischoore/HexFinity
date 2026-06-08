@@ -6,11 +6,6 @@ Space the hole and tap depending on point height to enforce tile match
 Put text in the bottom of each tile with the heights and if it has Custom features - Buildings and rivers and more.
 
 
-
-
-## Auto STL generation
-A button that exports one version of each hex tile along with a json file that enumerates each in how many prints that is has to do. Can this be linked up with Bambu studio API? Using the commandline interface.
-
 ## Global Parameters
 Adding a normal level (setting all points to something.) This will enable depressions into the terrains such as rivers and lakes.
 
@@ -33,3 +28,6 @@ When having trees, bushes, and other features where infantry normally can enter 
 
 ## easier fit.
 making the tabs rounded along the z-axis for the tabs to help this fits.
+
+## Auto STL generation
+A button that exports one version of each hex tile along with a json file that enumerates each in how many prints that is has to do. Can this be linked up with Bambu studio API? Using the commandline interface.
