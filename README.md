@@ -215,6 +215,10 @@ Selecting a dropped (non-tile) object shows a small panel to **Re-drop onto hex*
 
 Like the brush, snap is stored as a displacement layer re-applied on rebuild, and is cleared by a subdivision/resample change.
 
+## Flora marker (preview only)
+
+The **Flora** button starts a modal marker tool: move the mouse over any generated tile and a yellow circle-with-center-dot tracks the raycast hit point on the hex surface live, previewing where a flora placement would land. While it's running, the sidebar swaps the button for a "Flora active — Esc / RMB to close" indicator (it can't be a clickable Close button — a running modal operator owns all input, so panel buttons are unreachable until you exit); right-click or `Esc` closes it and restores the button. This is foundation-only — no flora is actually placed yet; it's groundwork for a future scatter-placement feature (in the same spirit as the boulder scatter surfaces below).
+
 ## Procedural surface textures
 
 Procedural surfaces are applied through **regions**: closed loops you draw on the
@@ -352,6 +356,7 @@ HexFinity
 │  │   ├─ Dome Area / Dome Damping        (bump shaping; Copy to Selected)
 │  │   └─ Local Subdivision               (per-tile extra density)
 │  ├─ [ Terrain Objects ]      (import STL, drop on tile, parent)
+│  ├─ [ Flora ]                (modal marker preview — see below)
 │  ├─ Procedural Surface       (region list + Draw Region — see below)
 │  │   ├─ Area Name + Surface type
 │  │   ├─ displace: Feature / Depth / Regularity / (Direction) + resolution warning
@@ -452,3 +457,4 @@ After generating a map:
 6. **Terrain brush check** — *Terrain Brush → Paint*, left-drag on a tile to raise a hill, then switch to *Lower* and dig. With *Preserve Edge* on the rim stays put; turn it off and a stroke flows across the seam onto the neighbour. Edit a corner level afterwards — the painted shape survives; bump *Smoothness Passes* and it clears.
 7. **Terrain object check** — select a tile, *Terrain Objects*, pick an `.stl`; it drops centred and flush on the surface. Select the dropped object and raise *Terrain snap to model* — the ground rises to hug its base; add *Snap damping* for a skirt.
 8. **Procedural surface check** — raise *Local Subdivision* on a tile, *Procedural Surface → Draw Region*, click a loop, close it (Enter). The interior gains cobblestone; the rim stays flat (still interlocks). Add a whole-tile *Furrow* region and rotate its **Direction** — the ridges follow the arrow. See [docs/procedural_surfaces.md](docs/procedural_surfaces.md). (A headless smoke test of the full register→region→rebuild path lives in `tests/_headless_region_check.py`: `blender --background --factory-startup --python tests/_headless_region_check.py`.)
+9. **Flora marker check** — select a tile, press *Flora*, then move the mouse across several tiles: a yellow circle-with-center-dot tracks the raycast hit point live, and disappears once the cursor leaves every tile's surface. The sidebar shows a "Flora active" indicator in place of the button. Orbit/pan/zoom (MMB/wheel) still work while it's active. Both `Esc` and right-click close it, clearing the status-bar hint and swapping the indicator back for the button.

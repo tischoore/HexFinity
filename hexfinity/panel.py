@@ -2,6 +2,7 @@ import math
 
 import bpy
 
+from . import flora
 from .mesh_builder import effective_resample, top_vertex_count
 
 
@@ -148,6 +149,14 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
 
         box.operator("hexfinity.import_terrain_object",
                      text="Terrain Objects", icon='IMPORT')
+
+        if flora.is_active():
+            row = box.row()
+            row.alert = True
+            row.label(text="Flora active — Esc / RMB to close", icon='INFO')
+        else:
+            box.operator("hexfinity.flora_marker", text="Flora",
+                         icon='OUTLINER_OB_POINTCLOUD')
 
         # ---- Procedural Surface regions -----------------------------------
         self._draw_surface_regions(context, layout, map_props, obj, tile)

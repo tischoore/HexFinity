@@ -8,7 +8,7 @@ remain importable from plain CPython for unit tests.
 
 
 def _classes():
-    from . import properties, operators, panel, gizmo, brush, regions, scatter
+    from . import properties, operators, panel, gizmo, brush, regions, scatter, flora
     return (
         properties.HexFinityMapProperties,
         properties.HexFinitySurfacePoint,
@@ -22,6 +22,7 @@ def _classes():
         operators.HEXFINITY_OT_redrop_terrain_object,
         operators.HEXFINITY_OT_export_tiles,
         brush.HEXFINITY_OT_paint_brush,
+        flora.HEXFINITY_OT_flora_marker,
         regions.HEXFINITY_OT_draw_region,
         regions.HEXFINITY_OT_add_region,
         regions.HEXFINITY_OT_remove_region,
