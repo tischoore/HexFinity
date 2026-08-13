@@ -15,6 +15,7 @@ def _classes():
         properties.HexFinitySurfaceRegion,
         properties.HexFinityProperties,
         properties.HexFinityBrushProperties,
+        properties.HexFinityFloraProperties,
         properties.HexFinityTerrainProperties,
         operators.HEXFINITY_OT_generate_map,
         operators.HEXFINITY_OT_clear_map,
@@ -45,6 +46,9 @@ def register():
     bpy.types.Scene.hexfinity_brush = bpy.props.PointerProperty(
         type=properties.HexFinityBrushProperties
     )
+    bpy.types.Scene.hexfinity_flora = bpy.props.PointerProperty(
+        type=properties.HexFinityFloraProperties
+    )
     bpy.types.Object.hexfinity_tile = bpy.props.PointerProperty(
         type=properties.HexFinityProperties
     )
@@ -62,6 +66,8 @@ def unregister():
         del bpy.types.Object.hexfinity_terrain
     if hasattr(bpy.types.Object, "hexfinity_tile"):
         del bpy.types.Object.hexfinity_tile
+    if hasattr(bpy.types.Scene, "hexfinity_flora"):
+        del bpy.types.Scene.hexfinity_flora
     if hasattr(bpy.types.Scene, "hexfinity_brush"):
         del bpy.types.Scene.hexfinity_brush
     if hasattr(bpy.types.Scene, "hexfinity_map"):

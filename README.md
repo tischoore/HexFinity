@@ -217,7 +217,7 @@ Like the brush, snap is stored as a displacement layer re-applied on rebuild, an
 
 ## Flora marker (preview only)
 
-The **Flora** button starts a modal marker tool: move the mouse over any generated tile and a yellow circle-with-center-dot tracks the raycast hit point on the hex surface live, previewing where a flora placement would land. While it's running, the sidebar swaps the button for a "Flora active — Esc / RMB to close" indicator (it can't be a clickable Close button — a running modal operator owns all input, so panel buttons are unreachable until you exit); right-click or `Esc` closes it and restores the button. This is foundation-only — no flora is actually placed yet; it's groundwork for a future scatter-placement feature (in the same spirit as the boulder scatter surfaces below).
+A **Tree Type** dropdown (currently just "Leafy tree") selects which flora element a future placement would use. Below it, the **Flora** button starts a modal marker tool: move the mouse over any generated tile and a yellow circle-with-center-dot tracks the raycast hit point on the hex surface live, previewing where a flora placement would land. While it's running, the sidebar swaps the button for a "Flora active — Esc / RMB to close" indicator (it can't be a clickable Close button — a running modal operator owns all input, so panel buttons are unreachable until you exit); right-click or `Esc` closes it and restores the button. This is foundation-only — no flora is actually placed yet; it's groundwork for a future scatter-placement feature (in the same spirit as the boulder scatter surfaces below).
 
 ## Procedural surface textures
 
@@ -356,6 +356,7 @@ HexFinity
 │  │   ├─ Dome Area / Dome Damping        (bump shaping; Copy to Selected)
 │  │   └─ Local Subdivision               (per-tile extra density)
 │  ├─ [ Terrain Objects ]      (import STL, drop on tile, parent)
+│  ├─ Tree Type (dropdown: Leafy tree)
 │  ├─ [ Flora ]                (modal marker preview — see below)
 │  ├─ Procedural Surface       (region list + Draw Region — see below)
 │  │   ├─ Area Name + Surface type

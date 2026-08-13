@@ -150,6 +150,8 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         box.operator("hexfinity.import_terrain_object",
                      text="Terrain Objects", icon='IMPORT')
 
+        box.prop(scene.hexfinity_flora, "tree_type")
+
         if flora.is_active():
             row = box.row()
             row.alert = True

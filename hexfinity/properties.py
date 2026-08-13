@@ -116,6 +116,22 @@ class HexFinityMapProperties(bpy.types.PropertyGroup):
 
 
 # ---------------------------------------------------------------------------
+# Scene-level — flora placement settings. Currently just the element type the
+# Flora marker tool will place; grows into a registry-backed dropdown (like
+# HexFinitySurfaceRegion.surface_type) if more flora types are added.
+
+class HexFinityFloraProperties(bpy.types.PropertyGroup):
+    tree_type: bpy.props.EnumProperty(
+        name="Tree Type",
+        description="Flora element placed by the Flora tool",
+        items=[
+            ('LEAFY_TREE', "Leafy tree", "A leafy deciduous tree"),
+        ],
+        default='LEAFY_TREE',
+    )
+
+
+# ---------------------------------------------------------------------------
 # Scene-level — terrain brush settings. Read by the modal paint operator each
 # dab; no update callbacks (changing a brush setting never rebuilds a tile).
 
