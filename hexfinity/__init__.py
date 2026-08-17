@@ -13,6 +13,7 @@ def _classes():
         properties.HexFinityMapProperties,
         properties.HexFinitySurfacePoint,
         properties.HexFinitySurfaceRegion,
+        properties.HexFinityFloraPlacement,
         properties.HexFinityProperties,
         properties.HexFinityBrushProperties,
         properties.HexFinityFloraProperties,

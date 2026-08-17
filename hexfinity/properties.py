@@ -105,6 +105,11 @@ class HexFinityMapProperties(bpy.types.PropertyGroup):
         type=bpy.types.Collection,
         options={'HIDDEN'},
     )
+    flora_collection: bpy.props.PointerProperty(
+        name="Flora Collection",
+        type=bpy.types.Collection,
+        options={'HIDDEN'},
+    )
     show_globals: bpy.props.BoolProperty(
         name="Show Map Settings",
         description="Expand the (read-only) map-wide settings the map was "
@@ -128,6 +133,23 @@ class HexFinityFloraProperties(bpy.types.PropertyGroup):
             ('LEAFY_TREE', "Leafy tree", "A leafy deciduous tree"),
         ],
         default='LEAFY_TREE',
+    )
+    scale_variation_pct: bpy.props.FloatProperty(
+        name="Scale Variation (%)",
+        description="Random size jitter applied to each planted tree, as a "
+                    "+/- percentage around 1.0",
+        default=20.0,
+        min=0.0,
+        max=100.0,
+        subtype='PERCENTAGE',
+    )
+    penetration_mm: bpy.props.FloatProperty(
+        name="Penetration (mm)",
+        description="How far each planted tree sinks into the surface, "
+                    "hiding the flat base cut of the mesh",
+        default=2.0,
+        min=0.0,
+        soft_max=20.0,
     )
 
 
@@ -302,6 +324,29 @@ def _surface_type_items(self, context):
 class HexFinitySurfacePoint(bpy.types.PropertyGroup):
     x: bpy.props.FloatProperty(name="X", default=0.0)
     y: bpy.props.FloatProperty(name="Y", default=0.0)
+
+
+# ---------------------------------------------------------------------------
+# Per-tile flora placements. One entry per planted tree — species, tile-local
+# position, and the random rotation/scale sampled at plant time (stored, not
+# re-randomized on rebuild, so a tile's trees stay put across edits).
+
+class HexFinityFloraPlacement(bpy.types.PropertyGroup):
+    species_file: bpy.props.StringProperty(
+        name="Species File",
+        description="STL filename of the planted tree mesh",
+        default="",
+    )
+    tree_type: bpy.props.StringProperty(
+        name="Tree Type",
+        description="Enum id of the flora folder this placement was planted "
+                    "from, stored at plant time",
+        default="",
+    )
+    local_x_mm: bpy.props.FloatProperty(name="Local X (mm)", default=0.0)
+    local_y_mm: bpy.props.FloatProperty(name="Local Y (mm)", default=0.0)
+    rotation_rad: bpy.props.FloatProperty(name="Rotation (rad)", default=0.0)
+    scale_factor: bpy.props.FloatProperty(name="Scale Factor", default=1.0)
 
 
 # Generic per-region slots that carry a surface's own (extra) parameters in
@@ -482,6 +527,7 @@ class HexFinityProperties(bpy.types.PropertyGroup):
         default=0,
         options={'HIDDEN'},
     )
+    flora_placements: bpy.props.CollectionProperty(type=HexFinityFloraPlacement)
 
 
 # ---------------------------------------------------------------------------

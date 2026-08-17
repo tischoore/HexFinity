@@ -150,15 +150,19 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         box.operator("hexfinity.import_terrain_object",
                      text="Terrain Objects", icon='IMPORT')
 
-        box.prop(scene.hexfinity_flora, "tree_type")
-
+        # ---- Flora ----------------------------------------------------------
+        flora_box = layout.box()
+        flora_box.label(text="Flora", icon='OUTLINER_OB_POINTCLOUD')
+        flora_box.prop(scene.hexfinity_flora, "tree_type")
+        flora_box.prop(scene.hexfinity_flora, "scale_variation_pct")
+        flora_box.prop(scene.hexfinity_flora, "penetration_mm")
         if flora.is_active():
-            row = box.row()
+            row = flora_box.row()
             row.alert = True
             row.label(text="Flora active — Esc / RMB to close", icon='INFO')
         else:
-            box.operator("hexfinity.flora_marker", text="Flora",
-                         icon='OUTLINER_OB_POINTCLOUD')
+            flora_box.operator("hexfinity.flora_marker", text="Flora",
+                               icon='OUTLINER_OB_POINTCLOUD')
 
         # ---- Procedural Surface regions -----------------------------------
         self._draw_surface_regions(context, layout, map_props, obj, tile)

@@ -228,6 +228,19 @@ def rebuild_tile(obj):
                 bpy.context.view_layer.update()
                 for i, rd in scatter_regions:
                     scatter.sync_scatter(obj, i, rd, rd["name"])
+
+        # Planted trees, same full-purge-and-resync shape as scatter above:
+        # placements are stored data (species/position/rotation/scale), not
+        # re-randomized, so a rebuild reproduces the same trees just
+        # re-seated to the current surface.
+        flora_placements = tile_props.flora_placements
+        from . import flora
+        has_flora = any(c.get(flora.FLORA_OF) for c in obj.children)
+        if len(flora_placements) > 0 or has_flora:
+            flora.purge_flora(obj)
+            if len(flora_placements) > 0:
+                bpy.context.view_layer.update()
+                flora.sync_flora(obj)
     finally:
         _REBUILDING = False
 
@@ -428,6 +441,17 @@ class HEXFINITY_OT_clear_map(bpy.types.Operator):
     def execute(self, context):
         scene = context.scene
         map_props = scene.hexfinity_map
+        # Flora objects live in a Flora sub-collection nested under
+        # root_collection, not directly in root_collection.objects (which
+        # only lists directly-linked objects) — tear it down separately
+        # before the root_collection loop below.
+        flora_coll = map_props.flora_collection
+        if flora_coll is not None:
+            for o in list(flora_coll.objects):
+                bpy.data.objects.remove(o, do_unlink=True)
+            if flora_coll.name in bpy.data.collections:
+                bpy.data.collections.remove(flora_coll)
+        map_props.flora_collection = None
         coll = map_props.root_collection
         if coll is not None:
             # Removing each object linked to the collection also clears the
