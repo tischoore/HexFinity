@@ -278,3 +278,49 @@ def test_worley_neighbourhood_finds_true_nearest():
                 px, py = ps._cell_center(cx + dx, cy + dy, feature, jitter, seed)
                 best = min(best, math.hypot(x - px, y - py))
         assert f1 == pytest.approx(best)
+
+
+# ---------------------------------------------------------------------------
+# obb_overlap — flora.py's plant-time tree/tree collision test
+# ---------------------------------------------------------------------------
+def test_obb_overlap_far_apart_boxes_do_not_overlap():
+    assert not ps.obb_overlap(0, 0, 5, 5, 0.0, 100, 100, 5, 5, 0.0)
+
+
+def test_obb_overlap_axis_aligned_overlap():
+    # Centers 8mm apart on X, half-widths 5mm each -> 2mm of overlap.
+    assert ps.obb_overlap(0, 0, 5, 5, 0.0, 8, 0, 5, 5, 0.0)
+
+
+def test_obb_overlap_axis_aligned_clear():
+    # Centers 12mm apart on X, half-widths 5mm each -> 2mm of clear gap.
+    assert not ps.obb_overlap(0, 0, 5, 5, 0.0, 12, 0, 5, 5, 0.0)
+
+
+def test_obb_overlap_only_detected_once_rotated():
+    # A small square at the origin, and a long thin bar 10mm above it.
+    # Axis-aligned, the bar's short side faces the square and they clear by
+    # 8.5mm; rotated 90 degrees, the bar's long axis swings down into the
+    # square. Proves the test actually uses both boxes' own axes.
+    square = (0, 0, 1, 1, 0.0)
+    bar_flat = (0, 10, 10, 0.5, 0.0)
+    bar_upright = (0, 10, 10, 0.5, math.radians(90))
+    assert not ps.obb_overlap(*square, *bar_flat)
+    assert ps.obb_overlap(*square, *bar_upright)
+
+
+def test_obb_overlap_touching_boxes_are_not_overlapping():
+    # Exactly touching (zero-width gap) must count as clear, not overlapping.
+    assert not ps.obb_overlap(0, 0, 5, 5, 0.0, 10, 0, 5, 5, 0.0)
+
+
+def test_obb_overlap_min_gap_rejects_a_previously_clear_pair():
+    # 2mm of clear gap at min_gap=0, but requiring 4mm of clearance closes it.
+    assert not ps.obb_overlap(0, 0, 5, 5, 0.0, 12, 0, 5, 5, 0.0)
+    assert ps.obb_overlap(0, 0, 5, 5, 0.0, 12, 0, 5, 5, 0.0, min_gap=4.0)
+
+
+def test_obb_overlap_is_symmetric():
+    args_a = (3, -2, 4, 6, math.radians(20))
+    args_b = (5, 1, 3, 3, math.radians(-40))
+    assert ps.obb_overlap(*args_a, *args_b) == ps.obb_overlap(*args_b, *args_a)

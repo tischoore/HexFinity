@@ -24,6 +24,7 @@ All linear inputs are expressed in **millimeters**, and mesh vertices are emitte
   - [Clear](#clear)
 - [Terrain brush (sculpt)](#terrain-brush-sculpt)
 - [Terrain objects (import & snap)](#terrain-objects-import--snap)
+- [Flora](#flora)
 - [Procedural surface textures](#procedural-surface-textures)
 - [Export STLs](#export-stls)
 - [Slice to G-code (Bambu Studio)](#slice-to-g-code-bambu-studio)
@@ -221,6 +222,10 @@ The Flora box plants real tree meshes onto a tile. A **Tree Type** dropdown (cur
 
 Each species STL is imported from `assets/` once per Blender session and cached as a single shared mesh datablock; every planted tree is a separate Object pointing at that same shared mesh (a Blender "linked duplicate"), not a per-tree copy — the Outliner shows one mesh datablock with many object users. Planted trees live in a **Flora** sub-collection nested under the map's root collection, parented to their tile like scatter boulders and terrain objects. A tile's placements (species, position, rotation, scale) are stored as data and re-seated onto the surface on every rebuild — editing corner heights, painting terrain, or changing subdivision moves the trees with the ground instead of leaving them floating or buried. Clearing the map removes the Flora collection along with everything else.
 
+**Avoid Overlap** (on by default) rejects a click that would plant a tree intersecting another one's bounding box, so every tree stays printable as a separate piece; **Min Spacing (mm)** requires extra clearance on top. Trees on the tile's 6 neighbours count too, so a tree near a seam can't overlap into the next tile's print. A rejected click warns and plants nothing.
+
+See **[docs/flora.md](docs/flora.md)** for the mesh caching, the overlap algorithm, and the manual checklist.
+
 ## Procedural surface textures
 
 Procedural surfaces are applied through **regions**: closed loops you draw on the
@@ -358,7 +363,7 @@ HexFinity
 │  │   ├─ Dome Area / Dome Damping        (bump shaping; Copy to Selected)
 │  │   └─ Local Subdivision               (per-tile extra density)
 │  ├─ [ Terrain Objects ]      (import STL, drop on tile, parent)
-│  ├─ Flora                    (Tree Type / Scale Variation / Penetration → Flora)
+│  ├─ Flora                    (Tree Type / Scale Variation / Penetration / Avoid Overlap / Min Spacing → Flora)
 │  ├─ Procedural Surface       (region list + Draw Region — see below)
 │  │   ├─ Area Name + Surface type
 │  │   ├─ displace: Feature / Depth / Regularity / (Direction) + resolution warning
@@ -396,9 +401,12 @@ C:\Work\Hexfinity\
 │   ├─ brush.py                # modal terrain paint brush
 │   ├─ regions.py              # modal draw-region operator + region list UI
 │   ├─ scatter.py              # bpy shell for scatter surfaces (boulder objects + merge)
+│   ├─ flora.py                # modal click-to-plant tree tool + mesh cache + overlap check
+│   ├─ assets\
+│   │   └─ leefytree\           # planted-tree STL assets (one file per species)
 │   ├─ mesh_builder.py         # pure-Python mesh construction (no bpy)
 │   ├─ subdivision.py          # pure-Python Loop + linear-midpoint subdivision (no bpy)
-│   ├─ procedural_surfaces.py  # pure-Python surface registry + masks + scatter geometry (no bpy)
+│   ├─ procedural_surfaces.py  # pure-Python surface registry + masks + scatter geometry + obb_overlap (no bpy)
 │   ├─ map.py                  # pure-Python grid math + SHARED_CORNERS table
 │   ├─ tile_export.py          # pure-Python export hashing + naming (no bpy)
 │   └─ manifold_check.py       # post-build 2-manifold verification
@@ -459,4 +467,4 @@ After generating a map:
 6. **Terrain brush check** — *Terrain Brush → Paint*, left-drag on a tile to raise a hill, then switch to *Lower* and dig. With *Preserve Edge* on the rim stays put; turn it off and a stroke flows across the seam onto the neighbour. Edit a corner level afterwards — the painted shape survives; bump *Smoothness Passes* and it clears.
 7. **Terrain object check** — select a tile, *Terrain Objects*, pick an `.stl`; it drops centred and flush on the surface. Select the dropped object and raise *Terrain snap to model* — the ground rises to hug its base; add *Snap damping* for a skirt.
 8. **Procedural surface check** — raise *Local Subdivision* on a tile, *Procedural Surface → Draw Region*, click a loop, close it (Enter). The interior gains cobblestone; the rim stays flat (still interlocks). Add a whole-tile *Furrow* region and rotate its **Direction** — the ridges follow the arrow. See [docs/procedural_surfaces.md](docs/procedural_surfaces.md). (A headless smoke test of the full register→region→rebuild path lives in `tests/_headless_region_check.py`: `blender --background --factory-startup --python tests/_headless_region_check.py`.)
-9. **Flora check** — select a tile, press *Flora*, then move the mouse across several tiles: a yellow circle-with-center-dot tracks the raycast hit point live. Left-click several spots — each plants a tree with a random species/rotation/scale, sunk in by *Penetration*. The Outliner shows the planted trees under a "Flora" sub-collection nested in the map collection, all pointing at a handful of shared mesh datablocks (multiple object users, not one mesh per tree). Orbit/pan/zoom (MMB/wheel) still work while it's active. Both `Esc` and right-click close it. Afterwards, edit that tile's corner heights or paint terrain — the trees re-seat onto the new surface instead of floating or burying. See [docs/flora.md](docs/flora.md) for the full manual checklist.
+9. **Flora check** — select a tile, press *Flora*, then move the mouse across several tiles: a yellow circle-with-center-dot tracks the raycast hit point live. Left-click several spots — each plants a tree with a random species/rotation/scale, sunk in by *Penetration*. The Outliner shows the planted trees under a "Flora" sub-collection nested in the map collection, all pointing at a handful of shared mesh datablocks (multiple object users, not one mesh per tree). Orbit/pan/zoom (MMB/wheel) still work while it's active. Both `Esc` and right-click close it. Afterwards, edit that tile's corner heights or paint terrain — the trees re-seat onto the new surface instead of floating or burying. With *Avoid Overlap* on, clicking close enough to an existing tree is rejected with a warning instead of planting; turning it off allows it. See [docs/flora.md](docs/flora.md) for the full manual checklist.

@@ -156,6 +156,10 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         flora_box.prop(scene.hexfinity_flora, "tree_type")
         flora_box.prop(scene.hexfinity_flora, "scale_variation_pct")
         flora_box.prop(scene.hexfinity_flora, "penetration_mm")
+        flora_box.prop(scene.hexfinity_flora, "avoid_overlap")
+        row = flora_box.row()
+        row.enabled = scene.hexfinity_flora.avoid_overlap
+        row.prop(scene.hexfinity_flora, "min_spacing_mm")
         if flora.is_active():
             row = flora_box.row()
             row.alert = True

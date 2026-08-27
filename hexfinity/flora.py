@@ -25,6 +25,9 @@ from gpu_extras.batch import batch_for_shader
 from bpy_extras import view3d_utils
 from mathutils import Vector
 
+from . import procedural_surfaces as ps
+from .map import DIRECTIONS, neighbour_coord, find_tile
+
 
 _MARKER_COLOR = (1.0, 0.9, 0.1, 0.9)
 _MARKER_RADIUS_PX = 20.0
@@ -53,6 +56,9 @@ FLORA_OF = "hf_flora_of"
 _species_cache = {}   # tree_type -> sorted [filenames]
 _mesh_cache = {}       # filename -> bpy.types.Mesh (shared, use_fake_user=True)
 _mesh_min_z = {}       # filename -> float (lowest local-space vertex Z)
+_mesh_footprint_xy = {}   # filename -> (half_x, half_y, local_cx, local_cy),
+                          # the local-space XY bbox used by the plant-time
+                          # overlap check (see _place_tree / obb_overlap)
 
 
 def _list_species(tree_type):
@@ -71,42 +77,61 @@ def _list_species(tree_type):
 
 
 def _get_or_import_mesh(tree_type, filename):
-    """Return `(mesh, min_z)` for `filename`, importing + caching on first use.
+    """Return `(mesh, min_z, half_x, half_y, local_cx, local_cy)` for
+    `filename`, importing + caching on first use.
 
     `min_z` is the lowest local-space vertex Z of the imported mesh, used by
     `sync_flora` to seat the tree's true base (not its bounding-box origin)
-    on the surface.
+    on the surface. `half_x`/`half_y` are the local-space XY bbox
+    half-extents and `local_cx`/`local_cy` is that bbox's center offset from
+    the mesh origin — together the local-space footprint rectangle used by
+    `_place_tree`'s plant-time overlap check (`obb_overlap`).
     """
     mesh = _mesh_cache.get(filename)
     if mesh is not None:
         if mesh.name in bpy.data.meshes:
-            return mesh, _mesh_min_z[filename]
+            return (mesh, _mesh_min_z[filename], *_mesh_footprint_xy[filename])
         # Stale reference (e.g. a different .blend loaded, or a reload) —
         # evict and re-import below.
         del _mesh_cache[filename]
         _mesh_min_z.pop(filename, None)
+        _mesh_footprint_xy.pop(filename, None)
 
     folder = _TREE_TYPE_FOLDERS.get(tree_type)
     if folder is None:
-        return None, 0.0
+        return None, 0.0, 0.0, 0.0, 0.0, 0.0
     filepath = _ASSETS_DIR / folder / filename
     if not filepath.is_file():
-        return None, 0.0
+        return None, 0.0, 0.0, 0.0, 0.0, 0.0
 
     scene = bpy.context.scene
     before = set(scene.objects)
     try:
         bpy.ops.wm.stl_import(filepath=str(filepath))
     except RuntimeError:
-        return None, 0.0
+        return None, 0.0, 0.0, 0.0, 0.0, 0.0
     imported = [o for o in scene.objects if o not in before]
     if not imported:
-        return None, 0.0
+        return None, 0.0, 0.0, 0.0, 0.0, 0.0
 
     mesh = imported[0].data
     mesh.name = f"HF_Flora_{Path(filename).stem}"
     mesh.use_fake_user = True
-    min_z = min((v.co.z for v in mesh.vertices), default=0.0)
+
+    min_x = min_y = min_z = float("inf")
+    max_x = max_y = float("-inf")
+    for v in mesh.vertices:
+        min_x = min(min_x, v.co.x)
+        max_x = max(max_x, v.co.x)
+        min_y = min(min_y, v.co.y)
+        max_y = max(max_y, v.co.y)
+        min_z = min(min_z, v.co.z)
+    if min_x > max_x:   # no vertices
+        min_x = max_x = min_y = max_y = min_z = 0.0
+    half_x = (max_x - min_x) / 2.0
+    half_y = (max_y - min_y) / 2.0
+    local_cx = (min_x + max_x) / 2.0
+    local_cy = (min_y + max_y) / 2.0
 
     bpy.data.objects.remove(imported[0], do_unlink=True)
     for extra in imported[1:]:
@@ -114,7 +139,8 @@ def _get_or_import_mesh(tree_type, filename):
 
     _mesh_cache[filename] = mesh
     _mesh_min_z[filename] = min_z
-    return mesh, min_z
+    _mesh_footprint_xy[filename] = (half_x, half_y, local_cx, local_cy)
+    return mesh, min_z, half_x, half_y, local_cx, local_cy
 
 
 def purge_flora(tile_obj):
@@ -171,7 +197,7 @@ def sync_flora(tile_obj):
     penetration_mm = context.scene.hexfinity_flora.penetration_mm
 
     for i, p in enumerate(placements):
-        mesh, min_z = _get_or_import_mesh(p.tree_type, p.species_file)
+        mesh, min_z, _hx, _hy, _lcx, _lcy = _get_or_import_mesh(p.tree_type, p.species_file)
         if mesh is None:
             continue
         surface_z = surface_z_at(p.local_x_mm, p.local_y_mm)
@@ -189,6 +215,52 @@ def sync_flora(tile_obj):
             surface_z - penetration_mm - min_z * total_scale,
         )
         obj[FLORA_OF] = True
+
+
+# ---------------------------------------------------------------------------
+# Plant-time overlap check. Each tree's footprint is an oriented rectangle
+# (its local-space XY bbox, rotated by its own random Z spin) tested against
+# every other planted tree via procedural_surfaces.obb_overlap — see
+# _place_tree below.
+
+def _placement_footprint(tile_obj, placement, global_scale):
+    """World-space OBB `(cx, cy, hx, hy, angle)` for one stored placement.
+
+    Tile objects are placed by translation only (see operators._build_map /
+    _create_tile — never rotated), so the placement's own `rotation_rad` is
+    already the world-space angle; only the position needs the tile's
+    matrix_world applied.
+    """
+    _mesh, _min_z, half_x, half_y, local_cx, local_cy = _get_or_import_mesh(
+        placement.tree_type, placement.species_file)
+    scale = placement.scale_factor * global_scale
+    angle = placement.rotation_rad
+    cos_a, sin_a = math.cos(angle), math.sin(angle)
+    # The bbox's local-space center offset rotates + scales with the tree;
+    # add it to the placement's stored (already tile-local) plant point.
+    off_x = (local_cx * cos_a - local_cy * sin_a) * scale
+    off_y = (local_cx * sin_a + local_cy * cos_a) * scale
+    local = Vector((placement.local_x_mm + off_x, placement.local_y_mm + off_y, 0.0))
+    world = tile_obj.matrix_world @ local
+    return (world.x, world.y, half_x * scale, half_y * scale, angle)
+
+
+def _nearby_placements(context, tile):
+    """Yield `(tile_obj, placement)` for every stored flora placement on
+    `tile` and each of its 6 grid neighbours — a tree near a tile seam must
+    not overlap into a neighbouring tile's print, so the check has to look
+    past the current tile's own placements."""
+    scene = context.scene
+    tprops = tile.hexfinity_tile
+    tiles = [tile]
+    for direction in DIRECTIONS:
+        nq, nr = neighbour_coord(tprops.coord_q, tprops.coord_r, direction)
+        neighbour = find_tile(scene, nq, nr)
+        if neighbour is not None:
+            tiles.append(neighbour)
+    for t in tiles:
+        for p in t.hexfinity_tile.flora_placements:
+            yield t, p
 
 
 class HEXFINITY_OT_flora_marker(bpy.types.Operator):
@@ -275,16 +347,40 @@ class HEXFINITY_OT_flora_marker(bpy.types.Operator):
             return
         species = random.choice(species_list)
 
+        _mesh, _min_z, half_x, half_y, local_cx, local_cy = _get_or_import_mesh(
+            flora_props.tree_type, species)
+
         local = tile.matrix_world.inverted() @ self._hit_world
+        rotation_rad = random.uniform(0.0, 2.0 * math.pi)
+        pct = flora_props.scale_variation_pct
+        scale_factor = 1.0 + random.uniform(-pct, pct) / 100.0
+
+        if flora_props.avoid_overlap:
+            map_props = context.scene.hexfinity_map
+            global_scale = map_props.man_height_mm / TREE_ASSET_MAN_HEIGHT_MM
+            scale = scale_factor * global_scale
+            cos_a, sin_a = math.cos(rotation_rad), math.sin(rotation_rad)
+            off_x = (local_cx * cos_a - local_cy * sin_a) * scale
+            off_y = (local_cx * sin_a + local_cy * cos_a) * scale
+            cand_world = self._hit_world
+            cand = (cand_world.x + off_x, cand_world.y + off_y,
+                    half_x * scale, half_y * scale, rotation_rad)
+            min_gap = context.scene.hexfinity_flora.min_spacing_mm
+            for other_tile, other_placement in _nearby_placements(context, tile):
+                other = _placement_footprint(other_tile, other_placement, global_scale)
+                if ps.obb_overlap(cand[0], cand[1], cand[2], cand[3], cand[4],
+                                   other[0], other[1], other[2], other[3], other[4],
+                                   min_gap=min_gap):
+                    self.report({'WARNING'}, "Too close to another tree — move further away")
+                    return
 
         placement = tile.hexfinity_tile.flora_placements.add()
         placement.species_file = species
         placement.tree_type = flora_props.tree_type
         placement.local_x_mm = local.x
         placement.local_y_mm = local.y
-        placement.rotation_rad = random.uniform(0.0, 2.0 * math.pi)
-        pct = flora_props.scale_variation_pct
-        placement.scale_factor = 1.0 + random.uniform(-pct, pct) / 100.0
+        placement.rotation_rad = rotation_rad
+        placement.scale_factor = scale_factor
 
         from .operators import rebuild_tile
         rebuild_tile(tile)

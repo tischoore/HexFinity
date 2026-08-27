@@ -31,6 +31,11 @@ man-height global scale (`map_props.man_height_mm / TREE_ASSET_MAN_HEIGHT_MM`)
 is applied on top of `scale_factor` at sync time, not baked into it, so
 changing Man Height rescales every existing tree.
 
+No footprint/bounding-box field is stored per placement — a tree's footprint
+is entirely derived from `species_file` + `scale_factor` (plus the global
+man-height scale) at the moment it's needed, by `_get_or_import_mesh`. See
+"Overlap avoidance" below.
+
 ## Mesh library + caching (`flora.py`)
 
 Each species is imported from its STL **once per Blender session** and
@@ -45,9 +50,41 @@ first checks `mesh.name in bpy.data.meshes` (a plain Python dict of live
 references can go stale across a `.blend` reload) before returning; a cache
 miss uses the same import idiom as `HEXFINITY_OT_import_terrain_object` —
 snapshot `scene.objects`, call `bpy.ops.wm.stl_import`, diff to find the new
-object, rename its mesh, record the mesh's lowest local-space vertex Z
-(`min_z`, used to seat the tree's true base rather than its bounding-box
-origin), then discard the import shell and keep the mesh.
+object, rename its mesh, walk its vertices once to record the mesh's lowest
+local-space vertex Z (`min_z`, used to seat the tree's true base rather than
+its bounding-box origin) *and* its local-space XY bbox half-extents/center
+(`half_x`/`half_y`/`local_cx`/`local_cy`, the footprint used by the overlap
+check below), then discard the import shell and keep the mesh. Both are
+cached per filename (`_mesh_min_z`, `_mesh_footprint_xy`) alongside the mesh
+itself, evicted together on the same stale-reference path.
+
+## Overlap avoidance
+
+A new placement is rejected — a `self.report({'WARNING'}, ...)` and no state
+change — if its footprint would overlap an already-planted tree's, so that
+*Export Tiles to STL* never produces two intersecting trees. The check runs
+in `_place_tree`, right before the placement is stored, and is gated by the
+scene-level **Avoid Overlap** toggle (default on); when on, an extra **Min
+Spacing (mm)** slider adds required clearance beyond just not touching.
+
+Each tree's footprint is treated as an **oriented bounding box**: its local
+XY bbox (`half_x`/`half_y`/`local_cx`/`local_cy` from `_get_or_import_mesh`),
+rotated by its own `rotation_rad` and scaled by
+`scale_factor * (man_height_mm / TREE_ASSET_MAN_HEIGHT_MM)`, positioned at
+its plant point. Two footprints are tested with
+`procedural_surfaces.obb_overlap` — a bpy-free, unit-tested separating-axis
+test over the 4 face-normal axes of the two rectangles (see
+`tests/test_procedural_surfaces.py`).
+
+The candidate is checked against every placement on the **current tile and
+its 6 grid neighbours** (`_nearby_placements`, using the same bpy-free
+`map.neighbour_coord`/`map.find_tile` helpers `SHARED_CORNERS` propagation
+uses) — a tree near a tile seam can otherwise overlap into the next tile's
+print, which a same-tile-only check would miss. Each existing placement's
+footprint is recomputed the same way (`_placement_footprint`), using *its
+own* tile's `matrix_world` for position; tile objects are placed by
+translation only (never rotated), so a placement's stored `rotation_rad` is
+already its world-space angle.
 
 ## Sync (`sync_flora`, `purge_flora`)
 
@@ -109,3 +146,12 @@ transform, exactly like scatter boulders and terrain objects.
    same way scatter boulders and terrain objects are).
 8. **Packaging** — build via `deploy.ps1` and confirm the zip contains
    `hexfinity/assets/leefytree/*.stl`.
+9. **Overlap avoidance** — with *Avoid Overlap* on (default), plant a tree,
+   then click a spot close enough to overlap it: confirm the click is
+   rejected with a "Too close to another tree" warning and no new object
+   appears. Toggle *Avoid Overlap* off and repeat the same click: confirm it
+   now succeeds. Turn it back on, raise *Min Spacing (mm)*, and confirm two
+   trees that previously placed cleanly next to each other now get rejected
+   until moved further apart. Finally, plant a tree near a tile edge, then
+   switch to the neighbouring tile and click a mirrored spot close enough to
+   overlap across the seam: confirm it's rejected too.

@@ -151,6 +151,21 @@ class HexFinityFloraProperties(bpy.types.PropertyGroup):
         min=0.0,
         soft_max=20.0,
     )
+    avoid_overlap: bpy.props.BoolProperty(
+        name="Avoid Overlap",
+        description="Reject a placement that would intersect another tree "
+                    "on this tile or its neighbours, keeping every tree "
+                    "printable as a separate piece",
+        default=True,
+    )
+    min_spacing_mm: bpy.props.FloatProperty(
+        name="Min Spacing (mm)",
+        description="Extra clearance required between two trees' "
+                    "footprints, beyond just not touching",
+        default=0.0,
+        min=0.0,
+        soft_max=50.0,
+    )
 
 
 # ---------------------------------------------------------------------------

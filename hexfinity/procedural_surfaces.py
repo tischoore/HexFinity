@@ -568,3 +568,47 @@ def region_mask(x, y, poly, falloff_mm=0.0):
     if falloff_mm <= 0.0:
         return 1.0
     return _smoothstep(polygon_edge_distance(x, y, poly) / falloff_mm)
+
+
+# ---------------------------------------------------------------------------
+# Oriented-bounding-box overlap — used by flora.py's plant-time collision
+# check so two trees' rotated footprints (each tree is randomly spun around
+# its vertical axis at plant time) can be tested for intersection without
+# ever needing bpy. bpy-free + testable.
+# ---------------------------------------------------------------------------
+def obb_overlap(cx1, cy1, hx1, hy1, angle1,
+                 cx2, cy2, hx2, hy2, angle2, min_gap=0.0):
+    """True if two 2D oriented rectangles overlap.
+
+    Each rectangle is given by its center `(cx, cy)`, half-extents
+    `(hx, hy)` along its own local X/Y axes, and `angle` (radians) that its
+    local axes are rotated by around Z. Tested via the separating-axis
+    theorem over the 4 face-normal axes (the local X/Y axes of each
+    rectangle) — the standard sufficient test for 2D OBB/OBB overlap; unlike
+    3D OBBs, no extra cross-product axes are needed.
+
+    `min_gap` inflates both rectangles' half-extents by `min_gap / 2` before
+    the test, so a nonzero gap requires that much clearance between the
+    rectangles' *surfaces*, not just their centers. Rectangles that only
+    touch (zero-width gap) do NOT count as overlapping.
+    """
+    pad = min_gap / 2.0
+    hx1, hy1 = hx1 + pad, hy1 + pad
+    hx2, hy2 = hx2 + pad, hy2 + pad
+
+    ax1, ay1 = math.cos(angle1), math.sin(angle1)   # box 1's local X axis
+    bx1, by1 = -ay1, ax1                              # box 1's local Y axis
+    ax2, ay2 = math.cos(angle2), math.sin(angle2)   # box 2's local X axis
+    bx2, by2 = -ay2, ax2                              # box 2's local Y axis
+
+    tx, ty = cx2 - cx1, cy2 - cy1
+
+    for axis_x, axis_y in ((ax1, ay1), (bx1, by1), (ax2, ay2), (bx2, by2)):
+        dist = abs(tx * axis_x + ty * axis_y)
+        radius1 = hx1 * abs(ax1 * axis_x + ay1 * axis_y) + \
+            hy1 * abs(bx1 * axis_x + by1 * axis_y)
+        radius2 = hx2 * abs(ax2 * axis_x + ay2 * axis_y) + \
+            hy2 * abs(bx2 * axis_x + by2 * axis_y)
+        if dist >= radius1 + radius2:
+            return False   # this axis separates the two boxes
+    return True
