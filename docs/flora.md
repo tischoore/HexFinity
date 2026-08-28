@@ -7,9 +7,11 @@ STL asset folder, rotated a random amount around its vertical axis, and
 scaled by a random variation factor.
 
 This page covers the mesh caching, the scene tree it builds, and the manual
-checklist for the bpy-only parts (there is no bpy-free portion — mesh
-caching/placement math all needs `bpy`, so this module has no automated test
-coverage, the same convention as `regions.py`/`scatter.py`).
+checklist for the bpy-only parts of `flora.py` itself (mesh caching/placement
+math all needs `bpy`, so this module has no automated test coverage, the same
+convention as `regions.py`/`scatter.py`). The tree-base-pad *geometry* it
+triggers, however, lives in the bpy-free `tree_pads.py` and is unit-tested in
+`tests/test_tree_pads.py` — see "Base flattening (tree pads)" below.
 
 ## Data model
 
@@ -52,11 +54,16 @@ miss uses the same import idiom as `HEXFINITY_OT_import_terrain_object` —
 snapshot `scene.objects`, call `bpy.ops.wm.stl_import`, diff to find the new
 object, rename its mesh, walk its vertices once to record the mesh's lowest
 local-space vertex Z (`min_z`, used to seat the tree's true base rather than
-its bounding-box origin) *and* its local-space XY bbox half-extents/center
+its bounding-box origin), its local-space XY bbox half-extents/center
 (`half_x`/`half_y`/`local_cx`/`local_cy`, the footprint used by the overlap
-check below), then discard the import shell and keep the mesh. Both are
-cached per filename (`_mesh_min_z`, `_mesh_footprint_xy`) alongside the mesh
-itself, evicted together on the same stale-reference path.
+check below), *and* its true flat-base-cut radius (`base_radius` — the max
+XY distance from the centroid of every vertex within an epsilon of `min_z`,
+falling back to `15%` of the larger bbox half-extent if the base is a single
+point), then discard the import shell and keep the mesh. All three are
+cached per filename (`_mesh_min_z`, `_mesh_footprint_xy`, `_mesh_base_radius`)
+alongside the mesh itself, evicted together on the same stale-reference path.
+`base_radius` sizes each tree's flatten pad (see "Base flattening" below) —
+self-tuning per species, with no separate radius slider to keep in sync.
 
 ## Overlap avoidance
 
@@ -108,6 +115,58 @@ purges and resyncs a tile's flora on every rebuild (same cost model already
 accepted for scatter), after the new mesh is assigned and the depsgraph
 updated so the seating raycast samples the current surface.
 
+## Base flattening (tree pads)
+
+Every tree is forced perfectly world-vertical (`obj.rotation_euler`'s X/Y are
+hard zero in `sync_flora`), but the tree assets have a flat base cut. On
+sloped terrain a flat base only touches a sloped surface along one edge — the
+uphill side pokes through the mesh, the downhill side floats above it. Tilting
+the tree to match the slope was ruled out (it would make the trunk lean), so
+instead the *terrain* gets a small flat "pad" under the tree, blended
+smoothly back into the surrounding surface.
+
+This is implemented as local, adaptive mesh refinement, not a uniform bump in
+subdivision — the default top-vertex spacing (~12.5 mm) is far coarser than a
+typical tree base (1–3 mm), and raising *Smoothness Passes*/*Resample
+Density* enough to resolve that everywhere would blow up the tile's vertex
+budget. The bpy-free `tree_pads.py` module instead refines only the
+triangles near each planted tree:
+
+1. `flora.pad_specs(tile_obj)` turns the tile's `flora_placements` into a
+   list of `{"x", "y", "radius_mm", "blend_mm"}` dicts — `[]` immediately
+   (no STL import) when there are no placements or **Flatten Base** is off.
+   `radius_mm` is the species' cached `base_radius`, scaled by the
+   placement's own `scale_factor * global_scale` and a `PAD_MARGIN = 1.25`
+   safety factor so the pad comfortably covers the whole base.
+2. `operators.rebuild_tile` computes this list and passes it as
+   `mesh_builder.build_hex_tile`'s `flora_pads` kwarg, *before* the build —
+   unlike scatter/flora object sync (which runs after), pad geometry has to
+   be baked into the mesh itself.
+3. Inside the builder, `tree_pads.refine_and_flatten` runs after brush/
+   procedural-surface displacement and before top-face emission: it
+   per-edge-splits triangles near a pad (crack-free by construction — a
+   split decision is shared by both faces on an edge, never decided
+   per-triangle) up to a small cap, appending new vertices strictly *after*
+   the existing top-vertex range so `top_vertex_count()` and the
+   `hf_brush_disp`/`hf_snap_disp` layers are completely unaffected by
+   planting or unplanting a tree. It never splits a rim edge, so the side
+   wall's n-gon is untouched too.
+4. Every vertex within `radius_mm` of a pad centre is then **lerped**
+   (not additively offset) toward a height sampled from the surface *before*
+   flattening, with a smoothstep falloff over `pad_blend_mm` and a
+   rim-edge-distance fade (mirroring the skirt fade in
+   `operators._compute_snap_gap`) so a pad near a hex edge shrinks rather
+   than desyncing the seam with the neighbouring tile. Because it's a lerp,
+   the pad interior is flat even where a procedural-surface texture or brush
+   stroke would otherwise bump it — the pad simply overrides whatever was
+   there.
+
+**Penetration** still sinks the tree slightly into its now-flush pad
+(default lowered from 2.0 mm to 0.3 mm since its old job — hiding a slope
+gap — is superseded by the pad; its remaining job is avoiding a
+zero-thickness, z-fighting contact between a perfectly flat tree base and a
+perfectly flat pad).
+
 ## Scene tree
 
 ```
@@ -155,3 +214,17 @@ transform, exactly like scatter boulders and terrain objects.
    until moved further apart. Finally, plant a tree near a tile edge, then
    switch to the neighbouring tile and click a mirrored spot close enough to
    overlap across the seam: confirm it's rejected too.
+10. **Base flattening** — raise a corner so the tile is sloped, then plant a
+    tree near the raised side with *Flatten Base* on (default): the terrain
+    tessellates a small flat pad under it that blends smoothly outward, and
+    the tree sits flush and level rather than poking through on the uphill
+    side. Toggle *Flatten Base* off — the pad's extra vertices disappear and
+    the old sunken-in look returns; toggle it back on and the pad returns.
+    Drag *Pad Blend (mm)* and *Penetration (mm)* and confirm both re-seat the
+    tile/tree live. Drag a corner slider with the tree still planted — the
+    pad follows the new surface and the tree stays flush. Plant a tree near a
+    hex edge and confirm the seam with the neighbour tile stays aligned (the
+    pad's blend fades out near the rim rather than desyncing it). Export that
+    tile to STL and confirm it's still a valid manifold. A headless smoke
+    test of this whole path (plant → pad → rebuild → property-update
+    callbacks) lives in `tests/_headless_flora_pad_check.py`.

@@ -218,7 +218,7 @@ Like the brush, snap is stored as a displacement layer re-applied on rebuild, an
 
 ## Flora
 
-The Flora box plants real tree meshes onto a tile. A **Tree Type** dropdown (currently just "Leafy tree") selects which asset folder to plant from; **Scale Variation** sets a +/- percentage jitter around 1.0 applied to each tree; **Penetration** sets how many millimetres each tree sinks into the surface, hiding the flat base cut of the mesh. Pressing **Flora** starts a modal tool: move the mouse over any generated tile and a yellow circle-with-center-dot tracks the raycast hit point live; left-click plants a tree there — a species is chosen at random from the current Tree Type's asset folder, rotated a random amount around its vertical axis, and scaled by the random variation factor. Multiple trees can be planted in one activation. While it's running, the sidebar swaps the button for a "Flora active — Esc / RMB to close" indicator (it can't be a clickable Close button — a running modal operator owns all input, so panel buttons are unreachable until you exit); right-click or `Esc` closes it and restores the button.
+The Flora box plants real tree meshes onto a tile. A **Tree Type** dropdown (currently just "Leafy tree") selects which asset folder to plant from; **Scale Variation** sets a +/- percentage jitter around 1.0 applied to each tree; **Flatten Base** (on by default) tessellates a small flat pad into the terrain under each tree's footprint, blended smoothly back into the surrounding surface over **Pad Blend (mm)**, so a tree's flat base cut sits flush and level even on sloped ground instead of poking through on the uphill side and floating on the downhill side; **Penetration** sets a small guaranteed sink (mm) into that pad so the base doesn't z-fight or make a zero-thickness contact. Pressing **Flora** starts a modal tool: move the mouse over any generated tile and a yellow circle-with-center-dot tracks the raycast hit point live; left-click plants a tree there — a species is chosen at random from the current Tree Type's asset folder, rotated a random amount around its vertical axis, and scaled by the random variation factor. Multiple trees can be planted in one activation. While it's running, the sidebar swaps the button for a "Flora active — Esc / RMB to close" indicator (it can't be a clickable Close button — a running modal operator owns all input, so panel buttons are unreachable until you exit); right-click or `Esc` closes it and restores the button.
 
 Each species STL is imported from `assets/` once per Blender session and cached as a single shared mesh datablock; every planted tree is a separate Object pointing at that same shared mesh (a Blender "linked duplicate"), not a per-tree copy — the Outliner shows one mesh datablock with many object users. Planted trees live in a **Flora** sub-collection nested under the map's root collection, parented to their tile like scatter boulders and terrain objects. A tile's placements (species, position, rotation, scale) are stored as data and re-seated onto the surface on every rebuild — editing corner heights, painting terrain, or changing subdivision moves the trees with the ground instead of leaving them floating or buried. Clearing the map removes the Flora collection along with everything else.
 
@@ -363,7 +363,7 @@ HexFinity
 │  │   ├─ Dome Area / Dome Damping        (bump shaping; Copy to Selected)
 │  │   └─ Local Subdivision               (per-tile extra density)
 │  ├─ [ Terrain Objects ]      (import STL, drop on tile, parent)
-│  ├─ Flora                    (Tree Type / Scale Variation / Penetration / Avoid Overlap / Min Spacing → Flora)
+│  ├─ Flora                    (Tree Type / Scale Variation / Flatten Base / Pad Blend / Penetration / Avoid Overlap / Min Spacing → Flora)
 │  ├─ Procedural Surface       (region list + Draw Region — see below)
 │  │   ├─ Area Name + Surface type
 │  │   ├─ displace: Feature / Depth / Regularity / (Direction) + resolution warning
@@ -405,6 +405,7 @@ C:\Work\Hexfinity\
 │   ├─ assets\
 │   │   └─ leefytree\           # planted-tree STL assets (one file per species)
 │   ├─ mesh_builder.py         # pure-Python mesh construction (no bpy)
+│   ├─ tree_pads.py            # pure-Python tree-base-pad refine+flatten (no bpy)
 │   ├─ subdivision.py          # pure-Python Loop + linear-midpoint subdivision (no bpy)
 │   ├─ procedural_surfaces.py  # pure-Python surface registry + masks + scatter geometry + obb_overlap (no bpy)
 │   ├─ map.py                  # pure-Python grid math + SHARED_CORNERS table
@@ -413,6 +414,7 @@ C:\Work\Hexfinity\
 └─ tests\
     ├─ conftest.py
     ├─ test_mesh_builder.py
+    ├─ test_tree_pads.py
     ├─ test_subdivision.py
     ├─ test_procedural_surfaces.py
     ├─ test_scatter.py
@@ -421,7 +423,7 @@ C:\Work\Hexfinity\
     └─ test_manifold_check.py
 ```
 
-`mesh_builder.py`, `subdivision.py`, `procedural_surfaces.py`, `map.py`, `tile_export.py`, and `manifold_check.py` deliberately contain no `bpy` imports so they can be unit-tested outside Blender (`__init__.py` defers its bpy imports into `register()` for the same reason).
+`mesh_builder.py`, `tree_pads.py`, `subdivision.py`, `procedural_surfaces.py`, `map.py`, `tile_export.py`, and `manifold_check.py` deliberately contain no `bpy` imports so they can be unit-tested outside Blender (`__init__.py` defers its bpy imports into `register()` for the same reason).
 
 HexFinity is packaged as a **Blender extension** (see `blender_manifest.toml`), the format Blender 5.x ships with — there is no `bl_info` dict in `__init__.py`.
 
@@ -445,7 +447,7 @@ The script reads the version from `blender_manifest.toml`, strips `__pycache__`,
 
 ### Running the unit tests
 
-The bpy-free modules (`mesh_builder.py`, `subdivision.py`, `procedural_surfaces.py`, `map.py`, `tile_export.py`, `manifold_check.py`) are unit-tested with `pytest`. You can run them against Blender's bundled Python (which contains no `bpy` dependency for these modules):
+The bpy-free modules (`mesh_builder.py`, `tree_pads.py`, `subdivision.py`, `procedural_surfaces.py`, `map.py`, `tile_export.py`, `manifold_check.py`) are unit-tested with `pytest`. You can run them against Blender's bundled Python (which contains no `bpy` dependency for these modules):
 
 ```
 "C:\Program Files\Blender Foundation\Blender 5.1\5.1\python\bin\python.exe" -m pip install --user pytest
@@ -468,3 +470,4 @@ After generating a map:
 7. **Terrain object check** — select a tile, *Terrain Objects*, pick an `.stl`; it drops centred and flush on the surface. Select the dropped object and raise *Terrain snap to model* — the ground rises to hug its base; add *Snap damping* for a skirt.
 8. **Procedural surface check** — raise *Local Subdivision* on a tile, *Procedural Surface → Draw Region*, click a loop, close it (Enter). The interior gains cobblestone; the rim stays flat (still interlocks). Add a whole-tile *Furrow* region and rotate its **Direction** — the ridges follow the arrow. See [docs/procedural_surfaces.md](docs/procedural_surfaces.md). (A headless smoke test of the full register→region→rebuild path lives in `tests/_headless_region_check.py`: `blender --background --factory-startup --python tests/_headless_region_check.py`.)
 9. **Flora check** — select a tile, press *Flora*, then move the mouse across several tiles: a yellow circle-with-center-dot tracks the raycast hit point live. Left-click several spots — each plants a tree with a random species/rotation/scale, sunk in by *Penetration*. The Outliner shows the planted trees under a "Flora" sub-collection nested in the map collection, all pointing at a handful of shared mesh datablocks (multiple object users, not one mesh per tree). Orbit/pan/zoom (MMB/wheel) still work while it's active. Both `Esc` and right-click close it. Afterwards, edit that tile's corner heights or paint terrain — the trees re-seat onto the new surface instead of floating or burying. With *Avoid Overlap* on, clicking close enough to an existing tree is rejected with a warning instead of planting; turning it off allows it. See [docs/flora.md](docs/flora.md) for the full manual checklist.
+10. **Tree base pad check** — raise a corner so the tile is sloped, then plant a tree near the raised side with *Flatten Base* on: the terrain under the tree tessellates into a small flat pad that blends smoothly back into the slope, and the tree sits flush and level instead of poking through on one side. Toggle *Flatten Base* off and the pad disappears (old sunken-in look returns); drag *Pad Blend (mm)* or *Penetration (mm)* and both re-seat live. Plant a tree near a hex edge and confirm the seam with the neighbour tile stays aligned (the pad fades out near the rim rather than desyncing it). A headless smoke test of the full plant→pad→rebuild→property-update path lives in `tests/_headless_flora_pad_check.py`: `blender --background --python tests/_headless_flora_pad_check.py`.

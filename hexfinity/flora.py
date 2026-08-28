@@ -53,12 +53,20 @@ _TREE_TYPE_FOLDERS = {'LEAFY_TREE': "leefytree"}   # one entry per HexFinityFlor
 TREE_ASSET_MAN_HEIGHT_MM = 10.0   # the man-height scale the STLs were authored at
 FLORA_OF = "hf_flora_of"
 
+# Margin applied to a tree's true base-cut radius (see `_get_or_import_mesh`)
+# when sizing its flatten pad, so the pad comfortably covers the whole base
+# rather than clipping it at the very edge.
+PAD_MARGIN = 1.25
+
 _species_cache = {}   # tree_type -> sorted [filenames]
 _mesh_cache = {}       # filename -> bpy.types.Mesh (shared, use_fake_user=True)
 _mesh_min_z = {}       # filename -> float (lowest local-space vertex Z)
 _mesh_footprint_xy = {}   # filename -> (half_x, half_y, local_cx, local_cy),
                           # the local-space XY bbox used by the plant-time
                           # overlap check (see _place_tree / obb_overlap)
+_mesh_base_radius = {}   # filename -> float, the true flat-base-cut radius
+                         # (see _get_or_import_mesh), used to size flora
+                         # pads.pad_specs() without a user-facing slider
 
 
 def _list_species(tree_type):
@@ -77,42 +85,47 @@ def _list_species(tree_type):
 
 
 def _get_or_import_mesh(tree_type, filename):
-    """Return `(mesh, min_z, half_x, half_y, local_cx, local_cy)` for
-    `filename`, importing + caching on first use.
+    """Return `(mesh, min_z, half_x, half_y, local_cx, local_cy, base_radius)`
+    for `filename`, importing + caching on first use.
 
     `min_z` is the lowest local-space vertex Z of the imported mesh, used by
     `sync_flora` to seat the tree's true base (not its bounding-box origin)
     on the surface. `half_x`/`half_y` are the local-space XY bbox
     half-extents and `local_cx`/`local_cy` is that bbox's center offset from
     the mesh origin — together the local-space footprint rectangle used by
-    `_place_tree`'s plant-time overlap check (`obb_overlap`).
+    `_place_tree`'s plant-time overlap check (`obb_overlap`). `base_radius` is
+    the true flat-base-cut radius (max XY distance from the base verts'
+    centroid, among verts within an epsilon of `min_z`) — self-tuning per
+    species, used by `pad_specs()` to size each tree's flatten pad.
     """
     mesh = _mesh_cache.get(filename)
     if mesh is not None:
         if mesh.name in bpy.data.meshes:
-            return (mesh, _mesh_min_z[filename], *_mesh_footprint_xy[filename])
+            return (mesh, _mesh_min_z[filename], *_mesh_footprint_xy[filename],
+                    _mesh_base_radius[filename])
         # Stale reference (e.g. a different .blend loaded, or a reload) —
         # evict and re-import below.
         del _mesh_cache[filename]
         _mesh_min_z.pop(filename, None)
         _mesh_footprint_xy.pop(filename, None)
+        _mesh_base_radius.pop(filename, None)
 
     folder = _TREE_TYPE_FOLDERS.get(tree_type)
     if folder is None:
-        return None, 0.0, 0.0, 0.0, 0.0, 0.0
+        return None, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
     filepath = _ASSETS_DIR / folder / filename
     if not filepath.is_file():
-        return None, 0.0, 0.0, 0.0, 0.0, 0.0
+        return None, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
 
     scene = bpy.context.scene
     before = set(scene.objects)
     try:
         bpy.ops.wm.stl_import(filepath=str(filepath))
     except RuntimeError:
-        return None, 0.0, 0.0, 0.0, 0.0, 0.0
+        return None, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
     imported = [o for o in scene.objects if o not in before]
     if not imported:
-        return None, 0.0, 0.0, 0.0, 0.0, 0.0
+        return None, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
 
     mesh = imported[0].data
     mesh.name = f"HF_Flora_{Path(filename).stem}"
@@ -120,18 +133,30 @@ def _get_or_import_mesh(tree_type, filename):
 
     min_x = min_y = min_z = float("inf")
     max_x = max_y = float("-inf")
+    max_z = float("-inf")
     for v in mesh.vertices:
         min_x = min(min_x, v.co.x)
         max_x = max(max_x, v.co.x)
         min_y = min(min_y, v.co.y)
         max_y = max(max_y, v.co.y)
         min_z = min(min_z, v.co.z)
+        max_z = max(max_z, v.co.z)
     if min_x > max_x:   # no vertices
-        min_x = max_x = min_y = max_y = min_z = 0.0
+        min_x = max_x = min_y = max_y = min_z = max_z = 0.0
     half_x = (max_x - min_x) / 2.0
     half_y = (max_y - min_y) / 2.0
     local_cx = (min_x + max_x) / 2.0
     local_cy = (min_y + max_y) / 2.0
+
+    eps = max(1e-4, (max_z - min_z) * 0.002)
+    base_pts = [(v.co.x, v.co.y) for v in mesh.vertices if v.co.z <= min_z + eps]
+    base_radius = 0.0
+    if base_pts:
+        bcx = sum(p[0] for p in base_pts) / len(base_pts)
+        bcy = sum(p[1] for p in base_pts) / len(base_pts)
+        base_radius = max(math.hypot(p[0] - bcx, p[1] - bcy) for p in base_pts)
+    if base_radius <= 0.0:
+        base_radius = max(half_x, half_y) * 0.15
 
     bpy.data.objects.remove(imported[0], do_unlink=True)
     for extra in imported[1:]:
@@ -140,7 +165,8 @@ def _get_or_import_mesh(tree_type, filename):
     _mesh_cache[filename] = mesh
     _mesh_min_z[filename] = min_z
     _mesh_footprint_xy[filename] = (half_x, half_y, local_cx, local_cy)
-    return mesh, min_z, half_x, half_y, local_cx, local_cy
+    _mesh_base_radius[filename] = base_radius
+    return mesh, min_z, half_x, half_y, local_cx, local_cy, base_radius
 
 
 def purge_flora(tile_obj):
@@ -197,7 +223,7 @@ def sync_flora(tile_obj):
     penetration_mm = context.scene.hexfinity_flora.penetration_mm
 
     for i, p in enumerate(placements):
-        mesh, min_z, _hx, _hy, _lcx, _lcy = _get_or_import_mesh(p.tree_type, p.species_file)
+        mesh, min_z, _hx, _hy, _lcx, _lcy, _br = _get_or_import_mesh(p.tree_type, p.species_file)
         if mesh is None:
             continue
         surface_z = surface_z_at(p.local_x_mm, p.local_y_mm)
@@ -217,6 +243,41 @@ def sync_flora(tile_obj):
         obj[FLORA_OF] = True
 
 
+def pad_specs(tile_obj):
+    """Flatten-pad specs for `tile_obj`'s planted trees, one dict per
+    placement: `{"x", "y", "radius_mm", "blend_mm"}` in tile-local mm, ready
+    for `mesh_builder.build_hex_tile`'s `flora_pads` kwarg.
+
+    Returns `[]` immediately — without importing any species STL — when
+    there are no placements or `flatten_base` is off, so a treeless or
+    pad-disabled tile pays nothing."""
+    flora_props = bpy.context.scene.hexfinity_flora
+    if not flora_props.flatten_base:
+        return []
+    placements = tile_obj.hexfinity_tile.flora_placements
+    if len(placements) == 0:
+        return []
+
+    map_props = bpy.context.scene.hexfinity_map
+    global_scale = map_props.man_height_mm / TREE_ASSET_MAN_HEIGHT_MM
+    blend_mm = flora_props.pad_blend_mm
+
+    pads = []
+    for p in placements:
+        mesh, _min_z, _hx, _hy, _lcx, _lcy, base_radius = _get_or_import_mesh(
+            p.tree_type, p.species_file)
+        if mesh is None:
+            continue
+        total_scale = p.scale_factor * global_scale
+        pads.append({
+            "x": p.local_x_mm,
+            "y": p.local_y_mm,
+            "radius_mm": base_radius * total_scale * PAD_MARGIN,
+            "blend_mm": blend_mm,
+        })
+    return pads
+
+
 # ---------------------------------------------------------------------------
 # Plant-time overlap check. Each tree's footprint is an oriented rectangle
 # (its local-space XY bbox, rotated by its own random Z spin) tested against
@@ -231,7 +292,7 @@ def _placement_footprint(tile_obj, placement, global_scale):
     already the world-space angle; only the position needs the tile's
     matrix_world applied.
     """
-    _mesh, _min_z, half_x, half_y, local_cx, local_cy = _get_or_import_mesh(
+    _mesh, _min_z, half_x, half_y, local_cx, local_cy, _br = _get_or_import_mesh(
         placement.tree_type, placement.species_file)
     scale = placement.scale_factor * global_scale
     angle = placement.rotation_rad
@@ -347,7 +408,7 @@ class HEXFINITY_OT_flora_marker(bpy.types.Operator):
             return
         species = random.choice(species_list)
 
-        _mesh, _min_z, half_x, half_y, local_cx, local_cy = _get_or_import_mesh(
+        _mesh, _min_z, half_x, half_y, local_cx, local_cy, _br = _get_or_import_mesh(
             flora_props.tree_type, species)
 
         local = tile.matrix_world.inverted() @ self._hit_world

@@ -188,6 +188,7 @@ def build_hex_tile(
     surface_origin_xy=(0.0, 0.0),
     surface_seed=0,
     surface_rim_falloff_mm=SURFACE_RIM_FALLOFF_MM,
+    flora_pads=None,
 ):
     """Build a single HexFinity tile.
 
@@ -220,6 +221,13 @@ def build_hex_tile(
     GLOBAL coords (`surface_origin_xy` = tile world XY) so patterns flow across
     seams. Like `top_displacement` this is z-only and clamped to `base_thickness_mm`,
     so the manifold guarantee holds.
+
+    `flora_pads`, when given, is a list of `{"x", "y", "radius_mm", "blend_mm"}`
+    dicts (tile-local mm) — one per planted tree. Each pad locally refines and
+    flattens the top surface under the tree's footprint (see `tree_pads.py`) so
+    a tree with a flat base cut sits flush even on sloped ground. New vertices
+    are appended after the top-surface prefix, so `top_vertex_count()` and both
+    displacement layers are unaffected by planting/unplanting a tree.
     """
     if diameter_mm <= 0:
         raise ValueError(f"diameter_mm must be positive, got {diameter_mm}")
@@ -358,6 +366,10 @@ def build_hex_tile(
     # side-wall n-gon below can look them up. Interior verts get a per-tile
     # counter under ("top", k) — no dedup, just a unique key per vertex.
     top_remap = {}
+    # Consecutive rim vertex-index pairs (post-remap) that tree-pad refinement
+    # must never split — the side wall's n-gon looks rim verts up by index via
+    # `top_rim_key` below, so splitting a rim edge would desync it.
+    protected_edges = set()
 
     for i in range(6):
         chain = rim_chains[i]
@@ -370,6 +382,9 @@ def build_hex_tile(
             else:
                 new_idx = add_vert(("rim", i, j), pos)
             top_remap[old_idx] = new_idx
+        for j in range(len(chain) - 1):
+            a, b = top_remap[chain[j]], top_remap[chain[j + 1]]
+            protected_edges.add((a, b) if a < b else (b, a))
 
     top_counter = 0
     for old_idx in range(len(sub_verts)):
@@ -397,8 +412,16 @@ def build_hex_tile(
                         x, y, regions, surface_origin_xy, surface_seed)
             verts_mm[i] = (x, y, max(z + dz, base_thickness_mm))
 
-    for f in sub_faces:
-        faces.append(tuple(top_remap[v] for v in f))
+    top_faces = [tuple(top_remap[v] for v in f) for f in sub_faces]
+    if flora_pads:
+        try:
+            from . import tree_pads
+        except ImportError:
+            import tree_pads
+        top_faces = tree_pads.refine_and_flatten(
+            verts_mm, top_faces, protected_edges, flora_pads,
+            diameter_mm, base_thickness_mm)
+    faces.extend(top_faces)
 
     # Bottom of the tile carries inter-tile tab/hole interlocks (see module
     # constants). Side-wall, base plate and per-side tab/cavity geometry are

@@ -186,6 +186,9 @@ def rebuild_tile(obj):
                 "seed": surface_seed ^ (idx * 2654435761),
             })
 
+        from . import flora
+        flora_pads = flora.pad_specs(obj)
+
         verts, faces = build_hex_tile(
             diameter_mm=map_props.diameter_mm,
             level_height_mm=map_props.level_height_mm,
@@ -201,6 +204,7 @@ def rebuild_tile(obj):
             surface_regions=surface_regions,
             surface_origin_xy=(obj.location.x, obj.location.y),
             surface_seed=surface_seed,
+            flora_pads=flora_pads,
         )
         assert_two_manifold(verts, faces)
 
@@ -234,7 +238,6 @@ def rebuild_tile(obj):
         # re-randomized, so a rebuild reproduces the same trees just
         # re-seated to the current surface.
         flora_placements = tile_props.flora_placements
-        from . import flora
         has_flora = any(c.get(flora.FLORA_OF) for c in obj.children)
         if len(flora_placements) > 0 or has_flora:
             flora.purge_flora(obj)
@@ -337,6 +340,22 @@ def on_global_update(map_props):
                              map_props.diameter_mm)
         obj.location = (x, y, 0.0)
         rebuild_tile(obj)
+
+
+def _rebuild_flora_tiles(context):
+    """Rebuild every tile that has planted trees — used by the flora pad
+    property update callbacks (`flatten_base` / `pad_blend_mm`), which change
+    every tile's terrain rather than just the one currently selected."""
+    map_props = context.scene.hexfinity_map
+    if not map_props.is_generated:
+        return
+    coll = map_props.root_collection
+    if coll is None:
+        return
+    for obj in coll.objects:
+        tile_props = obj.hexfinity_tile
+        if tile_props.is_generated and len(tile_props.flora_placements) > 0:
+            rebuild_tile(obj)
 
 
 # ---------------------------------------------------------------------------
@@ -917,6 +936,7 @@ def _compute_snap_gap(tile, map_props, model, mmin, mmax, base_z, target_z, num_
         dome_area=p.dome_area,
         dome_damping=p.dome_damping,
         top_displacement=None,
+        flora_pads=None,   # clean undisplaced baseline — must not bake pads in
     )
     brush = tile.get("hf_brush_disp")
     if brush is None or len(brush) != num_top:

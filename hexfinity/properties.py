@@ -125,6 +125,16 @@ class HexFinityMapProperties(bpy.types.PropertyGroup):
 # Flora marker tool will place; grows into a registry-backed dropdown (like
 # HexFinitySurfaceRegion.surface_type) if more flora types are added.
 
+def _on_flora_pad_update(self, context):
+    # Lazy import — same cycle-avoidance as _on_global_update. A pad setting
+    # affects every tile with a planted tree, not just the active one.
+    from .operators import _rebuild_flora_tiles
+    try:
+        _rebuild_flora_tiles(context)
+    except Exception:
+        pass
+
+
 class HexFinityFloraProperties(bpy.types.PropertyGroup):
     tree_type: bpy.props.EnumProperty(
         name="Tree Type",
@@ -143,13 +153,33 @@ class HexFinityFloraProperties(bpy.types.PropertyGroup):
         max=100.0,
         subtype='PERCENTAGE',
     )
-    penetration_mm: bpy.props.FloatProperty(
-        name="Penetration (mm)",
-        description="How far each planted tree sinks into the surface, "
-                    "hiding the flat base cut of the mesh",
-        default=2.0,
+    flatten_base: bpy.props.BoolProperty(
+        name="Flatten Base",
+        description="Tessellate a small flat pad into the terrain under each "
+                    "planted tree's footprint, blended smoothly back into the "
+                    "surrounding surface, so the tree's flat base cut sits "
+                    "flush and level even on sloped ground",
+        default=True,
+        update=_on_flora_pad_update,
+    )
+    pad_blend_mm: bpy.props.FloatProperty(
+        name="Pad Blend (mm)",
+        description="Width of the smooth blend band between a tree's flat "
+                    "pad and the surrounding terrain",
+        default=3.0,
         min=0.0,
         soft_max=20.0,
+        update=_on_flora_pad_update,
+    )
+    penetration_mm: bpy.props.FloatProperty(
+        name="Penetration (mm)",
+        description="How far each planted tree sinks into the surface — a "
+                    "small guaranteed bite so a tree standing on a flat pad "
+                    "doesn't z-fight or make a zero-thickness contact",
+        default=0.3,
+        min=0.0,
+        soft_max=20.0,
+        update=_on_flora_pad_update,
     )
     avoid_overlap: bpy.props.BoolProperty(
         name="Avoid Overlap",

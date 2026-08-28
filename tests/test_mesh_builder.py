@@ -728,6 +728,21 @@ def test_top_vertex_count_matches_builder():
             assert top_vertex_count(s, r) == total - bottom, (s, r)
 
 
+def test_top_vertex_count_unaffected_by_explicit_none_pads():
+    # flora_pads=None (the default) must be a true no-op — same total vertex
+    # count as never passing the kwarg at all, since tree_pads.py is only
+    # imported/invoked when flora_pads is non-empty.
+    bottom = len(_build(smoothness_passes=0, resample_density=0)[0]) - 13
+    for s in range(3):
+        for pads in (None, []):
+            total = len(build_hex_tile(
+                diameter_mm=100.0, level_height_mm=5.0, base_thickness_mm=10.0,
+                corner_levels=(0,) * 6, center_level=None, smoothness_passes=s,
+                flora_pads=pads,
+            )[0])
+            assert top_vertex_count(s, 0) == total - bottom, (s, pads)
+
+
 @pytest.mark.parametrize(
     "global_density,local_subdiv,expected",
     [
