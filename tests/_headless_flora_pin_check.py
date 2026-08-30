@@ -181,9 +181,9 @@ print("unrelated rebuild: pin/notch gone again, verts back to", after_verts)
 operators.rebuild_tile(tile, finalize_flora=True)
 tree_obj, pin_obj = _tree_and_pin(tile)
 
-# ---- Export: tile STL excludes tree/pin geometry, flora STL exists, and --
-# both files are separately valid to reimport, with the tree+pin STL's true
-# base sitting at z=0 (not at the tree's arbitrary local mesh origin). ------
+# ---- Export: tile STL excludes tree/pin geometry, tree and pin export as --
+# two separate STLs sharing the tile's hex_qNN_rNN naming, and their combined
+# lowest point sits at z=0 (not at the tree's arbitrary local mesh origin). -
 out_dir = tempfile.mkdtemp(prefix="hf_flora_pin_export_")
 try:
     res = bpy.ops.hexfinity.export_tiles(
@@ -191,12 +191,17 @@ try:
     assert res == {'FINISHED'}, res
     export_dir = os.path.join(out_dir, "out")
     files = os.listdir(export_dir)
-    tile_stls = [f for f in files if f.startswith("hex_") and f.endswith(".stl")]
-    flora_stls = [f for f in files if f.startswith("flora_") and f.endswith(".stl")]
+    tile_stls = [f for f in files
+                if f.startswith("hex_") and f.endswith(".stl") and "_tree" not in f]
+    tree_stls = [f for f in files
+                if f.startswith("hex_") and "_tree" in f and not f.endswith("_pin.stl")]
+    pin_stls = [f for f in files if f.endswith("_pin.stl")]
     assert len(tile_stls) == 1, files
-    assert len(flora_stls) == 1, files
+    assert len(tree_stls) == 1, files
+    assert len(pin_stls) == 1, files
     assert "flora_manifest.csv" in files, files
-    print("export: tile STL =", tile_stls[0], " flora STL =", flora_stls[0])
+    print("export: tile STL =", tile_stls[0], " tree STL =", tree_stls[0],
+         " pin STL =", pin_stls[0])
 
     def _import_mesh(path):
         before = set(scene.objects)
@@ -205,12 +210,15 @@ try:
         assert len(imported) == 1, imported
         obj = imported[0]
         tri_count = len(obj.data.polygons)
-        min_z_export = min(v.co.z for v in obj.data.vertices)
+        zs = [v.co.z for v in obj.data.vertices]
         bpy.data.objects.remove(obj, do_unlink=True)
-        return tri_count, min_z_export
+        return tri_count, min(zs), max(zs)
 
-    tile_export_tris, _ = _import_mesh(os.path.join(export_dir, tile_stls[0]))
-    flora_export_tris, flora_min_z = _import_mesh(os.path.join(export_dir, flora_stls[0]))
+    tile_export_tris, _, _ = _import_mesh(os.path.join(export_dir, tile_stls[0]))
+    tree_export_tris, tree_min_z, tree_max_z = _import_mesh(
+        os.path.join(export_dir, tree_stls[0]))
+    pin_export_tris, pin_min_z, pin_max_z = _import_mesh(
+        os.path.join(export_dir, pin_stls[0]))
 
     # Baseline: export the tile object ALONE (no children at all) through
     # the same STL exporter/triangulation, independent of the real operator's
@@ -224,18 +232,45 @@ try:
     bpy.ops.wm.stl_export(filepath=baseline_path, export_selected_objects=True,
                           apply_modifiers=True)
     tile.select_set(False)
-    baseline_tris, _ = _import_mesh(baseline_path)
+    baseline_tris, _, _ = _import_mesh(baseline_path)
 
     assert tile_export_tris == baseline_tris, (
         "exported tile STL must not include tree/pin geometry",
         tile_export_tris, baseline_tris)
-    assert flora_export_tris > 0
-    assert abs(flora_min_z - 0.0) < 1e-4, (
-        "exported tree+pin STL's true base must sit at z=0 for printing, "
-        "not the tree's arbitrary local mesh origin", flora_min_z)
+    assert tree_export_tris > 0
+    assert pin_export_tris > 0
+
+    # The tree+pin pair is flipped and anchored as one rigid body, so exactly
+    # one of the two files' lowest point sits at z=0 (whichever is the global
+    # lowest); the other sits at or above it. Neither dips below the bed.
+    combined_min_z = min(tree_min_z, pin_min_z)
+    assert abs(combined_min_z - 0.0) < 1e-4, (
+        "the tree+pin pair's combined lowest point must sit at z=0 for "
+        "printing, not the tree's arbitrary local mesh origin",
+        tree_min_z, pin_min_z)
+    assert tree_min_z >= -1e-4 and pin_min_z >= -1e-4, (
+        "no exported flora geometry may sit below the print bed",
+        tree_min_z, pin_min_z)
+
+    # Sanity-check the flip actually happened. Unflipped, the pin's tip is
+    # always the global lowest point (it reaches further down than the
+    # tree's own base) and the canopy tip is the global highest. After the
+    # confirmed 180° rigid-body flip, those swap: the tree (specifically its
+    # old high point, the canopy tip) becomes the new lowest point, at z=0,
+    # and the pin (now pointing up) becomes the new highest point overall.
+    assert tree_min_z < pin_min_z, (
+        "tree's lowest point should be the new lowest point after the flip "
+        "(the canopy tip touching the bed), not the pin's",
+        tree_min_z, pin_min_z)
+    assert pin_max_z > tree_max_z, (
+        "pin should be the highest feature after the flip (pointing up), "
+        "not the tree", pin_max_z, tree_max_z)
     print("export triangle counts OK — tile:", tile_export_tris,
-         " (tile-alone baseline:", baseline_tris, ") flora (tree+pin):", flora_export_tris,
-         " flora min z: %.5f" % flora_min_z)
+         " (tile-alone baseline:", baseline_tris, ") tree:", tree_export_tris,
+         " pin:", pin_export_tris,
+         " combined min z: %.5f" % combined_min_z,
+         " tree z:[%.3f, %.3f] pin z:[%.3f, %.3f]" % (
+             tree_min_z, tree_max_z, pin_min_z, pin_max_z))
 finally:
     shutil.rmtree(out_dir, ignore_errors=True)
 

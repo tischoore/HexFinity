@@ -111,32 +111,39 @@ def tile_filename(q, r, custom, short):
     return f"{stem}.stl"
 
 
-def flora_filename(q, r, index, short):
-    """STL filename for one planted-tree-plus-pin export.
+def flora_tree_filename(q, r, index):
+    """STL filename for one planted tree (pin exported separately).
 
-    Every flora export is hash-suffixed (unlike `tile_filename`'s plain/
-    custom split) — a tree's species/scale/rotation make it "custom" by
-    nature, and the suffix still lets two placements that happen to be
-    byte-identical (same species, same rounded scale) share one file.
+    Shares the `hex_qNN_rNN` stem used by `tile_filename` (instead of the old
+    `flora_` prefix) so a tile's own STL and its trees' STLs sort together in
+    a file browser. No content-hash suffix: unlike tiles/the old fused
+    flora export, each placement now always gets its own file rather than
+    sharing one across byte-identical placements, so the hash added nothing.
     """
-    return f"flora_q{q:02d}_r{r:02d}_{index:03d}_{short}.stl"
+    return f"hex_q{q:02d}_r{r:02d}_tree{index:02d}.stl"
+
+
+def flora_pin_filename(q, r, index):
+    """STL filename for one planted tree's pin — see `flora_tree_filename`."""
+    return f"hex_q{q:02d}_r{r:02d}_tree{index:02d}_pin.stl"
 
 
 def flora_manifest_rows(records):
     """Normalize flora export records into serializable manifest rows.
 
-    `records` is an iterable of dicts with ``q``, ``r``, ``index`` and
-    ``file`` keys. Kept as its own schema (an added ``index``, no ``custom``)
-    rather than overloading `manifest_rows`, since every flora row means
-    something slightly different from a tile row. Sorted by (q, r, index)
-    for a stable, diffable manifest.
+    `records` is an iterable of dicts with ``q``, ``r``, ``index``,
+    ``tree_file`` and ``pin_file`` keys — one row per placement, both of its
+    exported files. Kept as its own schema rather than overloading
+    `manifest_rows`, since every flora row means something slightly different
+    from a tile row. Sorted by (q, r, index) for a stable, diffable manifest.
     """
     rows = [
         {
             "q": int(rec["q"]),
             "r": int(rec["r"]),
             "index": int(rec["index"]),
-            "file": str(rec["file"]),
+            "tree_file": str(rec["tree_file"]),
+            "pin_file": str(rec["pin_file"]),
         }
         for rec in records
     ]

@@ -253,24 +253,39 @@ uses `notch_heights[i]` directly when present instead of raycasting — the
 raycast fallback only ever runs for a non-finalized rebuild or a placement
 whose notch was skipped, where there's no hole to worry about.
 
-**Export.** `HEXFINITY_OT_export_tiles` exports a planted tree fused with
-its pin as its **own** STL file (`flora_qNN_rNN_III_<hash>.stl`, deduped by
-content hash the same way tile files are, listed in `flora_manifest.csv`/
-`.json`), separate from the tile's own STL — the whole point of the pin/
-socket is assembling two independently-printed parts. `_terrain_children`
-excludes flora tree/pin objects from the tile's fused export (scatter
-boulders and terrain-import objects are unaffected); the notch cavity itself
-needs no separate handling since it's already baked into the tile's own
-mesh. Since the pin is parented to the tree, `_export_flora_pair` only needs
-to move the tree — the pin follows automatically — but the anchor point
-isn't simply the tree's own local mesh origin (wherever its source STL was
-authored) or even its true base: the pin reaches further down than the
-tree's own base (it extends into the socket), so it's the combined part's
-true lowest point — `min()` of the tree's and the pin's own lowest vertex —
-that gets shifted to world z=0, ready to print. A tile with planted trees
-but no matching pins (never finalized) triggers a `{'WARNING'}` at export
-time pointing at Finalize Flora, rather than silently exporting trees with
-no pins and a tile with no sockets.
+**Export.** `HEXFINITY_OT_export_tiles` exports a planted tree and its pin
+as **two separate** STL files — `hex_qNN_rNN_treeII.stl` and
+`hex_qNN_rNN_treeII_pin.stl` (`tile_export.flora_tree_filename`/
+`flora_pin_filename`) — sharing the tile's own `hex_qNN_rNN` naming stem so
+all of a tile's files sort together in a file browser, listed in
+`flora_manifest.csv`/`.json` (`tree_file`/`pin_file` columns per placement).
+Unlike tile STLs, flora files are never deduped by content hash — every
+placement always gets its own pair of files, named for its own tile+index.
+`_terrain_children` excludes flora tree/pin objects from the tile's fused
+export (scatter boulders and terrain-import objects are unaffected); the
+notch cavity itself needs no separate handling since it's already baked into
+the tile's own mesh.
+
+Since the pin is parented to the tree with a fixed local
+offset/rotation/scale, `_export_flora_pair` moves and rotates only the tree
+— the pin is carried along rigidly, unchanged relative to it — treating the
+pair as one rigid body for orientation purposes even though they're written
+to two separate files. As-authored (tree upright, pin hanging from the
+tree's base down into the socket), the pin's tip is always the assembly's
+lowest point, the worst possible print-bed contact for a thin 2mm peg. The
+tree is rotated 180° about its own local X axis (always a horizontal axis
+regardless of the tree's random per-placement yaw, since yaw only rotates
+about world Z) before export, flipping the whole rigid body upside down:
+the canopy tip — the assembly's original highest point — becomes the new
+lowest point (touching the print bed), and the pin — previously lowest —
+becomes the new highest point, pointing up. This canopy-down orientation was
+confirmed as intended rather than re-seating the tree on its own base
+independently of the pin. Each part's own lowest point after the flip is
+computed via the same evaluated-mesh machinery used elsewhere
+(`_eval_mesh_local`), and the combined lowest of the two is shifted to world
+z=0. A tile with planted trees but no matching pins (never finalized)
+triggers a `{'WARNING'}` at export time pointing at Finalize Flora, rather
+than silently exporting trees with no pins and a tile with no sockets.
 
 ## Scene tree
 
@@ -310,9 +325,10 @@ transform, exactly like scatter boulders and terrain objects.
    collection or objects.
 7. **Export** — *Export Tiles to STL* excludes planted trees from the tile's
    own STL (scatter boulders and terrain objects are still fused in as
-   before); each finalized tree exports as its own `flora_*.stl`, fused with
-   its pin, listed in `flora_manifest.csv`. A tile with unfinalized flora
-   triggers a warning instead of silently exporting mismatched parts.
+   before); each finalized tree exports as two separate STLs
+   (`hex_qNN_rNN_treeII.stl` and `..._pin.stl`), listed in
+   `flora_manifest.csv`. A tile with unfinalized flora triggers a warning
+   instead of silently exporting mismatched parts.
 8. **Packaging** — build via `deploy.ps1` and confirm the zip contains
    `hexfinity/assets/leefytree/*.stl`.
 9. **Overlap avoidance** — with *Avoid Overlap* on (default), plant a tree,
@@ -346,11 +362,12 @@ transform, exactly like scatter boulders and terrain objects.
     brush stroke elsewhere on the tile (or edit a corner height) and confirm
     the pin disappears and the socket fills back in — then press
     **Finalize Flora** and confirm both come back, tree still flush. Export
-    the tile: confirm a separate `flora_*.stl` is written alongside the
-    tile's own STL, that `flora_manifest.csv` lists it, and that the
-    exported part's lowest point (the pin's tip) sits at z=0. Plant a tree,
-    do *not* finalize, and export: confirm a warning appears and no
-    `flora_*.stl` is written for that placement. A headless smoke test of
-    this whole path (plant → finalize → pin/socket geometry → seating
-    correctness → un-finalize → re-finalize → export) lives in
-    `tests/_headless_flora_pin_check.py`.
+    the tile: confirm two separate STLs are written alongside the tile's
+    own STL — `hex_qNN_rNN_treeII.stl` and `hex_qNN_rNN_treeII_pin.stl` —
+    that `flora_manifest.csv` lists both, and that the combined lowest point
+    of the pair sits at z=0 with the pin (now flipped to point up) the
+    highest feature of the two. Plant a tree, do *not* finalize, and export:
+    confirm a warning appears and no tree/pin STLs are written for that
+    placement. A headless smoke test of this whole path (plant → finalize →
+    pin/socket geometry → seating correctness → un-finalize → re-finalize →
+    export) lives in `tests/_headless_flora_pin_check.py`.

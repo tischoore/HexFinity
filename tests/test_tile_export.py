@@ -112,14 +112,19 @@ def test_manifest_rows_normalize_and_sort():
 
 
 # ---------------------------------------------------------------------------
-# flora_filename
+# flora_tree_filename / flora_pin_filename
 
-def test_flora_filename_format():
-    assert te.flora_filename(3, 5, 2, "deadbeef") == "flora_q03_r05_002_deadbeef.stl"
+def test_flora_tree_filename_format():
+    assert te.flora_tree_filename(3, 5, 2) == "hex_q03_r05_tree02.stl"
+
+
+def test_flora_pin_filename_format():
+    assert te.flora_pin_filename(3, 5, 2) == "hex_q03_r05_tree02_pin.stl"
 
 
 def test_flora_filename_zero_pads():
-    assert te.flora_filename(12, 7, 0, "x") == "flora_q12_r07_000_x.stl"
+    assert te.flora_tree_filename(12, 7, 0) == "hex_q12_r07_tree00.stl"
+    assert te.flora_pin_filename(12, 7, 0) == "hex_q12_r07_tree00_pin.stl"
 
 
 # ---------------------------------------------------------------------------
@@ -127,11 +132,12 @@ def test_flora_filename_zero_pads():
 
 def test_flora_manifest_rows_normalize_and_sort():
     records = [
-        {"q": 1, "r": 0, "index": 0, "file": "b.stl"},
-        {"q": 0, "r": 0, "index": 1, "file": "a1.stl"},
-        {"q": 0, "r": 0, "index": 0, "file": "a0.stl"},
+        {"q": 1, "r": 0, "index": 0, "tree_file": "b.stl", "pin_file": "b_pin.stl"},
+        {"q": 0, "r": 0, "index": 1, "tree_file": "a1.stl", "pin_file": "a1_pin.stl"},
+        {"q": 0, "r": 0, "index": 0, "tree_file": "a0.stl", "pin_file": "a0_pin.stl"},
     ]
     rows = te.flora_manifest_rows(records)
     assert [(r["q"], r["r"], r["index"]) for r in rows] == [
         (0, 0, 0), (0, 0, 1), (1, 0, 0)]
-    assert rows[0] == {"q": 0, "r": 0, "index": 0, "file": "a0.stl"}
+    assert rows[0] == {"q": 0, "r": 0, "index": 0,
+                       "tree_file": "a0.stl", "pin_file": "a0_pin.stl"}
