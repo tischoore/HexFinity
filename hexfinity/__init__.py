@@ -25,6 +25,7 @@ def _classes():
         operators.HEXFINITY_OT_export_tiles,
         brush.HEXFINITY_OT_paint_brush,
         flora.HEXFINITY_OT_flora_marker,
+        flora.HEXFINITY_OT_finalize_flora,
         regions.HEXFINITY_OT_draw_region,
         regions.HEXFINITY_OT_add_region,
         regions.HEXFINITY_OT_remove_region,

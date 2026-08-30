@@ -13,7 +13,8 @@ from .manifold_check import assert_two_manifold, ManifoldError
 from .map import (SHARED_CORNERS, neighbour_coord, tile_world_xy, find_tile,
                   clamp_level)
 from .tile_export import (is_custom_tile, manifest_rows, short_hash,
-                          tile_filename, tile_geometry_hash)
+                          tile_filename, tile_geometry_hash,
+                          flora_filename, flora_manifest_rows)
 
 
 # Re-entrancy guard: writing clamped XY back to a tile's property group
@@ -91,7 +92,7 @@ def _effective_resample(tile, map_props):
                               tile.hexfinity_tile.local_subdiv)
 
 
-def rebuild_tile(obj):
+def rebuild_tile(obj, finalize_flora=False):
     """Rebuild the mesh data of `obj` from its tile props + scene map props.
 
     Reads `obj.hexfinity_tile` for per-tile inputs (corner levels, centre
@@ -101,6 +102,15 @@ def rebuild_tile(obj):
     Clamps centre XY into the hexagon and writes the clamped values back so
     the UI and gizmo stay in sync. Does NOT touch `obj.location` — tile
     placement is handled by the caller (generate/regenerate/global update).
+
+    `finalize_flora` gates the pin/notch interlock (see `flora.notch_specs`/
+    `flora.sync_flora`, whose pin is a child of its own tree object): cutting
+    a socket is expensive enough that it
+    must not run on the interactive per-click rebuilds that fire while
+    planting trees, nor on any other rebuild trigger (brush, corner edit,
+    terrain snap) — it only runs when explicitly finalizing (leaving the
+    flora-placement tool, or the manual Finalize Flora button). Every other
+    call site passes the default `False`.
     """
     global _REBUILDING
     if _REBUILDING:
@@ -188,6 +198,10 @@ def rebuild_tile(obj):
 
         from . import flora
         flora_pads = flora.pad_specs(obj)
+        flora_notches = flora.notch_specs(obj) if finalize_flora else None
+        notch_warnings = [] if finalize_flora else None
+        notch_ok_indices = [] if finalize_flora else None
+        notch_heights = {} if finalize_flora else None
 
         verts, faces = build_hex_tile(
             diameter_mm=map_props.diameter_mm,
@@ -205,8 +219,14 @@ def rebuild_tile(obj):
             surface_origin_xy=(obj.location.x, obj.location.y),
             surface_seed=surface_seed,
             flora_pads=flora_pads,
+            flora_notches=flora_notches,
+            flora_notch_warnings=notch_warnings,
+            flora_notch_ok_indices=notch_ok_indices,
+            flora_notch_heights=notch_heights,
         )
         assert_two_manifold(verts, faces)
+        if notch_warnings:
+            print(f"HexFinity flora [{obj.name}]: " + "; ".join(notch_warnings))
 
         new_mesh = bpy.data.meshes.new(obj.name)
         new_mesh.from_pydata(verts, [], faces)
@@ -236,14 +256,20 @@ def rebuild_tile(obj):
         # Planted trees, same full-purge-and-resync shape as scatter above:
         # placements are stored data (species/position/rotation/scale), not
         # re-randomized, so a rebuild reproduces the same trees just
-        # re-seated to the current surface.
+        # re-seated to the current surface. Pin objects (children of their
+        # tree, not the tile — see `flora.sync_flora`) only ever exist right
+        # after a finalize pass: `purge_flora` unconditionally clears every
+        # tree (and therefore its pin) on every rebuild, and `sync_flora`
+        # only reattaches a pin for a placement whose socket actually got
+        # cut this pass (`notch_ok_indices`, empty unless `finalize_flora`).
         flora_placements = tile_props.flora_placements
         has_flora = any(c.get(flora.FLORA_OF) for c in obj.children)
         if len(flora_placements) > 0 or has_flora:
             flora.purge_flora(obj)
             if len(flora_placements) > 0:
                 bpy.context.view_layer.update()
-                flora.sync_flora(obj)
+                flora.sync_flora(obj, ok_indices=notch_ok_indices,
+                                 notch_heights=notch_heights)
     finally:
         _REBUILDING = False
 
@@ -1083,6 +1109,16 @@ def _mesh_children(obj):
     return [c for c in obj.children if c.type == 'MESH']
 
 
+def _terrain_children(obj):
+    """`_mesh_children(obj)` minus planted-tree and pin objects — used for the
+    tile's own fused STL export now that trees export as their own separate
+    (tree+pin) STL files instead of being merged into the tile's triangle
+    soup. Scatter boulders and terrain-import objects are unaffected."""
+    from . import flora
+    return [c for c in _mesh_children(obj)
+           if not c.get(flora.FLORA_OF) and not c.get(flora.FLORA_PIN_OF)]
+
+
 def _eval_mesh_local(obj, depsgraph, matrix):
     """Evaluated (verts, faces) of `obj`, with every vertex pre-multiplied by
     `matrix`. Pass the identity to read an object's own local mesh, or
@@ -1105,9 +1141,11 @@ class HEXFINITY_OT_export_tiles(bpy.types.Operator):
     bl_idname = "hexfinity.export_tiles"
     bl_label = "Export Tiles to STL"
     bl_description = ("Export every distinct hex tile (including its parented "
-                      "terrain objects) to an individual STL file. Identical "
-                      "tiles collapse to one file; a manifest.csv maps each "
-                      "coordinate to the file it uses.")
+                      "terrain objects, but not planted trees) to an "
+                      "individual STL file, plus one more STL per planted "
+                      "tree fused with its pin. Identical parts collapse to "
+                      "one file; manifest.csv/flora_manifest.csv map "
+                      "coordinates to the files they use.")
     bl_options = {'REGISTER'}
 
     # Populated by the file browser (fileselect_add, DIR_PATH mode).
@@ -1168,14 +1206,19 @@ class HEXFINITY_OT_export_tiles(bpy.types.Operator):
         prev_selected = list(context.selected_objects)
         prev_active = context.view_layer.objects.active
 
+        from . import flora
+
         exported_hashes = {}   # geometry hash -> filename already written
         records = []           # one per tile, for the manifest
+        flora_hashes = {}      # geometry hash -> flora filename already written
+        flora_records = []     # one per planted tree, for the flora manifest
         written = 0
+        unfinalized_tiles = 0
 
         try:
             for tile in tiles:
                 tp = tile.hexfinity_tile
-                children = _mesh_children(tile)
+                children = _terrain_children(tile)
 
                 # Hash the built geometry: hex mesh (tile-local) + each child
                 # terrain mesh transformed into the tile's local frame.
@@ -1209,6 +1252,63 @@ class HEXFINITY_OT_export_tiles(bpy.types.Operator):
 
                 records.append({"q": tp.coord_q, "r": tp.coord_r,
                                 "file": fname, "custom": custom})
+
+                # Planted trees export as their own tree+pin STL, separate
+                # from the tile — that's the whole point of the pin/socket
+                # interlock: two independently-printed parts assembled by
+                # hand. A pin is parented to its own tree (see
+                # `flora.sync_flora`), not the tile, so it's found via the
+                # tree's own children. Only placements with a matching pin
+                # (i.e. flora was finalized) are exportable; the rest are
+                # silently skipped here and rolled into one warning below.
+                tree_objs = {c[flora.FLORA_PLACEMENT_INDEX]: c
+                            for c in tile.children if c.get(flora.FLORA_OF)}
+                unfinalized_here = False
+
+                for idx, tree_obj in sorted(tree_objs.items()):
+                    pin_obj = next((c for c in tree_obj.children
+                                    if c.get(flora.FLORA_PIN_OF)), None)
+                    if pin_obj is None:
+                        unfinalized_here = True
+                        continue
+                    tree_verts, tree_faces = _eval_mesh_local(
+                        tree_obj, depsgraph, Matrix.Identity(4))
+                    tree_world_inv = tree_obj.matrix_world.inverted()
+                    pin_verts, pin_faces = _eval_mesh_local(
+                        pin_obj, depsgraph,
+                        tree_world_inv @ pin_obj.evaluated_get(depsgraph).matrix_world)
+                    fdigest = tile_geometry_hash(
+                        tree_verts, tree_faces, [(pin_verts, pin_faces)])
+
+                    if fdigest in flora_hashes:
+                        ffname = flora_hashes[fdigest]
+                    else:
+                        ffname = flora_filename(tp.coord_q, tp.coord_r, idx,
+                                                short_hash(fdigest))
+                        fpath = os.path.join(out_dir, ffname)
+                        # A tree's own local-space mesh origin is wherever
+                        # the source STL was authored — not necessarily its
+                        # true (lowest-vertex) base, unlike a tile mesh
+                        # (always built with its base at local z=0). The pin
+                        # also extends further down than the tree's own base
+                        # (it reaches into the socket), so the combined part's
+                        # true lowest point — what needs to land at z=0 for
+                        # printing — is whichever of the two is lower. Reuse
+                        # the local-space verts already computed above for
+                        # the hash (pin_verts is already in the tree's own
+                        # local frame, via tree_world_inv) to find it.
+                        local_base_z = min(
+                            min(v[2] for v in tree_verts),
+                            min(v[2] for v in pin_verts),
+                        )
+                        self._export_flora_pair(
+                            context, tree_obj, pin_obj, local_base_z, fpath)
+                        flora_hashes[fdigest] = ffname
+
+                    flora_records.append({"q": tp.coord_q, "r": tp.coord_r,
+                                          "index": idx, "file": ffname})
+                if unfinalized_here:
+                    unfinalized_tiles += 1
         finally:
             for o in context.selected_objects:
                 o.select_set(False)
@@ -1217,9 +1317,17 @@ class HEXFINITY_OT_export_tiles(bpy.types.Operator):
             context.view_layer.objects.active = prev_active
 
         self._write_manifest(out_dir, records)
+        if flora_records:
+            self._write_flora_manifest(out_dir, flora_records)
 
+        if unfinalized_tiles:
+            self.report(
+                {'WARNING'},
+                f"{unfinalized_tiles} tile(s) have planted trees without a "
+                f"finalized pin — run Finalize Flora first to export them.")
         self.report({'INFO'},
-                    f"Exported {written} unique STL file(s) from "
+                    f"Exported {written} unique tile STL(s) and "
+                    f"{len(flora_hashes)} unique flora STL(s) from "
                     f"{len(tiles)} tile(s) to {out_dir}")
         return {'FINISHED'}
 
@@ -1254,6 +1362,46 @@ class HEXFINITY_OT_export_tiles(bpy.types.Operator):
             context.view_layer.update()
 
     @staticmethod
+    def _export_flora_pair(context, tree_obj, pin_obj, local_base_z, path):
+        """Select a planted tree and its paired pin and write them to `path`
+        as one STL — the tree+pin printable part that plugs into the tile's
+        socket.
+
+        The pin is parented to the tree (`flora.sync_flora`), so moving only
+        the tree also moves the pin. Unlike `_export_objects` (which just
+        zeros a tile's location — a tile mesh is always built with its own
+        base at local z=0), a tree's local mesh origin is wherever its
+        source STL was authored, not necessarily the combined part's true
+        lowest point — the pin reaches further down than the tree's own base
+        (it's built to extend into the socket), so it's the pin's tip, not
+        the tree's base, that ends up lowest. The tree's Z is set to
+        `-local_base_z * tree_obj.scale.z` (the caller supplies
+        `local_base_z`, the combined part's true lowest point — `min` of the
+        tree's and the pin's own lowest vertex — in the tree's unscaled local
+        units) so that lowest point lands at world z=0, ready to print.
+        """
+        objs = [tree_obj, pin_obj]
+        saved_location = tree_obj.location.copy()
+        for o in context.selected_objects:
+            o.select_set(False)
+        try:
+            tree_obj.location = (0.0, 0.0, -local_base_z * tree_obj.scale.z)
+            context.view_layer.update()
+            for o in objs:
+                o.select_set(True)
+            context.view_layer.objects.active = tree_obj
+            bpy.ops.wm.stl_export(
+                filepath=path,
+                export_selected_objects=True,
+                apply_modifiers=True,
+            )
+        finally:
+            for o in objs:
+                o.select_set(False)
+            tree_obj.location = saved_location
+            context.view_layer.update()
+
+    @staticmethod
     def _write_manifest(out_dir, records):
         """Write manifest.csv and manifest.json mapping coordinates to files."""
         rows = manifest_rows(records)
@@ -1263,5 +1411,20 @@ class HEXFINITY_OT_export_tiles(bpy.types.Operator):
             writer.writeheader()
             writer.writerows(rows)
         with open(os.path.join(out_dir, "manifest.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump(rows, fh, indent=2)
+
+    @staticmethod
+    def _write_flora_manifest(out_dir, records):
+        """Write flora_manifest.csv and flora_manifest.json mapping each
+        planted tree's (coordinate, placement index) to the STL file it
+        shares with any other byte-identical placement."""
+        rows = flora_manifest_rows(records)
+        with open(os.path.join(out_dir, "flora_manifest.csv"), "w",
+                  newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=["q", "r", "index", "file"])
+            writer.writeheader()
+            writer.writerows(rows)
+        with open(os.path.join(out_dir, "flora_manifest.json"), "w",
                   encoding="utf-8") as fh:
             json.dump(rows, fh, indent=2)

@@ -224,7 +224,24 @@ Each species STL is imported from `assets/` once per Blender session and cached 
 
 **Avoid Overlap** (on by default) rejects a click that would plant a tree intersecting another one's bounding box, so every tree stays printable as a separate piece; **Min Spacing (mm)** requires extra clearance on top. Trees on the tile's 6 neighbours count too, so a tree near a seam can't overlap into the next tile's print. A rejected click warns and plants nothing.
 
-See **[docs/flora.md](docs/flora.md)** for the mesh caching, the overlap algorithm, and the manual checklist.
+### Pin/notch interlock
+
+A planted tree and its tile can be printed as **two separate parts** and assembled by hand, the same idea as the tab/hole interlock between adjacent hex tiles: a small cylindrical pin stands off the true base of the tree, mating into a matching blind socket drilled into the tile under the tree's flatten pad. Sizes are hardcoded module constants in `mesh_builder.py`, independent of a tree's own random scale or the scene's Man Height print-scale slider:
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `FLORA_PIN_DIAMETER_MM` | 2.0 mm | Pin diameter — always exactly this |
+| `FLORA_PIN_HOLE_TOLERANCE_MM` | 0.2 mm | Socket grows by this over the pin, mirroring `TAB_HOLE_TOLERANCE_MM` |
+| `FLORA_NOTCH_DEPTH_MM` | 10.0 mm | Socket depth |
+| `FLORA_PIN_LENGTH_MM` | 9.8 mm | Pin length — slightly shorter than the socket so it never bottoms out |
+
+Cutting a real socket is too expensive to do on every interactive rebuild, so it's deferred: leaving the Flora tool (Esc/RMB) or pressing the **Finalize Flora** button cuts the socket and creates the pin for every planted tree; any other rebuild trigger (brush stroke, corner-height edit, terrain snap, or a flora pad-setting change) strips them again until Finalize Flora runs once more — the panel notes this next to the button.
+
+The pin is **parented to its own tree** (not a loose sibling under the tile), counter-scaled so it stays exactly `FLORA_PIN_DIAMETER_MM` regardless of that tree's own random scale — it moves as one unit with the tree and shows up nested under it in the Outliner. Seating uses the exact pre-drill pad height rather than a raycast (which, once a socket exists, would otherwise hit the socket floor instead of the surrounding surface) — the tree and pin sit flush on top, with the pin and socket both hidden inside the print.
+
+*Export Tiles to STL* then writes each finalized tree fused with its pin as its own `flora_*.stl` file, separate from the tile (which keeps the socket baked into its own mesh); a tile with unfinalized trees warns instead of exporting mismatched parts.
+
+See **[docs/flora.md](docs/flora.md)** for the mesh caching, the overlap algorithm, the pin/notch cut algorithm, and the manual checklist.
 
 ## Procedural surface textures
 
@@ -258,9 +275,13 @@ scatter kind (algorithm, scene tree, merge-for-print, and manual checklist).
 
 The **Export Tiles to STL** button at the bottom of the panel writes one `.stl`
 file per **distinct** hex tile into a folder you choose. Each file contains the hex
-*and everything parented to it* — imported terrain objects merge into the same STL
-(STL is just triangles, so no boolean union is performed). Each tile is centered at
-the origin in its file so it drops straight onto a printer bed.
+*and its terrain objects and scatter boulders* — merged into the same STL (STL is
+just triangles, so no boolean union is performed). Each tile is centered at
+the origin in its file so it drops straight onto a printer bed. Planted trees are
+**not** included — each finalized tree exports as its own `flora_*.stl`, fused
+with its pin, so it can be printed and assembled separately (see
+[Pin/notch interlock](#pinnotch-interlock)); a tile with unfinalized trees warns
+instead of exporting mismatched parts.
 
 **Dedup & naming.** Identical tiles collapse to a single file, so you only slice each
 distinct tile once:
@@ -275,7 +296,9 @@ distinct tile once:
 
 **Manifest.** Alongside the STLs the exporter writes `manifest.csv` and
 `manifest.json` mapping every `(q, r)` coordinate to the file it uses, so you can
-place printed tiles correctly even after duplicates were merged away.
+place printed tiles correctly even after duplicates were merged away. A second
+`flora_manifest.csv`/`.json` maps each `(q, r, placement index)` to its
+`flora_*.stl` file the same way.
 
 See **[docs/export.md](docs/export.md)** for the dedup contract and manifest format.
 
@@ -363,7 +386,7 @@ HexFinity
 │  │   ├─ Dome Area / Dome Damping        (bump shaping; Copy to Selected)
 │  │   └─ Local Subdivision               (per-tile extra density)
 │  ├─ [ Terrain Objects ]      (import STL, drop on tile, parent)
-│  ├─ Flora                    (Tree Type / Scale Variation / Flatten Base / Pad Blend / Penetration / Avoid Overlap / Min Spacing → Flora)
+│  ├─ Flora                    (Tree Type / Scale Variation / Flatten Base / Pad Blend / Penetration / Avoid Overlap / Min Spacing → Flora, Finalize Flora)
 │  ├─ Procedural Surface       (region list + Draw Region — see below)
 │  │   ├─ Area Name + Surface type
 │  │   ├─ displace: Feature / Depth / Regularity / (Direction) + resolution warning
@@ -401,11 +424,11 @@ C:\Work\Hexfinity\
 │   ├─ brush.py                # modal terrain paint brush
 │   ├─ regions.py              # modal draw-region operator + region list UI
 │   ├─ scatter.py              # bpy shell for scatter surfaces (boulder objects + merge)
-│   ├─ flora.py                # modal click-to-plant tree tool + mesh cache + overlap check
+│   ├─ flora.py                # modal click-to-plant tree tool + mesh cache + overlap check + pin objects
 │   ├─ assets\
 │   │   └─ leefytree\           # planted-tree STL assets (one file per species)
 │   ├─ mesh_builder.py         # pure-Python mesh construction (no bpy)
-│   ├─ tree_pads.py            # pure-Python tree-base-pad refine+flatten (no bpy)
+│   ├─ tree_pads.py            # pure-Python tree-base-pad refine+flatten + pin/notch socket cut (no bpy)
 │   ├─ subdivision.py          # pure-Python Loop + linear-midpoint subdivision (no bpy)
 │   ├─ procedural_surfaces.py  # pure-Python surface registry + masks + scatter geometry + obb_overlap (no bpy)
 │   ├─ map.py                  # pure-Python grid math + SHARED_CORNERS table
@@ -471,3 +494,4 @@ After generating a map:
 8. **Procedural surface check** — raise *Local Subdivision* on a tile, *Procedural Surface → Draw Region*, click a loop, close it (Enter). The interior gains cobblestone; the rim stays flat (still interlocks). Add a whole-tile *Furrow* region and rotate its **Direction** — the ridges follow the arrow. See [docs/procedural_surfaces.md](docs/procedural_surfaces.md). (A headless smoke test of the full register→region→rebuild path lives in `tests/_headless_region_check.py`: `blender --background --factory-startup --python tests/_headless_region_check.py`.)
 9. **Flora check** — select a tile, press *Flora*, then move the mouse across several tiles: a yellow circle-with-center-dot tracks the raycast hit point live. Left-click several spots — each plants a tree with a random species/rotation/scale, sunk in by *Penetration*. The Outliner shows the planted trees under a "Flora" sub-collection nested in the map collection, all pointing at a handful of shared mesh datablocks (multiple object users, not one mesh per tree). Orbit/pan/zoom (MMB/wheel) still work while it's active. Both `Esc` and right-click close it. Afterwards, edit that tile's corner heights or paint terrain — the trees re-seat onto the new surface instead of floating or burying. With *Avoid Overlap* on, clicking close enough to an existing tree is rejected with a warning instead of planting; turning it off allows it. See [docs/flora.md](docs/flora.md) for the full manual checklist.
 10. **Tree base pad check** — raise a corner so the tile is sloped, then plant a tree near the raised side with *Flatten Base* on: the terrain under the tree tessellates into a small flat pad that blends smoothly back into the slope, and the tree sits flush and level instead of poking through on one side. Toggle *Flatten Base* off and the pad disappears (old sunken-in look returns); drag *Pad Blend (mm)* or *Penetration (mm)* and both re-seat live. Plant a tree near a hex edge and confirm the seam with the neighbour tile stays aligned (the pad fades out near the rim rather than desyncing it). A headless smoke test of the full plant→pad→rebuild→property-update path lives in `tests/_headless_flora_pad_check.py`: `blender --background --python tests/_headless_flora_pad_check.py`.
+11. **Pin/notch check** — plant a tree and press `Esc`/right-click to leave the Flora tool: a socket is cut under the tree, the tree still sits flush on the surface (not sunk into the socket), and a `FloraPin_*` object appears **nested under its tree** in the Outliner. Paint a brush stroke elsewhere on the tile (or edit a corner height) — the pin disappears and the socket fills back in; press **Finalize Flora** and both return, tree still flush. Export the tile — a separate `flora_*.stl` is written alongside the tile's own STL, listed in `flora_manifest.csv`, with its lowest point (the pin's tip) sitting at z=0. Plant a tree, skip finalizing, and export — a warning appears and no `flora_*.stl` is written for it. A headless smoke test of the full plant→finalize→pin/socket→seating-correctness→un-finalize→re-finalize→export path lives in `tests/_headless_flora_pin_check.py`: `blender --background --python tests/_headless_flora_pin_check.py`.

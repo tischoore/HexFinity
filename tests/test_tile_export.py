@@ -109,3 +109,29 @@ def test_manifest_rows_normalize_and_sort():
     assert [(r["q"], r["r"]) for r in rows] == [(0, 0), (0, 2), (1, 0)]
     assert rows[0] == {"q": 0, "r": 0, "file": "a.stl", "custom": False}
     assert all(isinstance(r["custom"], bool) for r in rows)
+
+
+# ---------------------------------------------------------------------------
+# flora_filename
+
+def test_flora_filename_format():
+    assert te.flora_filename(3, 5, 2, "deadbeef") == "flora_q03_r05_002_deadbeef.stl"
+
+
+def test_flora_filename_zero_pads():
+    assert te.flora_filename(12, 7, 0, "x") == "flora_q12_r07_000_x.stl"
+
+
+# ---------------------------------------------------------------------------
+# flora_manifest_rows
+
+def test_flora_manifest_rows_normalize_and_sort():
+    records = [
+        {"q": 1, "r": 0, "index": 0, "file": "b.stl"},
+        {"q": 0, "r": 0, "index": 1, "file": "a1.stl"},
+        {"q": 0, "r": 0, "index": 0, "file": "a0.stl"},
+    ]
+    rows = te.flora_manifest_rows(records)
+    assert [(r["q"], r["r"], r["index"]) for r in rows] == [
+        (0, 0, 0), (0, 0, 1), (1, 0, 0)]
+    assert rows[0] == {"q": 0, "r": 0, "index": 0, "file": "a0.stl"}

@@ -5,6 +5,11 @@ from mesh_builder import (
     build_hex_tile,
     top_vertex_count,
     TAB_FILLET_SEGMENTS,
+    FLORA_PIN_RADIUS_MM,
+    FLORA_NOTCH_RADIUS_MM,
+    FLORA_NOTCH_DEPTH_MM,
+    FLORA_PIN_LENGTH_MM,
+    FLORA_NOTCH_MIN_FLOOR_MM,
 )
 from manifold_check import assert_two_manifold
 import tree_pads
@@ -287,3 +292,241 @@ def test_sample_surface_z_outside_mesh_falls_back_to_nearest_vertex():
     faces = [(0, 1, 2)]
     z = tree_pads.sample_surface_z(verts, faces, -100.0, -100.0)
     assert z == pytest.approx(1.0, abs=1e-9)   # nearest vertex is (0,0)
+
+
+# ---------------------------------------------------------------------------
+# 11. cut_notches — pin/socket interlock.
+
+CENTER_NOTCH = [{"x": 0.0, "y": 0.0, "radius_mm": FLORA_NOTCH_RADIUS_MM,
+                 "depth_mm": FLORA_NOTCH_DEPTH_MM}]
+
+
+def _check_consistent_winding(faces, protected=frozenset()):
+    """Every INTERIOR edge (i.e. not an open-boundary `protected` edge) must
+    be traversed in OPPOSITE directions by the two faces sharing it, so both
+    faces' outward normals agree with the whole-mesh CCW-from-above
+    convention. This is a real gap in `assert_two_manifold` (it only checks
+    that the undirected edge is used twice, not that the two uses disagree in
+    direction) and is exactly where a new cavity type could sneak in an
+    inside-out face. A `protected` open-boundary edge legitimately has only
+    one directed use (there's no face on its other side)."""
+    directed_owner = {}
+    for face in faces:
+        n = len(face)
+        for k in range(n):
+            a, b = face[k], face[(k + 1) % n]
+            assert (a, b) not in directed_owner, (
+                f"edge {(a, b)} traversed the same direction by two faces "
+                f"(inconsistent/inverted winding)")
+            directed_owner[(a, b)] = face
+    for (a, b) in directed_owner:
+        if _edge_key(a, b) in protected:
+            continue
+        assert (b, a) in directed_owner, f"edge {(a, b)} has no opposite pair"
+
+
+def test_notched_tile_is_manifold():
+    pad = {"x": 0.0, "y": 0.0, "radius_mm": 8.0, "blend_mm": 5.0}
+    verts, faces = _sloped_tile(flora_pads=[pad], flora_notches=CENTER_NOTCH)
+    assert_two_manifold(verts, faces)
+    # Winding consistency is checked on the synthetic grid fixture below —
+    # the hex builder's own tab/hole geometry has a pre-existing winding
+    # defect unrelated to flora (see the code-review note), which would make
+    # a whole-tile winding check here fail for reasons outside this feature.
+
+
+def test_notch_requires_a_pad_to_land_on_a_flat_disc():
+    # Without a pad the ground under the notch is sloped; cutting still must
+    # not corrupt the mesh even though the socket mouth then isn't perfectly
+    # flat in practice (pin/notch generation is gated on flatten_base by the
+    # caller — this only proves cut_notches itself stays safe either way).
+    verts, faces = _sloped_tile(flora_notches=CENTER_NOTCH)
+    assert_two_manifold(verts, faces)
+
+
+def _elevated_grid_mesh(n, size, z):
+    """`_grid_mesh` sits at z=0, which is too shallow for any real notch depth
+    given `FLORA_NOTCH_MIN_FLOOR_MM`'s absolute-z floor-depth guard. Lift the
+    whole patch to `z` so these synthetic tests can exercise a real cut."""
+    verts, faces, protected = _grid_mesh(n, size)
+    verts = [(x, y, z) for (x, y, _z) in verts]
+    return verts, faces, protected
+
+
+def test_cut_notches_grid_is_crack_free():
+    top_z = 20.0
+    verts, faces, protected = _elevated_grid_mesh(6, 60.0, top_z)
+    notch = {"x": 30.0, "y": 30.0, "radius_mm": FLORA_NOTCH_RADIUS_MM,
+             "depth_mm": 5.0}
+    warnings = []
+    new_faces = tree_pads.cut_notches(verts, faces, protected, [notch],
+                                      warnings=warnings)
+    assert warnings == [], f"unexpected skip: {warnings}"
+    _assert_crack_free(new_faces, protected)
+    _check_consistent_winding(new_faces, protected)
+
+
+def test_cut_notches_reports_resolved_height():
+    # The caller (flora.py) uses this instead of raycasting against a mesh
+    # that now has a hole exactly where it would aim — must be the exact
+    # pre-drill flat height, not an approximation.
+    top_z = 20.0
+    verts, faces, protected = _elevated_grid_mesh(6, 60.0, top_z)
+    notch = {"x": 30.0, "y": 30.0, "radius_mm": FLORA_NOTCH_RADIUS_MM,
+             "depth_mm": 5.0, "index": 3}
+    ok_indices = []
+    resolved_heights = {}
+    tree_pads.cut_notches(verts, faces, protected, [notch],
+                          ok_indices=ok_indices, resolved_heights=resolved_heights)
+    assert ok_indices == [3]
+    assert resolved_heights == {3: pytest.approx(top_z)}
+
+
+def test_cut_notches_skip_reports_no_resolved_height():
+    monkeypatch_notch = {"x": 30.0, "y": 30.0, "radius_mm": FLORA_NOTCH_RADIUS_MM,
+                         "depth_mm": 5.0, "index": 7}
+    verts, faces, protected = _grid_mesh(6, 60.0)   # z=0 -> too thin, skipped
+    resolved_heights = {}
+    ok_indices = []
+    tree_pads.cut_notches(verts, faces, protected, [monkeypatch_notch],
+                          ok_indices=ok_indices, resolved_heights=resolved_heights)
+    assert ok_indices == []
+    assert resolved_heights == {}
+
+
+def test_cut_notches_socket_is_a_true_cylinder():
+    top_z = 20.0
+    radius, depth = FLORA_NOTCH_RADIUS_MM, 5.0
+    verts, faces, protected = _elevated_grid_mesh(6, 60.0, top_z)
+    notch = {"x": 30.0, "y": 30.0, "radius_mm": radius, "depth_mm": depth}
+    tree_pads.cut_notches(verts, faces, protected, [notch])
+    # No original-surface vertex should remain strictly inside the socket
+    # mouth — that area's triangles were removed, not just flattened.
+    mouth_interior = [
+        v for v in verts
+        if math.hypot(v[0] - 30.0, v[1] - 30.0) < radius - 1e-6
+        and v[2] == pytest.approx(top_z, abs=1e-6)
+    ]
+    assert mouth_interior == []
+    # The socket floor exists at exactly `depth` below the surface.
+    floor_z = top_z - depth
+    floor_verts = [v for v in verts if v[2] == pytest.approx(floor_z, abs=1e-6)]
+    assert len(floor_verts) >= 4   # boundary ring + interior floor verts
+
+
+def test_cut_notches_skips_gracefully_when_too_coarse(monkeypatch):
+    # Force zero refinement passes so a coarse grid can never resolve a tiny
+    # notch radius — the cut must be skipped with a warning, not corrupt the
+    # mesh or raise.
+    monkeypatch.setattr(tree_pads, "NOTCH_MAX_LEVELS", 0)
+    verts, faces, protected = _grid_mesh(2, 40.0)
+    notch = {"x": 20.0, "y": 20.0, "radius_mm": FLORA_NOTCH_RADIUS_MM,
+             "depth_mm": 5.0}
+    warnings = []
+    new_faces = tree_pads.cut_notches(verts, faces, protected, [notch],
+                                      warnings=warnings)
+    assert len(warnings) == 1
+    assert "too coarse" in warnings[0]
+    assert sorted(new_faces) == sorted(faces)   # untouched — a safe no-op
+
+
+def test_cut_notches_skips_when_too_close_to_rim():
+    verts, faces, protected = _grid_mesh(6, 60.0)
+    # Centre the notch exactly on a protected boundary vertex.
+    notch = {"x": 0.0, "y": 0.0, "radius_mm": FLORA_NOTCH_RADIUS_MM,
+             "depth_mm": 5.0}
+    warnings = []
+    new_faces = tree_pads.cut_notches(verts, faces, protected, [notch],
+                                      warnings=warnings)
+    assert len(warnings) == 1
+    assert "rim" in warnings[0]
+    _assert_crack_free(new_faces, protected)
+
+
+def test_cut_notches_skips_when_floor_too_shallow():
+    verts, faces, protected = _grid_mesh(6, 60.0)
+    # Push the whole patch down so its z sits just above the min-floor
+    # clearance, leaving no room for a 3mm-deep cut.
+    verts = [(x, y, FLORA_NOTCH_MIN_FLOOR_MM + 1.0) for (x, y, _z) in verts]
+    thin_notch = [{"x": 30.0, "y": 30.0, "radius_mm": FLORA_NOTCH_RADIUS_MM,
+                  "depth_mm": 3.0}]
+    warnings = []
+    new_faces = tree_pads.cut_notches(verts, faces, protected, thin_notch,
+                                      warnings=warnings)
+    assert len(warnings) == 1
+    assert "too thin" in warnings[0]
+    _assert_crack_free(new_faces, protected)
+
+
+def test_notch_skipped_gracefully_on_a_thin_full_tile():
+    # A real, minimally-thick tile — the notch's floor would land below z=0,
+    # so build_hex_tile must still produce a valid manifold mesh, just
+    # without that socket cut, rather than raising or corrupting geometry.
+    verts, faces = build_hex_tile(
+        diameter_mm=220.0, level_height_mm=10.0, base_thickness_mm=8.2,
+        corner_levels=(0, 0, 0, 0, 0, 0), center_level=None,
+        smoothness_passes=3,
+        flora_pads=[{"x": 0.0, "y": 0.0, "radius_mm": 8.0, "blend_mm": 5.0}],
+        flora_notches=CENTER_NOTCH,
+    )
+    assert_two_manifold(verts, faces)
+
+
+def test_notch_top_prefix_stable_and_locally_bounded():
+    # Notch cutting only ever touches vertices within its own radius (a snap
+    # to the exact circle for boundary-loop verts, a sink to the socket floor
+    # for interior ones) — count/order of the top-vertex prefix is preserved,
+    # and anything beyond the notch radius must be bit-identical to the
+    # padded-but-unnotched build, exactly like `refine_and_flatten`'s own
+    # "beyond blend reach" contract.
+    num_top = top_vertex_count(3, 0)
+    pad = {"x": 0.0, "y": 0.0, "radius_mm": 8.0, "blend_mm": 5.0}
+    notch = CENTER_NOTCH[0]
+    verts_padded, _ = _sloped_tile(flora_pads=[pad])
+    verts_notched, _ = _sloped_tile(flora_pads=[pad], flora_notches=CENTER_NOTCH)
+    assert len(verts_notched) >= len(verts_padded)
+    for i in range(num_top):
+        x, y, z = verts_padded[i]
+        if math.hypot(x - notch["x"], y - notch["y"]) > notch["radius_mm"] + 1e-6:
+            assert verts_notched[i] == pytest.approx((x, y, z), abs=1e-9)
+
+
+def test_cut_notches_is_deterministic():
+    a = _sloped_tile(flora_pads=[{"x": 0.0, "y": 0.0, "radius_mm": 8.0, "blend_mm": 5.0}],
+                     flora_notches=CENTER_NOTCH)
+    b = _sloped_tile(flora_pads=[{"x": 0.0, "y": 0.0, "radius_mm": 8.0, "blend_mm": 5.0}],
+                     flora_notches=CENTER_NOTCH)
+    assert a[0] == pytest.approx(list(b[0]), abs=1e-12)
+    assert a[1] == b[1]
+
+
+def test_pin_fits_inside_its_notch():
+    # Cheap regression guard: a future constant edit can't silently make the
+    # peg wider or longer than the socket it needs to seat into.
+    assert FLORA_PIN_RADIUS_MM < FLORA_NOTCH_RADIUS_MM
+    assert FLORA_PIN_LENGTH_MM < FLORA_NOTCH_DEPTH_MM
+
+
+# ---------------------------------------------------------------------------
+# 12. `_boundary_loop` — direct unit tests of the riskiest new logic (pinch
+# points / multiple disjoint loops are hard to coax out of the real
+# refinement pipeline deterministically, so exercise the helper directly).
+
+def test_boundary_loop_single_triangle():
+    loop = tree_pads._boundary_loop([(0, 1, 2)])
+    assert loop is not None
+    assert set(loop) == {0, 1, 2}
+    assert len(loop) == 3
+
+
+def test_boundary_loop_rejects_pinch_point():
+    # Two triangles sharing exactly one vertex (not an edge) — that shared
+    # vertex has boundary degree 4, not 2.
+    removed = [(0, 1, 2), (2, 3, 4)]
+    assert tree_pads._boundary_loop(removed) is None
+
+
+def test_boundary_loop_rejects_disjoint_loops():
+    # Two fully separate triangles — a valid loop each, but not ONE loop.
+    removed = [(0, 1, 2), (3, 4, 5)]
+    assert tree_pads._boundary_loop(removed) is None

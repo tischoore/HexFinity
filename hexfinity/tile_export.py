@@ -111,6 +111,39 @@ def tile_filename(q, r, custom, short):
     return f"{stem}.stl"
 
 
+def flora_filename(q, r, index, short):
+    """STL filename for one planted-tree-plus-pin export.
+
+    Every flora export is hash-suffixed (unlike `tile_filename`'s plain/
+    custom split) — a tree's species/scale/rotation make it "custom" by
+    nature, and the suffix still lets two placements that happen to be
+    byte-identical (same species, same rounded scale) share one file.
+    """
+    return f"flora_q{q:02d}_r{r:02d}_{index:03d}_{short}.stl"
+
+
+def flora_manifest_rows(records):
+    """Normalize flora export records into serializable manifest rows.
+
+    `records` is an iterable of dicts with ``q``, ``r``, ``index`` and
+    ``file`` keys. Kept as its own schema (an added ``index``, no ``custom``)
+    rather than overloading `manifest_rows`, since every flora row means
+    something slightly different from a tile row. Sorted by (q, r, index)
+    for a stable, diffable manifest.
+    """
+    rows = [
+        {
+            "q": int(rec["q"]),
+            "r": int(rec["r"]),
+            "index": int(rec["index"]),
+            "file": str(rec["file"]),
+        }
+        for rec in records
+    ]
+    rows.sort(key=lambda row: (row["q"], row["r"], row["index"]))
+    return rows
+
+
 def manifest_rows(records):
     """Normalize export records into serializable manifest rows.
 

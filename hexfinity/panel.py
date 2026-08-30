@@ -175,6 +175,11 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         else:
             flora_box.operator("hexfinity.flora_marker", text="Flora",
                                icon='OUTLINER_OB_POINTCLOUD')
+        flora_box.operator("hexfinity.finalize_flora", text="Finalize Flora",
+                           icon='MOD_SCREW')
+        flora_box.label(
+            text="Pins/notches only exist right after Finalize — any later "
+                "edit strips them again.", icon='INFO')
 
         # ---- Procedural Surface regions -----------------------------------
         self._draw_surface_regions(context, layout, map_props, obj, tile)

@@ -44,6 +44,24 @@ TAB_FILLET_MM = 4.0              # radius rounding the two outer (leading) verti
                                  # square hole is left sharp.
 TAB_FILLET_SEGMENTS = 3          # arc tessellation per rounded outer corner.
 
+# Flora pin/notch interlock: a small cylindrical peg standing off a planted
+# tree's true base, mating into a matching blind socket drilled into the tile
+# under the tree's flatten pad — same tab/hole idea as above, sized for tree
+# assembly rather than tile assembly. Hardcoded rather than tied to the
+# scene's man_height_mm (which scales other print features elsewhere), since
+# the peg is meant to stay a fixed, known size regardless of a given tree's
+# random per-placement scale.
+FLORA_PIN_DIAMETER_MM = 2.0
+FLORA_PIN_RADIUS_MM = FLORA_PIN_DIAMETER_MM / 2.0            # 1.0
+FLORA_PIN_HOLE_TOLERANCE_MM = 0.2      # independent from TAB_HOLE_TOLERANCE_MM —
+                                        # tuned against a 2mm peg, not a 10x8x10mm tab.
+FLORA_NOTCH_RADIUS_MM = FLORA_PIN_RADIUS_MM + FLORA_PIN_HOLE_TOLERANCE_MM / 2.0  # ~1.1
+FLORA_NOTCH_DEPTH_MM = 10.0             # ~ typical man-height scale; not derived from
+                                        # map_props.man_height_mm — a flat constant.
+FLORA_PIN_LENGTH_MM = FLORA_NOTCH_DEPTH_MM - FLORA_PIN_HOLE_TOLERANCE_MM
+FLORA_NOTCH_MIN_FLOOR_MM = 2.0   # required clearance above the tile's z=0 bottom
+                                 # plate; a notch that would punch through it is skipped.
+
 # Inner-ring control vertex placement. Qi sits between C and the midpoint of
 # rim segment Pi→Pi+1, at this fraction of the way out. 0.5 keeps the Q ring
 # concentric and reasonably tight to C; tuning this trades dome breadth for
@@ -189,6 +207,10 @@ def build_hex_tile(
     surface_seed=0,
     surface_rim_falloff_mm=SURFACE_RIM_FALLOFF_MM,
     flora_pads=None,
+    flora_notches=None,
+    flora_notch_warnings=None,
+    flora_notch_ok_indices=None,
+    flora_notch_heights=None,
 ):
     """Build a single HexFinity tile.
 
@@ -228,6 +250,19 @@ def build_hex_tile(
     a tree with a flat base cut sits flush even on sloped ground. New vertices
     are appended after the top-surface prefix, so `top_vertex_count()` and both
     displacement layers are unaffected by planting/unplanting a tree.
+
+    `flora_notches`, when given, is a list of `{"x", "y", "radius_mm",
+    "depth_mm"}` dicts (tile-local mm) drilled as blind cylindrical sockets
+    into the (already pad-flattened) top surface, for a tree's pin to mate
+    into (see `tree_pads.cut_notches`). Applied strictly after `flora_pads`,
+    so a socket only ever cuts into a surface already known to be flat there.
+    A notch that can't be safely cut is silently skipped; pass a list via
+    `flora_notch_warnings` to receive a human-readable reason per skip, a
+    list via `flora_notch_ok_indices` to receive each successfully-cut
+    notch's `"index"`, and a dict via `flora_notch_heights` to receive
+    `{index: pad_z}` — the exact pre-drill flat height at each successful
+    cut, so the caller can seat a tree/pin there directly instead of
+    raycasting against a mesh that now has a hole exactly where it would aim.
     """
     if diameter_mm <= 0:
         raise ValueError(f"diameter_mm must be positive, got {diameter_mm}")
@@ -421,6 +456,15 @@ def build_hex_tile(
         top_faces = tree_pads.refine_and_flatten(
             verts_mm, top_faces, protected_edges, flora_pads,
             diameter_mm, base_thickness_mm)
+    if flora_notches:
+        try:
+            from . import tree_pads
+        except ImportError:
+            import tree_pads
+        top_faces = tree_pads.cut_notches(
+            verts_mm, top_faces, protected_edges, flora_notches,
+            warnings=flora_notch_warnings, ok_indices=flora_notch_ok_indices,
+            resolved_heights=flora_notch_heights)
     faces.extend(top_faces)
 
     # Bottom of the tile carries inter-tile tab/hole interlocks (see module

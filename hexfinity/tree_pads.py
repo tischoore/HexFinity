@@ -22,14 +22,24 @@ to, so planting/unplanting a tree never touches those layers.
 import math
 
 try:
-    from .mesh_builder import rim_edge_distance
+    from .mesh_builder import rim_edge_distance, FLORA_NOTCH_MIN_FLOOR_MM
 except ImportError:
-    from mesh_builder import rim_edge_distance
+    from mesh_builder import rim_edge_distance, FLORA_NOTCH_MIN_FLOOR_MM
 
 
 # Refinement passes are per-edge and stop as soon as no edge qualifies, so
 # this is a ceiling on local density near a tree, not a fixed cost.
 MAX_LEVELS = 4
+
+# A notch's radius (~1.1mm, see mesh_builder.FLORA_NOTCH_RADIUS_MM) is far
+# smaller than a typical pad radius, so cutting one needs much finer local
+# edges than a pad's own flatten pass already produces — hence a separate,
+# deeper refinement ceiling and a small forced-refinement blend margin.
+NOTCH_MAX_LEVELS = 8
+NOTCH_REFINE_BLEND_MM = 0.5
+# A boundary loop this small can't approximate a circle a real pin will fit
+# into — treat it the same as "mesh too coarse to drill" and skip.
+NOTCH_MIN_LOOP_VERTS = 8
 
 
 def _edge_key(a, b):
@@ -150,6 +160,245 @@ def _retriangulate(face, marked, mid_idx, verts):
     ]
 
 
+def _iteratively_refine(verts, faces, protected_edges, specs, max_levels):
+    """Adaptively subdivide `faces` near any spec in `specs` (pad/notch-shaped
+    `{"x","y","radius_mm","blend_mm"}` dicts) until no marked edge remains or
+    `max_levels` passes are spent. Mutates `verts` in place (appends only, so
+    every existing index stays valid) and returns the retriangulated face
+    list. Shared by `refine_and_flatten` (pad radius) and `cut_notches`
+    (a much smaller notch radius, needing a deeper ceiling to resolve).
+    """
+    faces = list(faces)
+    for _level in range(max_levels):
+        marked = set()
+        for face in faces:
+            a, b, c = face
+            for (u, v) in ((a, b), (b, c), (c, a)):
+                key = _edge_key(u, v)
+                if key in protected_edges or key in marked:
+                    continue
+                if _edge_qualifies(verts, u, v, specs):
+                    marked.add(key)
+        if not marked:
+            break
+
+        mid_idx = {}
+        for key in marked:
+            u, v = key
+            ux, uy, uz = verts[u]
+            vx, vy, vz = verts[v]
+            mid_idx[key] = len(verts)
+            verts.append(((ux + vx) / 2.0, (uy + vy) / 2.0, (uz + vz) / 2.0))
+
+        new_faces = []
+        for face in faces:
+            new_faces.extend(_retriangulate(face, marked, mid_idx, verts))
+        faces = new_faces
+    return faces
+
+
+def _boundary_loop(removed_faces):
+    """Order the boundary edges of a removed (to-be-drilled) triangle set
+    into a single closed, consistently-wound vertex loop.
+
+    Returns `None` if the boundary isn't exactly one simple loop — a pinch
+    point (a vertex touched by two disjoint removed "islands", which shows up
+    as boundary-edge degree != 2), an open boundary, or several disjoint
+    loops — so the caller can skip the cut rather than build a corrupt/
+    self-intersecting socket.
+    """
+    edge_users = {}
+    for face in removed_faces:
+        a, b, c = face
+        for (u, v) in ((a, b), (b, c), (c, a)):
+            key = _edge_key(u, v)
+            edge_users[key] = edge_users.get(key, 0) + 1
+
+    boundary_out = {}
+    degree = {}
+    for face in removed_faces:
+        a, b, c = face
+        for (u, v) in ((a, b), (b, c), (c, a)):
+            if edge_users[_edge_key(u, v)] == 1:
+                boundary_out.setdefault(u, []).append(v)
+                degree[u] = degree.get(u, 0) + 1
+                degree[v] = degree.get(v, 0) + 1
+
+    if not boundary_out:
+        return None
+    if any(d != 2 for d in degree.values()):
+        return None
+    total_edges = sum(len(v) for v in boundary_out.values())
+
+    start = next(iter(boundary_out))
+    loop = [start]
+    current = start
+    visited_edges = 0
+    while True:
+        outs = boundary_out.get(current)
+        if not outs:
+            return None
+        nxt = outs.pop()
+        visited_edges += 1
+        if nxt == start:
+            break
+        loop.append(nxt)
+        current = nxt
+        if visited_edges > total_edges:
+            return None
+    if visited_edges != total_edges:
+        return None
+    return loop
+
+
+def cut_notches(verts, faces, protected_edges, notches, warnings=None,
+                ok_indices=None, resolved_heights=None):
+    """Drill a blind cylindrical socket into `faces` under each notch spec.
+
+    `notches` is a list of `{"x", "y", "radius_mm", "depth_mm"}` dicts
+    (tile-local mm) — one per planted tree that should receive a hex-side
+    socket for its pin (see `flora.notch_specs`), optionally carrying an
+    `"index"` key (the placement index it came from). `verts` is mutated in
+    place — appending new wall/floor vertices, and nudging each socket's
+    boundary-loop vertices' (x, y) onto an exact circle so a real printed pin
+    fits (their z and index are untouched, so this is safe even when a loop
+    vertex is an original top-surface vertex the brush/snap displacement
+    layers key by index). Returns the replacement top-face list; the caller
+    extends its own face list with it, same contract as `refine_and_flatten`.
+
+    A notch that can't be safely cut — the local mesh is too coarse even
+    after forced refinement, its boundary is a pinch point/multiple loops,
+    it reaches the hex rim, or the tile is too thin for the requested depth
+    — is silently skipped (left un-drilled) rather than risking a corrupt or
+    non-manifold mesh; a human-readable reason is appended to `warnings` if
+    a list is given. Successfully-cut notches append their `"index"` (when
+    present) to `ok_indices` if a list is given — the caller (`flora.py`)
+    uses this to only create a pin for placements that actually got a real
+    socket, so a partial failure can never leave a pin floating with no
+    matching cavity. They also record `resolved_heights[index] = pad_z` (the
+    exact pre-drill flat pad height) if a dict is given — the caller uses
+    this to seat the tree/pin directly at the known height instead of
+    raycasting against the mesh this function just put a hole in, which
+    would otherwise hit the socket floor instead of the surrounding surface.
+    """
+    if not notches:
+        return list(faces)
+
+    rim_vertex_ids = set()
+    for a, b in protected_edges:
+        rim_vertex_ids.add(a)
+        rim_vertex_ids.add(b)
+
+    refine_specs = [
+        {"x": n["x"], "y": n["y"], "radius_mm": n["radius_mm"],
+         "blend_mm": NOTCH_REFINE_BLEND_MM}
+        for n in notches
+    ]
+    faces = _iteratively_refine(verts, faces, protected_edges, refine_specs,
+                                NOTCH_MAX_LEVELS)
+
+    def _skip(reason, nx, ny, kept, removed):
+        if warnings is not None:
+            warnings.append(f"flora notch at ({nx:.2f}, {ny:.2f}): {reason}")
+        return kept + removed
+
+    for notch in notches:
+        nx, ny = notch["x"], notch["y"]
+        radius = notch["radius_mm"]
+        depth = notch["depth_mm"]
+
+        removed = []
+        kept = []
+        for face in faces:
+            if len(face) == 3 and all(
+                math.hypot(verts[v][0] - nx, verts[v][1] - ny) <= radius
+                for v in face
+            ):
+                removed.append(face)
+            else:
+                kept.append(face)
+
+        if not removed:
+            faces = _skip("local mesh too coarse to drill, skipped",
+                          nx, ny, kept, removed)
+            continue
+
+        loop = _boundary_loop(removed)
+        if loop is None or len(loop) < NOTCH_MIN_LOOP_VERTS:
+            faces = _skip("irregular local boundary, skipped",
+                          nx, ny, kept, removed)
+            continue
+
+        if any(v in rim_vertex_ids for v in loop):
+            faces = _skip("too close to the hex rim, skipped",
+                          nx, ny, kept, removed)
+            continue
+
+        pad_z = verts[loop[0]][2]
+        if pad_z - depth < FLORA_NOTCH_MIN_FLOOR_MM:
+            faces = _skip(
+                f"tile too thin for a {depth:.1f}mm-deep socket, skipped",
+                nx, ny, kept, removed)
+            continue
+
+        # Snap the loop onto an exact circle so a real pin fits the socket —
+        # forced refinement already put these vertices close to `radius`.
+        for v in loop:
+            x, y, z = verts[v]
+            d = math.hypot(x - nx, y - ny)
+            if d > 1e-9:
+                scale = radius / d
+                verts[v] = (nx + (x - nx) * scale, ny + (y - ny) * scale, z)
+            else:
+                verts[v] = (nx + radius, ny, z)
+
+        # `removed` can enclose more than just the loop — a sufficiently
+        # refined patch has genuinely interior vertices too. Those are used
+        # *only* by removed faces (never by a kept one, else they'd carry a
+        # boundary edge and be part of `loop`), so sinking them to the floor
+        # in place is safe and avoids ever orphaning them. Loop vertices are
+        # still needed at the top (by `kept` and the wall), so they get a
+        # fresh bottom counterpart instead of being moved.
+        loop_set = set(loop)
+        interior_verts = set()
+        for f in removed:
+            interior_verts.update(f)
+        interior_verts -= loop_set
+
+        bottom_z = pad_z - depth
+        for v in interior_verts:
+            x, y, _z = verts[v]
+            verts[v] = (x, y, bottom_z)
+
+        bottom_of = {}
+        for v in loop:
+            x, y, _z = verts[v]
+            bottom_of[v] = len(verts)
+            verts.append((x, y, bottom_z))
+
+        n = len(loop)
+        wall_faces = []
+        for i in range(n):
+            top_a, top_b = loop[i], loop[(i + 1) % n]
+            bot_a, bot_b = bottom_of[top_a], bottom_of[top_b]
+            wall_faces.append((top_a, top_b, bot_b, bot_a))
+
+        # The floor reuses the removed region's own (already valid, already
+        # correctly wound) triangulation verbatim, just remapped down: loop
+        # corners point at their new bottom counterpart, interior corners
+        # keep their own (now-sunk) index.
+        floor_faces = [tuple(bottom_of.get(v, v) for v in f) for f in removed]
+
+        faces = kept + wall_faces + floor_faces
+        if "index" in notch:
+            if ok_indices is not None:
+                ok_indices.append(notch["index"])
+            if resolved_heights is not None:
+                resolved_heights[notch["index"]] = pad_z
+
+    return faces
+
+
 def refine_and_flatten(verts, faces, protected_edges, pads, diameter_mm, base_thickness_mm):
     """Refine + flatten `faces` (top-surface triangles) under each pad.
 
@@ -168,32 +417,7 @@ def refine_and_flatten(verts, faces, protected_edges, pads, diameter_mm, base_th
     # surface, so two nearby pads can't influence each other's target.
     pad_z = [sample_surface_z(verts, faces, p["x"], p["y"]) for p in pads]
 
-    faces = list(faces)
-    for _level in range(MAX_LEVELS):
-        marked = set()
-        for face in faces:
-            a, b, c = face
-            for (u, v) in ((a, b), (b, c), (c, a)):
-                key = _edge_key(u, v)
-                if key in protected_edges or key in marked:
-                    continue
-                if _edge_qualifies(verts, u, v, pads):
-                    marked.add(key)
-        if not marked:
-            break
-
-        mid_idx = {}
-        for key in marked:
-            u, v = key
-            ux, uy, uz = verts[u]
-            vx, vy, vz = verts[v]
-            mid_idx[key] = len(verts)
-            verts.append(((ux + vx) / 2.0, (uy + vy) / 2.0, (uz + vz) / 2.0))
-
-        new_faces = []
-        for face in faces:
-            new_faces.extend(_retriangulate(face, marked, mid_idx, verts))
-        faces = new_faces
+    faces = _iteratively_refine(verts, faces, protected_edges, pads, MAX_LEVELS)
 
     for i in range(len(verts)):
         x, y, z = verts[i]

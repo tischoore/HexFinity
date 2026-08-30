@@ -167,13 +167,121 @@ gap — is superseded by the pad; its remaining job is avoiding a
 zero-thickness, z-fighting contact between a perfectly flat tree base and a
 perfectly flat pad).
 
+## Pin/notch interlock (physical assembly)
+
+A planted tree and its tile can be printed as two **separate** parts and
+plugged together, the same idea as the tab/hole interlock between adjacent
+hex tiles: a small cylindrical **pin** stands off the true base of the tree,
+mating into a matching blind cylindrical **socket ("notch")** drilled into
+the tile under the tree's flatten pad. All dimensions are hardcoded constants
+in `mesh_builder.py`, deliberately independent of both a tree's own random
+per-placement scale and the scene's `man_height_mm` print-scale slider:
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `FLORA_PIN_DIAMETER_MM` | 2.0 | Pin diameter — always exactly this, regardless of tree scale |
+| `FLORA_PIN_HOLE_TOLERANCE_MM` | 0.2 | Socket grows by this over the pin, mirroring `TAB_HOLE_TOLERANCE_MM` |
+| `FLORA_NOTCH_RADIUS_MM` | ~1.1 | Socket radius = pin radius + half the tolerance |
+| `FLORA_NOTCH_DEPTH_MM` | 10.0 | Socket depth |
+| `FLORA_PIN_LENGTH_MM` | 9.8 | Pin length = socket depth − tolerance, so the tip never bottoms out before the tree's base seats flush |
+
+**Cost control — cut only on finalize.** Unlike the flatten pad (recomputed
+on every `rebuild_tile`), drilling a real socket is expensive enough that it
+must not run on the interactive per-click rebuilds that already fire while
+placing trees, nor on any other rebuild trigger (brush stroke, corner-height
+edit, terrain snap). `operators.rebuild_tile(obj, finalize_flora=False)`
+gates it: the default `False` (every existing call site) skips
+`flora.notch_specs`/`tree_pads.cut_notches` and any pin objects entirely;
+`finalize_flora=True` — only reached from `HEXFINITY_OT_flora_marker._finish`
+(leaving the planting tool) or the manual **Finalize Flora** button — cuts
+the socket and (re)creates the pin. This means pins/notches only exist right
+after a finalize pass; any later edit (even an unrelated one, like painting
+elsewhere with the brush) strips them again until Finalize Flora runs once
+more. The panel's Flora box explains this with an inline note next to the
+button.
+
+**The socket cut (`tree_pads.cut_notches`, bpy-free)** runs strictly after
+the pad flatten, so it always cuts into a surface already known to be flat.
+It forces its own deeper local refinement (`NOTCH_MAX_LEVELS = 8` — the
+~1.1 mm notch radius is far smaller than a typical pad, needing much finer
+edges than the pad's own flatten pass produces), then removes every triangle
+fully inside the notch radius, walks the resulting hole's boundary into an
+ordered loop, snaps that loop onto an exact circle (so a real printed pin
+fits), and builds a cylindrical wall + floor down to the socket depth —
+reusing the removed region's own (already correctly wound) triangulation for
+the floor rather than a fresh fan, so no vertex is ever left orphaned. A
+notch that can't be safely cut — the local mesh is too coarse even after
+forced refinement, its boundary is a pinch point or several disjoint loops,
+it reaches the hex rim, or the tile is too thin for the requested depth — is
+silently skipped (left un-drilled) with a logged warning rather than risking
+a corrupt or non-manifold mesh.
+
+**The pin object (`flora._get_or_build_pin_mesh`)** is a plain procedural
+cylinder built once per session via `from_pydata` — **not** baked into the
+shared species STL mesh, since that mesh is linked across every instance of
+a species and gets non-uniformly scaled per placement (`obj.scale`); baking
+the pin into it would make its real-world size drift with each tree's random
+`scale_factor`. Instead it's its own shared mesh, instanced as a **child of
+the tree it belongs to** (not the tile) — it moves as one unit with its
+tree, and is found via the tree's own `.children` (see `flora.sync_flora`).
+Its own `obj.scale` is set to `1 / total_scale`, exactly cancelling the
+tree's `obj.scale = (total_scale,)*3`, so the pin's real-world size stays
+exactly `FLORA_PIN_DIAMETER_MM`/`FLORA_PIN_LENGTH_MM` regardless of the
+tree's own random scale. Its local position is
+`(0, 0, min_z + penetration_mm / total_scale)` in the tree's own frame —
+not just `(0, 0, min_z)` — so the pin's top always lands exactly at the
+resolved surface height *regardless of `penetration_mm`*: anchoring it at
+the tree's own (already-sunk) local origin instead would let the pin's tip
+poke past the socket floor once `penetration_mm` exceeds
+`FLORA_PIN_HOLE_TOLERANCE_MM` (already true at the defaults, 0.3mm vs
+0.2mm). `sync_flora` only attaches a pin for a placement index that
+`cut_notches` actually succeeded on (`ok_indices`), so a partial failure —
+one tree's socket skipped, others fine — can never leave a pin floating over
+an undrilled spot; `purge_flora` removes a tree's pin before the tree itself
+so nothing is orphaned.
+
+**Seating uses the known pad height, not a raycast into the hole.**
+Once a socket is cut, a straight-down raycast at the placement's exact
+`(x, y)` — the notch's own centre — would pass through the ~1.1mm-wide
+opening and hit the socket floor, ~`FLORA_NOTCH_DEPTH_MM` below the real
+surface, instead of the surrounding pad. `tree_pads.cut_notches` already
+knows the pad's exact pre-drill flat height (`pad_z`) for every notch it
+cuts, so it reports it back via an optional `resolved_heights` dict
+(`{index: pad_z}`), threaded through `build_hex_tile`'s
+`flora_notch_heights` kwarg and `operators.rebuild_tile`. `flora.sync_flora`
+uses `notch_heights[i]` directly when present instead of raycasting — the
+raycast fallback only ever runs for a non-finalized rebuild or a placement
+whose notch was skipped, where there's no hole to worry about.
+
+**Export.** `HEXFINITY_OT_export_tiles` exports a planted tree fused with
+its pin as its **own** STL file (`flora_qNN_rNN_III_<hash>.stl`, deduped by
+content hash the same way tile files are, listed in `flora_manifest.csv`/
+`.json`), separate from the tile's own STL — the whole point of the pin/
+socket is assembling two independently-printed parts. `_terrain_children`
+excludes flora tree/pin objects from the tile's fused export (scatter
+boulders and terrain-import objects are unaffected); the notch cavity itself
+needs no separate handling since it's already baked into the tile's own
+mesh. Since the pin is parented to the tree, `_export_flora_pair` only needs
+to move the tree — the pin follows automatically — but the anchor point
+isn't simply the tree's own local mesh origin (wherever its source STL was
+authored) or even its true base: the pin reaches further down than the
+tree's own base (it extends into the socket), so it's the combined part's
+true lowest point — `min()` of the tree's and the pin's own lowest vertex —
+that gets shifted to world z=0, ready to print. A tile with planted trees
+but no matching pins (never finalized) triggers a `{'WARNING'}` at export
+time pointing at Finalize Flora, rather than silently exporting trees with
+no pins and a tile with no sockets.
+
 ## Scene tree
 
 ```
 HexFinity Map (collection)
 ├─ HexTile_00_00              (the tile object)
 └─ Flora (collection)
-   ├─ Flora_HexTile_00_00_000  (parented under the tile; linked mesh)
+   ├─ Flora_HexTile_00_00_000     (parented under the tile; linked mesh)
+   │  └─ FloraPin_HexTile_00_00_000  (parented under ITS TREE, not the tile;
+   │                                    only present right after a Finalize
+   │                                    Flora pass)
    └─ Flora_HexTile_00_00_001
 ```
 
@@ -200,9 +308,11 @@ transform, exactly like scatter boulders and terrain objects.
    ground instead of floating or burying.
 6. **Clear Map** — press Clear; confirm the Outliner has no leftover Flora
    collection or objects.
-7. **Export** — *Export Tiles to STL* includes the planted trees
-   automatically (they're ordinary mesh children of the tile, picked up the
-   same way scatter boulders and terrain objects are).
+7. **Export** — *Export Tiles to STL* excludes planted trees from the tile's
+   own STL (scatter boulders and terrain objects are still fused in as
+   before); each finalized tree exports as its own `flora_*.stl`, fused with
+   its pin, listed in `flora_manifest.csv`. A tile with unfinalized flora
+   triggers a warning instead of silently exporting mismatched parts.
 8. **Packaging** — build via `deploy.ps1` and confirm the zip contains
    `hexfinity/assets/leefytree/*.stl`.
 9. **Overlap avoidance** — with *Avoid Overlap* on (default), plant a tree,
@@ -228,3 +338,19 @@ transform, exactly like scatter boulders and terrain objects.
     tile to STL and confirm it's still a valid manifold. A headless smoke
     test of this whole path (plant → pad → rebuild → property-update
     callbacks) lives in `tests/_headless_flora_pad_check.py`.
+11. **Pin/notch interlock** — plant a tree, press Esc/RMB to leave the Flora
+    tool: confirm a socket visibly appears under the tree (e.g. toggle the
+    tree's visibility), the tree still sits flush on the surface (not sunk
+    into the socket), and a `FloraPin_*` object appears **nested under its
+    tree** in the Outliner (not as a separate top-level sibling). Paint a
+    brush stroke elsewhere on the tile (or edit a corner height) and confirm
+    the pin disappears and the socket fills back in — then press
+    **Finalize Flora** and confirm both come back, tree still flush. Export
+    the tile: confirm a separate `flora_*.stl` is written alongside the
+    tile's own STL, that `flora_manifest.csv` lists it, and that the
+    exported part's lowest point (the pin's tip) sits at z=0. Plant a tree,
+    do *not* finalize, and export: confirm a warning appears and no
+    `flora_*.stl` is written for that placement. A headless smoke test of
+    this whole path (plant → finalize → pin/socket geometry → seating
+    correctness → un-finalize → re-finalize → export) lives in
+    `tests/_headless_flora_pin_check.py`.
