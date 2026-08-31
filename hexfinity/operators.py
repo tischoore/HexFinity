@@ -11,7 +11,7 @@ from .mesh_builder import (build_hex_tile, clamp_center_to_hexagon,
                            top_vertex_count)
 from .manifold_check import assert_two_manifold, ManifoldError
 from .map import (SHARED_CORNERS, neighbour_coord, tile_world_xy, find_tile,
-                  clamp_level)
+                  clamp_level, hex_prism_verts_faces)
 from .tile_export import (is_custom_tile, manifest_rows, short_hash,
                           tile_filename, tile_geometry_hash,
                           flora_placement_filename, flora_manifest_rows)
@@ -1172,6 +1172,199 @@ class HEXFINITY_OT_generate_terrain_plateau(bpy.types.Operator):
         else:
             self.report({'INFO'},
                         f"Regenerated {count} plateau pad(s) on {tile.name}.")
+        return {'FINISHED'}
+
+
+# ---------------------------------------------------------------------------
+# Split Terrain Object by Hex Boundaries — a destructive boolean cut that
+# turns one terrain object spanning several hexes into one terrain object
+# per hex it actually overlaps, each parented to (and plateau-eligible on)
+# that hex alone. Material outside every hex is simply never produced by the
+# per-tile INTERSECT below, so it's discarded by construction rather than
+# needing a separate "delete the leftover" step.
+
+SPLIT_PRISM_MARGIN_MM = 5.0  # extra Z clearance so the cut plane never grazes
+
+
+def _hex_split_candidates(map_props, terrain_obj):
+    """Generated tiles whose hex bounding square overlaps `terrain_obj`'s
+    world XY bbox — a cheap pre-filter (no boolean math) so the caller can
+    skip the expensive cut entirely when the object already fits in one hex.
+    """
+    coll = map_props.root_collection
+    if coll is None:
+        return []
+    bmin, bmax = _world_bbox([terrain_obj])
+    R = map_props.diameter_mm / 2.0
+    candidates = []
+    for tile in coll.objects:
+        if not tile.hexfinity_tile.is_generated:
+            continue
+        tx, ty = tile.location.x, tile.location.y  # tiles are translation-only
+        if (bmax.x < tx - R or bmin.x > tx + R
+                or bmax.y < ty - R or bmin.y > ty + R):
+            continue
+        candidates.append(tile)
+    return candidates
+
+
+def _cut_terrain_by_hex(context, terrain_obj, candidates, keep):
+    """Boolean-INTERSECT a duplicate of `terrain_obj` against each candidate
+    tile's hex prism (`map.hex_prism_verts_faces`), one candidate at a time.
+    Empty results are always discarded — this is how "outside every hex"
+    material is dropped, with no separate bookkeeping needed.
+
+    `keep=False` (dry run, for the confirmation dialog's exact count): every
+    non-empty duplicate is deleted right after being counted, so nothing
+    leaks if the user then cancels the dialog.
+    `keep=True` (real cut): non-empty duplicates are finalized in place —
+    renamed, given the original's terrain-snap settings, and parented to
+    their tile — mirroring `HEXFINITY_OT_import_terrain_object`'s
+    parent/matrix_parent_inverse dance.
+
+    Returns the list of tiles that ended up with a non-empty piece.
+    """
+    map_props = context.scene.hexfinity_map
+    coll = map_props.root_collection
+    bmin, bmax = _world_bbox([terrain_obj])
+    z_min = bmin.z - SPLIT_PRISM_MARGIN_MM
+    z_max = bmax.z + SPLIT_PRISM_MARGIN_MM
+    hit_tiles = []
+
+    for tile in candidates:
+        tx, ty = tile.location.x, tile.location.y
+        verts, faces = hex_prism_verts_faces(map_props.diameter_mm, z_min, z_max)
+        verts = [(x + tx, y + ty, z) for x, y, z in verts]
+
+        prism_mesh = bpy.data.meshes.new("hf_split_prism_tmp")
+        prism_mesh.from_pydata(verts, [], faces)
+        prism_mesh.update(calc_edges=True)
+        prism_obj = bpy.data.objects.new("hf_split_prism_tmp", prism_mesh)
+        coll.objects.link(prism_obj)
+
+        dup_mesh = terrain_obj.data.copy()
+        dup_obj = bpy.data.objects.new(f"{terrain_obj.name}_split_tmp", dup_mesh)
+        coll.objects.link(dup_obj)
+        dup_obj.matrix_world = terrain_obj.matrix_world.copy()
+
+        mod = dup_obj.modifiers.new(name="hf_split_cut", type='BOOLEAN')
+        mod.operation = 'INTERSECT'
+        mod.solver = 'EXACT'
+        mod.object = prism_obj
+        with context.temp_override(active_object=dup_obj,
+                                   selected_objects=[dup_obj],
+                                   object=dup_obj):
+            bpy.ops.object.modifier_apply(modifier=mod.name)
+
+        bpy.data.objects.remove(prism_obj, do_unlink=True)
+        bpy.data.meshes.remove(prism_mesh)
+
+        if len(dup_obj.data.polygons) == 0:
+            bpy.data.objects.remove(dup_obj, do_unlink=True)
+            bpy.data.meshes.remove(dup_mesh)
+            continue
+
+        hit_tiles.append(tile)
+        if not keep:
+            bpy.data.objects.remove(dup_obj, do_unlink=True)
+            bpy.data.meshes.remove(dup_mesh)
+            continue
+
+        q, r = tile.hexfinity_tile.coord_q, tile.hexfinity_tile.coord_r
+        dup_obj.name = f"{terrain_obj.name}_q{q:02d}_r{r:02d}"
+        dup_obj.hexfinity_terrain.snap_mm = terrain_obj.hexfinity_terrain.snap_mm
+        dup_obj.hexfinity_terrain.snap_damp_mm = (
+            terrain_obj.hexfinity_terrain.snap_damp_mm)
+
+        world = dup_obj.matrix_world.copy()
+        dup_obj.parent = tile
+        dup_obj.matrix_parent_inverse = tile.matrix_world.inverted()
+        dup_obj.matrix_world = world
+
+    return hit_tiles
+
+
+class HEXFINITY_OT_split_terrain_by_hex(bpy.types.Operator):
+    bl_idname = "hexfinity.split_terrain_by_hex"
+    bl_label = "Split by Hex Boundaries"
+    bl_description = (
+        "Destructively boolean-cut this terrain object along the hex grid "
+        "so each resulting piece is parented to (and plateau-eligible on) "
+        "exactly one hex. The original object is deleted; any part of the "
+        "model that falls outside every hex tile is discarded rather than "
+        "kept as a stray piece."
+    )
+    bl_options = {'REGISTER', 'UNDO'}
+
+    _piece_count = 0
+
+    @classmethod
+    def poll(cls, context):
+        if not context.scene.hexfinity_map.is_generated:
+            return False
+        obj = context.active_object
+        return obj is not None and _is_terrain_object(obj)
+
+    def invoke(self, context, event):
+        obj = context.active_object
+        map_props = context.scene.hexfinity_map
+        candidates = _hex_split_candidates(map_props, obj)
+        if len(candidates) <= 1:
+            self.report({'INFO'}, f"{obj.name} already fits within a single "
+                        "hex — nothing to split.")
+            return {'CANCELLED'}
+
+        # Dry run: real boolean cuts, counted, then torn down immediately so
+        # nothing leaks if the user cancels the dialog below.
+        hit_tiles = _cut_terrain_by_hex(context, obj, candidates, keep=False)
+        if len(hit_tiles) <= 1:
+            self.report({'INFO'}, f"{obj.name} already fits within a single "
+                        "hex — nothing to split.")
+            return {'CANCELLED'}
+
+        self._piece_count = len(hit_tiles)
+        return context.window_manager.invoke_props_dialog(self, width=420)
+
+    def draw(self, context):
+        col = self.layout.column()
+        col.label(
+            text=f"Split into {self._piece_count} piece(s) across "
+                f"{self._piece_count} hex tile(s).", icon='MOD_BOOLEAN')
+        col.label(text="The original object will be deleted.", icon='ERROR')
+        col.label(text="Any part outside every hex tile is discarded.")
+
+    def execute(self, context):
+        obj = context.active_object
+        if obj is None or not _is_terrain_object(obj):
+            self.report({'ERROR'}, "Select a terrain object first.")
+            return {'CANCELLED'}
+        map_props = context.scene.hexfinity_map
+        source_tile = obj.parent
+        candidates = _hex_split_candidates(map_props, obj)
+
+        hit_tiles = _cut_terrain_by_hex(context, obj, candidates, keep=True)
+        if len(hit_tiles) <= 1:
+            self.report({'WARNING'}, f"{obj.name} already fits within a "
+                        "single hex — nothing was split.")
+            return {'CANCELLED'}
+
+        affected = list(hit_tiles)
+        if source_tile is not None and source_tile not in affected:
+            affected.append(source_tile)
+
+        mesh = obj.data
+        bpy.data.objects.remove(obj, do_unlink=True)
+        if mesh is not None and mesh.users == 0:
+            bpy.data.meshes.remove(mesh)
+
+        for tile in affected:
+            for key in ("hf_terrain_pads", "hf_terrain_pads_sig"):
+                if tile.get(key) is not None:
+                    del tile[key]
+            rebuild_tile(tile)
+
+        self.report({'INFO'}, f"Split into {len(hit_tiles)} piece(s) across "
+                    f"{len(hit_tiles)} hex tile(s).")
         return {'FINISHED'}
 
 

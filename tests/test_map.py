@@ -2,6 +2,7 @@ import math
 import pytest
 
 import map as hm
+from manifold_check import assert_two_manifold
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +204,68 @@ def test_edge_snap_clamped_minimum():
     pts1 = hm.edge_snap_points(100.0, 1)
     pts2 = hm.edge_snap_points(100.0, 2)
     assert len(pts0) == len(pts1) == len(pts2) == 6
+
+
+# ---------------------------------------------------------------------------
+# hex_prism_verts_faces
+
+def test_hex_prism_vertex_and_face_counts():
+    verts, faces = hm.hex_prism_verts_faces(100.0, 0.0, 10.0)
+    assert len(verts) == 12
+    assert len(faces) == 8
+
+
+def test_hex_prism_is_manifold():
+    verts, faces = hm.hex_prism_verts_faces(100.0, -5.0, 25.0)
+    assert_two_manifold(verts, faces)
+
+
+def test_hex_prism_spans_requested_z_range():
+    z_min, z_max = -3.0, 17.0
+    verts, faces = hm.hex_prism_verts_faces(100.0, z_min, z_max)
+    zs = {v[2] for v in verts}
+    assert zs == {z_min, z_max}
+
+
+def test_hex_prism_xy_matches_corner_xy():
+    diameter = 100.0
+    verts, faces = hm.hex_prism_verts_faces(diameter, 0.0, 10.0)
+    expected = {hm.corner_xy(i, diameter) for i in range(6)}
+    bottom_xy = {(v[0], v[1]) for v in verts[:6]}
+    top_xy = {(v[0], v[1]) for v in verts[6:]}
+    assert bottom_xy == expected
+    assert top_xy == expected
+
+
+def test_hex_prism_outward_normals():
+    # Each face's Newell-method normal should point away from the prism's
+    # own centroid — the boolean-tool contract this geometry exists for.
+    verts, faces = hm.hex_prism_verts_faces(100.0, 0.0, 10.0)
+    cx = sum(v[0] for v in verts) / len(verts)
+    cy = sum(v[1] for v in verts) / len(verts)
+    cz = sum(v[2] for v in verts) / len(verts)
+    centroid = (cx, cy, cz)
+
+    def face_normal_and_center(face):
+        pts = [verts[i] for i in face]
+        nx = ny = nz = 0.0
+        n = len(pts)
+        for i in range(n):
+            x1, y1, z1 = pts[i]
+            x2, y2, z2 = pts[(i + 1) % n]
+            nx += (y1 - y2) * (z1 + z2)
+            ny += (z1 - z2) * (x1 + x2)
+            nz += (x1 - x2) * (y1 + y2)
+        fc = (sum(p[0] for p in pts) / n,
+              sum(p[1] for p in pts) / n,
+              sum(p[2] for p in pts) / n)
+        return (nx, ny, nz), fc
+
+    for face in faces:
+        (nx, ny, nz), (fx, fy, fz) = face_normal_and_center(face)
+        outward = (fx - centroid[0], fy - centroid[1], fz - centroid[2])
+        dot = nx * outward[0] + ny * outward[1] + nz * outward[2]
+        assert dot > 0.0, f"face {face} normal points inward"
 
 
 # ---------------------------------------------------------------------------

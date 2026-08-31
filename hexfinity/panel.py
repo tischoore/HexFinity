@@ -98,6 +98,8 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
                 box.label(text=f"Terrain Object: {obj.name}", icon='OBJECT_DATA')
                 box.operator("hexfinity.redrop_terrain_object",
                              text="Re-drop onto hex", icon='IMPORT')
+                box.operator("hexfinity.split_terrain_by_hex",
+                             text="Split by Hex Boundaries", icon='MOD_BOOLEAN')
                 box.prop(obj.hexfinity_terrain, "snap_mm", slider=True)
                 box.prop(obj.hexfinity_terrain, "snap_damp_mm", slider=True)
                 row = box.row()

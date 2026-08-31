@@ -218,6 +218,12 @@ Because a model's footprint is rarely circular like a tree's base cut, it's tile
 
 The plateau is recomputed and cached automatically whenever the model's snap sliders change, but the cache can't see an in-place mesh edit (e.g. re-exporting the same `.stl` with different geometry at the same transform) or a move that doesn't also touch a slider. A **Regenerate Plateau** button lives in the **Terrain Objects** section for that case — on the terrain-object panel (greyed out until *Terrain snap to model* > 0) and on the tile panel's **Terrain Objects** box, alongside **Import STL** — it forces a fresh pass regardless of the cache, for every terrain object on the selected hex, and reports how many plateau pads it found (0 means the model's base isn't flat enough anywhere for the feature to activate).
 
+### Splitting an oversized terrain object across hexes
+
+A terrain object is only ever parented to (and eligible for a plateau on) the one hex it was dropped onto — the plateau/pad system never looks at neighbouring tiles, so a model that visually overhangs into them (the *"extends past the hex boundary"* warning from Import/Re-drop) never gets a plateau carved into those neighbours. **Split by Hex Boundaries**, on the dropped-object panel next to **Re-drop onto hex**, fixes this destructively: it boolean-cuts the object along the hex grid so each resulting piece is parented to (and plateau-eligible on) exactly one hex, carrying over the original's *Terrain snap to model*/*Snap damping* settings.
+
+Clicking it shows a confirmation dialog with the exact number of pieces the cut will produce before anything happens; confirming deletes the original object, replaces it with one new terrain object per hex it actually overlapped, and immediately regenerates the plateau on every affected hex. Any part of the model that falls outside every hex tile is discarded — it's simply never included in any piece, not kept as an orphaned leftover. If the object already fits within a single hex, the button reports that there's nothing to split and makes no change.
+
 ## Flora
 
 The Flora box plants real tree meshes onto a tile. A **Tree Type** dropdown (currently just "Leafy tree") selects which asset folder to plant from; **Scale Variation** sets a +/- percentage jitter around 1.0 applied to each tree; **Flatten Base** (on by default) tessellates a small flat pad into the terrain under each tree's footprint, blended smoothly back into the surrounding surface over **Pad Blend (mm)**, so a tree's flat base cut sits flush and level even on sloped ground instead of poking through on the uphill side and floating on the downhill side; **Penetration** sets a small guaranteed sink (mm) into that pad so the base doesn't z-fight or make a zero-thickness contact. Pressing **Flora** starts a modal tool: move the mouse over any generated tile and a yellow circle-with-center-dot tracks the raycast hit point live; left-click plants a tree there — a species is chosen at random from the current Tree Type's asset folder, rotated a random amount around its vertical axis, and scaled by the random variation factor. Multiple trees can be planted in one activation. While it's running, the sidebar swaps the button for a "Flora active — Esc / RMB to close" indicator (it can't be a clickable Close button — a running modal operator owns all input, so panel buttons are unreachable until you exit); right-click or `Esc` closes it and restores the button.
@@ -417,6 +423,8 @@ HexFinity
 ├─ If active object is a dropped terrain object:
 │  └─ Terrain Object: <name>
 │      ├─ [ Re-drop onto hex ]
+│      ├─ [ Split by Hex Boundaries ]  (destructive boolean cut; confirms piece
+│      │                                count first — see Terrain objects above)
 │      ├─ Terrain snap to model  (int, 0 = off; enables the plateau)
 │      ├─ Snap damping (mm)
 │      └─ [ Regenerate Plateau ]  (greyed out until Terrain snap to model > 0)

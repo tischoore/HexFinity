@@ -144,6 +144,25 @@ def point_in_hex(x, y, diameter_mm):
     return True
 
 
+def hex_prism_verts_faces(diameter_mm, z_min, z_max):
+    """Closed, 2-manifold vertical hex prism spanning [z_min, z_max]: the
+    tile-local hexagon (per `corner_xy`) extruded straight up. Used as a
+    boolean-tool solid to cut a mesh along one hex tile's boundary — see
+    `operators._cut_terrain_by_hex`.
+
+    Returns (verts, faces): 12 verts (6 bottom + 6 top, same XY per corner
+    index), 8 faces (bottom cap, top cap, 6 side quads), all outward-facing.
+    """
+    corners = [corner_xy(i, diameter_mm) for i in range(6)]
+    verts = ([(x, y, z_min) for x, y in corners]
+             + [(x, y, z_max) for x, y in corners])
+    bottom = tuple(range(6))            # winding gives outward (-Z) normal
+    top = tuple(range(11, 5, -1))       # reversed winding gives outward (+Z)
+    sides = [(i, i + 6, (i + 1) % 6 + 6, (i + 1) % 6) for i in range(6)]
+    faces = [bottom, top] + sides
+    return verts, faces
+
+
 def find_tile(scene, q, r):
     """Return the HexFinity tile Object at (q, r) in `scene`'s map, or None.
 
