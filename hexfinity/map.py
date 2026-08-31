@@ -90,6 +90,60 @@ def tile_world_xy(q, r, diameter_mm):
     return (x, y)
 
 
+def corner_xy(i, diameter_mm):
+    """Tile-local (x, y) of P-corner `i` (0=P1..5=P6), flat-top convention.
+
+    Matches the angle formula used by mesh_builder.build_hex_tile's
+    corners_xy and overlay._tile_corner_world_positions — kept here as the
+    single canonical definition for new bpy-free callers (those two sites
+    predate this helper and are left as-is, see terrain_features design)."""
+    R = diameter_mm / 2.0
+    angle = math.pi / 3.0 - i * (math.pi / 3.0)
+    return (R * math.cos(angle), R * math.sin(angle))
+
+
+def edge_snap_points(diameter_mm, edge_snap):
+    """Tile-local (x, y) snap points around the hex rim.
+
+    `edge_snap` (>= 2) is the number of evenly-spaced points per edge,
+    including both endpoints — e.g. 3 = the two P corners plus the exact
+    midpoint. Corners are shared between adjacent edges, so the returned
+    list has 6 * (edge_snap - 1) unique points, ordered corner-by-corner
+    (each corner followed by that edge's interior subdivisions before the
+    next corner)."""
+    n = max(2, edge_snap)
+    pts = []
+    for i in range(6):
+        a = corner_xy(i, diameter_mm)
+        b = corner_xy((i + 1) % 6, diameter_mm)
+        for k in range(n - 1):
+            t = k / (n - 1)
+            pts.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
+    return pts
+
+
+def point_in_hex(x, y, diameter_mm):
+    """True if tile-local (x, y) lies inside (or on the boundary of) the hex
+    with the given point-to-point diameter — a convex-polygon test over the
+    six corner_xy() points, boundary-inclusive so a click that lands exactly
+    on a P corner/rim still counts as inside."""
+    corners = [corner_xy(i, diameter_mm) for i in range(6)]
+    sign = 0
+    for i in range(6):
+        ax, ay = corners[i]
+        bx, by = corners[(i + 1) % 6]
+        cross = (bx - ax) * (y - ay) - (by - ay) * (x - ax)
+        if cross > 1e-9:
+            if sign < 0:
+                return False
+            sign = 1
+        elif cross < -1e-9:
+            if sign > 0:
+                return False
+            sign = -1
+    return True
+
+
 def find_tile(scene, q, r):
     """Return the HexFinity tile Object at (q, r) in `scene`'s map, or None.
 

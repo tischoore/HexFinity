@@ -140,6 +140,122 @@ def test_shared_corner_world_positions_coincide():
 
 
 # ---------------------------------------------------------------------------
+# corner_xy / edge_snap_points
+
+def test_corner_xy_matches_known_formula():
+    diameter = 100.0
+    R = diameter / 2.0
+    for i in range(6):
+        angle = math.pi / 3.0 - i * (math.pi / 3.0)
+        expected = (R * math.cos(angle), R * math.sin(angle))
+        got = hm.corner_xy(i, diameter)
+        assert got[0] == pytest.approx(expected[0], abs=1e-9)
+        assert got[1] == pytest.approx(expected[1], abs=1e-9)
+
+
+@pytest.mark.parametrize("edge_snap", [2, 3, 5])
+def test_edge_snap_points_count(edge_snap):
+    pts = hm.edge_snap_points(100.0, edge_snap)
+    assert len(pts) == 6 * (edge_snap - 1)
+
+
+def test_edge_snap_points_no_duplicates():
+    pts = hm.edge_snap_points(100.0, 3)
+    rounded = [(round(x, 6), round(y, 6)) for (x, y) in pts]
+    assert len(set(rounded)) == len(rounded)
+
+
+def test_edge_snap_points_includes_corners():
+    diameter = 100.0
+    edge_snap = 3
+    pts = hm.edge_snap_points(diameter, edge_snap)
+    corners = {hm.corner_xy(i, diameter) for i in range(6)}
+    rounded_pts = {(round(x, 6), round(y, 6)) for (x, y) in pts}
+    for cx, cy in corners:
+        assert (round(cx, 6), round(cy, 6)) in rounded_pts
+
+
+def test_edge_snap_points_default_has_midpoints():
+    diameter = 100.0
+    pts = hm.edge_snap_points(diameter, 3)
+    R = diameter / 2.0
+    for i in range(6):
+        a = hm.corner_xy(i, diameter)
+        b = hm.corner_xy((i + 1) % 6, diameter)
+        mid = ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
+        assert any(
+            x == pytest.approx(mid[0], abs=1e-9) and y == pytest.approx(mid[1], abs=1e-9)
+            for (x, y) in pts
+        )
+
+
+def test_edge_snap_points_radius_for_corners():
+    diameter = 100.0
+    R = diameter / 2.0
+    for i in range(6):
+        x, y = hm.corner_xy(i, diameter)
+        assert math.hypot(x, y) == pytest.approx(R, abs=1e-9)
+
+
+def test_edge_snap_clamped_minimum():
+    # edge_snap < 2 is clamped to 2 (just the two corners per edge).
+    pts0 = hm.edge_snap_points(100.0, 0)
+    pts1 = hm.edge_snap_points(100.0, 1)
+    pts2 = hm.edge_snap_points(100.0, 2)
+    assert len(pts0) == len(pts1) == len(pts2) == 6
+
+
+# ---------------------------------------------------------------------------
+# point_in_hex
+
+def test_point_in_hex_center_is_inside():
+    assert hm.point_in_hex(0.0, 0.0, 100.0)
+
+
+def test_point_in_hex_corners_are_inside():
+    diameter = 100.0
+    for i in range(6):
+        x, y = hm.corner_xy(i, diameter)
+        assert hm.point_in_hex(x, y, diameter)
+
+
+def test_point_in_hex_edge_midpoints_are_inside():
+    diameter = 100.0
+    for i in range(6):
+        a = hm.corner_xy(i, diameter)
+        b = hm.corner_xy((i + 1) % 6, diameter)
+        mid = ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
+        assert hm.point_in_hex(mid[0], mid[1], diameter)
+
+
+def test_point_in_hex_far_outside_is_false():
+    assert not hm.point_in_hex(1000.0, 1000.0, 100.0)
+
+
+def test_point_in_hex_just_past_each_edge_is_false():
+    diameter = 100.0
+    for i in range(6):
+        a = hm.corner_xy(i, diameter)
+        b = hm.corner_xy((i + 1) % 6, diameter)
+        mid = ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
+        # Push the midpoint radially outward, just past the rim.
+        length = math.hypot(mid[0], mid[1])
+        scale = (length + 1.0) / length
+        assert not hm.point_in_hex(mid[0] * scale, mid[1] * scale, diameter)
+
+
+def test_point_in_hex_just_inside_each_edge_is_true():
+    diameter = 100.0
+    for i in range(6):
+        a = hm.corner_xy(i, diameter)
+        b = hm.corner_xy((i + 1) % 6, diameter)
+        mid = ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
+        length = math.hypot(mid[0], mid[1])
+        scale = (length - 1.0) / length
+        assert hm.point_in_hex(mid[0] * scale, mid[1] * scale, diameter)
+
+
+# ---------------------------------------------------------------------------
 # find_tile (uses tiny duck-typed stand-ins so we don't need bpy)
 
 class _FakeProps:

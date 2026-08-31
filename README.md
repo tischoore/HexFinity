@@ -400,6 +400,12 @@ HexFinity
 │  │   ├─ displace: Feature / Depth / Regularity / (Direction) + resolution warning
 │  │   └─ scatter:  Min/Max Size / Density / Distribution + budget warning
 │  │                + Merge into Tile / [ Merge Boulders into Tile ]
+│  ├─ Terrain Features         (line list + Edge Snap + Draw Feature — see below)
+│  │   ├─ Edge Snap (int ≥ 2)  (snap points per hex edge, incl. both corners)
+│  │   ├─ [ Draw Feature ]     (click waypoints above the tile; snapping to a
+│  │   │                        hex-edge point or another line's waypoint ends it)
+│  │   ├─ Name + Type (Footpath / Animal Track / Gravel Road / Country Road / Paved Road)
+│  │   └─ [ Generate ]         (disabled — geometry generation is future work)
 │  └─ Terrain Brush            (Raise/Lower, Radius, Strength, Preserve Edge → Paint)
 │
 ├─ If active object is a dropped terrain object:
@@ -425,13 +431,14 @@ C:\Work\Hexfinity\
 ├─ hexfinity\
 │   ├─ __init__.py             # register / unregister (lazy bpy import)
 │   ├─ blender_manifest.toml   # extension metadata (replaces bl_info)
-│   ├─ properties.py           # HexFinityMapProperties + HexFinityProperties + surface regions
+│   ├─ properties.py           # HexFinityMapProperties + HexFinityProperties + surface regions + terrain features
 │   ├─ operators.py            # generate_map / clear_map + cascade
 │   ├─ panel.py                # HEXFINITY_PT_panel (sidebar UI, two-branch)
 │   ├─ gizmo.py                # HEXFINITY_GGT_center (centre-XY drag gizmo)
-│   ├─ overlay.py              # floating P1..P6 labels + region loops/direction
+│   ├─ overlay.py              # floating P1..P6 labels + region loops/direction + terrain feature lines
 │   ├─ brush.py                # modal terrain paint brush
 │   ├─ regions.py              # modal draw-region operator + region list UI
+│   ├─ terrain_features.py     # modal draw-feature (waypoint line) operator + feature list UI
 │   ├─ scatter.py              # bpy shell for scatter surfaces (boulder objects + merge)
 │   ├─ flora.py                # modal click-to-plant tree tool + mesh cache + overlap check + pin objects
 │   ├─ assets\
@@ -441,7 +448,7 @@ C:\Work\Hexfinity\
 │   ├─ terrain_pads.py         # pure-Python footprint-grid → circular pad tiling (no bpy)
 │   ├─ subdivision.py          # pure-Python Loop + linear-midpoint subdivision (no bpy)
 │   ├─ procedural_surfaces.py  # pure-Python surface registry + masks + scatter geometry + obb_overlap (no bpy)
-│   ├─ map.py                  # pure-Python grid math + SHARED_CORNERS table
+│   ├─ map.py                  # pure-Python grid math + SHARED_CORNERS table + edge snap points
 │   ├─ tile_export.py          # pure-Python export hashing + naming (no bpy)
 │   └─ manifold_check.py       # post-build 2-manifold verification
 └─ tests\

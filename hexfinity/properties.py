@@ -243,6 +243,24 @@ class HexFinityBrushProperties(bpy.types.PropertyGroup):
 
 
 # ---------------------------------------------------------------------------
+# Scene-level — terrain feature (waypoint line) drawing settings. Read by the
+# modal draw operator each click; no update callback (changing it never
+# rebuilds a tile — nothing downstream consumes drawn features yet).
+
+class HexFinityTerrainFeatureProperties(bpy.types.PropertyGroup):
+    edge_snap: bpy.props.IntProperty(
+        name="Edge Snap",
+        description="Number of evenly-spaced snap points per hex edge, "
+                    "including both P corners — e.g. 3 = the two corners "
+                    "plus the exact midpoint. A drawn line's waypoints snap "
+                    "to these points at the tile boundary",
+        default=3,
+        min=2,
+        soft_max=12,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Per-Object (tile) — corner levels, optional centre override, and the
 # (q, r) coordinate the tile lives at within the map.
 
@@ -479,6 +497,35 @@ class HexFinitySurfaceRegion(bpy.types.PropertyGroup):
     points: bpy.props.CollectionProperty(type=HexFinitySurfacePoint)
 
 
+# ---------------------------------------------------------------------------
+# Per-tile terrain features (waypoint lines) — footpaths/tracks/roads drawn
+# on the tile top. An open polyline (tile-local mm), reusing the same
+# HexFinitySurfacePoint type as surface regions. No update callback on
+# name/feature_type yet: nothing downstream consumes this data until the
+# (currently inert) Generate operator is implemented.
+
+class HexFinityTerrainFeature(bpy.types.PropertyGroup):
+    name: bpy.props.StringProperty(
+        name="Feature Name",
+        description="Editable label for this line. Auto-defaulted to "
+                    "\"Feature N\" when the line is drawn",
+        default="",
+    )
+    feature_type: bpy.props.EnumProperty(
+        name="Type",
+        description="What kind of terrain feature this line represents",
+        items=[
+            ('FOOTPATH', "Footpath", "A narrow foot-worn path"),
+            ('ANIMAL_TRACK', "Animal Track", "A rough trail worn by animals"),
+            ('GRAVEL_ROAD', "Gravel Road", "An unpaved gravel road"),
+            ('COUNTRY_ROAD', "Country Road", "A rural paved-or-packed road"),
+            ('PAVED_ROAD', "Paved Road", "A paved road"),
+        ],
+        default='FOOTPATH',
+    )
+    points: bpy.props.CollectionProperty(type=HexFinitySurfacePoint)
+
+
 class HexFinityProperties(bpy.types.PropertyGroup):
     is_generated: bpy.props.BoolProperty(
         name="Is Generated",
@@ -573,6 +620,12 @@ class HexFinityProperties(bpy.types.PropertyGroup):
         options={'HIDDEN'},
     )
     flora_placements: bpy.props.CollectionProperty(type=HexFinityFloraPlacement)
+    terrain_features: bpy.props.CollectionProperty(type=HexFinityTerrainFeature)
+    active_terrain_feature_index: bpy.props.IntProperty(
+        name="Active Terrain Feature",
+        default=0,
+        options={'HIDDEN'},
+    )
 
 
 # ---------------------------------------------------------------------------
