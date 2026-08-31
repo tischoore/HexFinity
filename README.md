@@ -220,7 +220,11 @@ The plateau is recomputed and cached automatically whenever the model's snap sli
 
 ### Splitting an oversized terrain object across hexes
 
-A terrain object is only ever parented to (and eligible for a plateau on) the one hex it was dropped onto — the plateau/pad system never looks at neighbouring tiles, so a model that visually overhangs into them (the *"extends past the hex boundary"* warning from Import/Re-drop) never gets a plateau carved into those neighbours. **Split by Hex Boundaries**, on the dropped-object panel next to **Re-drop onto hex**, fixes this destructively: it boolean-cuts the object along the hex grid so each resulting piece is parented to (and plateau-eligible on) exactly one hex, carrying over the original's *Terrain snap to model*/*Snap damping* settings.
+A terrain object is only ever parented to (and eligible for a plateau on) the one hex it was dropped onto — the plateau/pad system never looks at neighbouring tiles, so a model that visually overhangs into them (the *"extends past the hex boundary"* warning from Import/Re-drop) never gets a plateau carved into those neighbours. The screenshot below shows exactly this case: a bridge module spans three hex tiles but is parented to only one of them (`Minas_Morgul_Bridge_Module_q01_r00`), so only that tile's plateau responds to its footprint.
+
+![A bridge-shaped terrain object spanning three hex tiles, selected in the HexFinity terrain-object panel](docs/split_terrain_obj_by_hex_border.jpg)
+
+**Split by Hex Boundaries**, on the dropped-object panel next to **Re-drop onto hex**, fixes this destructively: it boolean-cuts the object along the hex grid so each resulting piece is parented to (and plateau-eligible on) exactly one hex, carrying over the original's *Terrain snap to model*/*Snap damping* settings.
 
 Clicking it shows a confirmation dialog with the exact number of pieces the cut will produce before anything happens; confirming deletes the original object, replaces it with one new terrain object per hex it actually overlapped, and immediately regenerates the plateau on every affected hex. Any part of the model that falls outside every hex tile is discarded — it's simply never included in any piece, not kept as an orphaned leftover. If the object already fits within a single hex, the button reports that there's nothing to split and makes no change.
 
