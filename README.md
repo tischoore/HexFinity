@@ -263,11 +263,14 @@ Multiple regions per tile are supported (e.g. a cobblestone road across a furrow
 field), each with an editable **Area Name**. Scale is driven by a map-wide
 **Man Height (mm)** reference. Surfaces come in two *kinds*:
 
-- **Displacement surfaces** — **cobblestone, gravel, plough & furrow** — baked onto
+- **Displacement surfaces** — **cobblestone, gravel, plough & furrow, uncultivated
+  plains, lake / still water, river / flowing water, creek / stream** — baked onto
   the tile top as real (printable) heightfield geometry. The look of cobbles/gravel
-  comes from jittered Voronoi cells (a **Regularity** knob). Because the surface is a
-  heightfield, detail is bounded by the top-vertex spacing — the panel warns when a
-  feature is too fine for the current subdivision.
+  comes from jittered Voronoi cells (a **Regularity** knob); river/creek reuse the
+  same directional convention as plough & furrow, with a **Direction (deg)** field
+  and a direction arrow overlay. Because the surface is a heightfield, detail is
+  bounded by the top-vertex spacing — the panel warns when a feature is too fine
+  for the current subdivision.
 - **Scatter surfaces** — **Boulder Field** — place *distinct objects* across the
   region **without changing the tile surface**. Boulders are noise-deformed
   icospheres, joined into one mesh `Boulders_<Area Name>` parented under the tile and

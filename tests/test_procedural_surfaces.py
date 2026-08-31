@@ -144,11 +144,26 @@ def test_furrow_is_constant_along_its_direction():
 
 def test_isotropic_surfaces_ignore_direction():
     kw = dict(feature_mm=20.0, depth_mm=2.0, regularity=0.5, seed=4)
-    for stype in ("COBBLESTONE", "GRAVEL"):
+    for stype in ("COBBLESTONE", "GRAVEL", "LAKE_WATER"):
         a = ps.surface_offset(7.0, 3.0, surface_type=stype, direction_rad=0.0, **kw)
         b = ps.surface_offset(7.0, 3.0, surface_type=stype,
                               direction_rad=1.3, **kw)
         assert a == b
+
+
+def test_river_and_creek_water_are_anisotropic():
+    # Flowing-water surfaces must actually orient to direction_rad — changing
+    # it at a fixed point changes the pattern (unlike the isotropic surfaces
+    # above). Unlike Furrow, these aren't exactly constant along their own
+    # flow direction (the streak/turbulence texture varies along-flow too by
+    # design), so the right invariant here is "direction matters", not
+    # "value is frozen along one axis".
+    kw = dict(feature_mm=20.0, depth_mm=2.0, regularity=0.5, seed=4)
+    for stype in ("RIVER_WATER", "CREEK_WATER"):
+        a = ps.surface_offset(7.0, 3.0, surface_type=stype, direction_rad=0.0, **kw)
+        b = ps.surface_offset(7.0, 3.0, surface_type=stype,
+                              direction_rad=1.3, **kw)
+        assert a != b
 
 
 # ---------------------------------------------------------------------------

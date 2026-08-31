@@ -174,6 +174,76 @@ def _plains(x, y, *, feature_mm, depth_mm, regularity, seed, direction_rad=0.0, 
     return (total / norm) * depth_mm
 
 
+def _lake_water(x, y, *, feature_mm, depth_mm, regularity, seed, direction_rad=0.0, **_):
+    """Calm standing water: interference of several plane waves at different
+    angles/phases (a lightweight stand-in for a Gerstner-wave sum). `regularity`
+    (0..1) narrows the angle/frequency spread: 1 -> evenly-spaced parallel swell,
+    0 -> chaotic wind-chopped interference. Isotropic — ignores `direction_rad`."""
+    pitch = max(feature_mm, 1e-6)
+    k = 2.0 * math.pi / pitch
+    n = 5
+    chop = 1.0 - max(0.0, min(regularity, 1.0))
+    total = 0.0
+    weight_sum = 0.0
+    for i in range(n):
+        base_angle = i * math.pi / n
+        angle = base_angle + (_hash01(i, 0, seed) - 0.5) * chop * math.pi
+        freq = 1.0 + (_hash01(i, 1, seed) - 0.5) * chop
+        phase = _hash01(i, 2, seed) * 2.0 * math.pi
+        weight = 1.0 / (i + 1)
+        c, s = math.cos(angle), math.sin(angle)
+        total += weight * math.sin((c * x + s * y) * k * freq + phase)
+        weight_sum += weight
+    return (total / weight_sum) * depth_mm
+
+
+def _river_water(x, y, *, feature_mm, depth_mm, regularity, seed, direction_rad=0.0, **_):
+    """Flowing water in a wide channel: cross-flow ripple bands (like Furrow)
+    blended with elongated current streaks (Worley cells stretched along the
+    flow). `regularity` straightens the ripple wander, same convention as
+    Furrow. Anisotropic — ridges/streaks run ALONG `direction_rad`."""
+    pitch = max(feature_mm, 1e-6)
+    c, s = math.cos(direction_rad), math.sin(direction_rad)
+    along = c * x + s * y
+    across = -s * x + c * y
+    reg = max(0.0, min(regularity, 1.0))
+
+    wander = (_hash01(int(along // (pitch * 6)), 0, seed) - 0.5)
+    wander *= (1.0 - reg) * pitch * 0.6
+    ripple = math.sin((across + wander) / pitch * 2.0 * math.pi)
+
+    stretch = 4.0
+    f1, f2, _ = _worley(along / stretch, across, pitch, 0.6, seed ^ 0x517CC1B7)
+    streak = 2.0 * _smoothstep((f2 - f1) / (0.3 * pitch)) - 1.0
+
+    return (0.65 * ripple + 0.35 * streak) * depth_mm
+
+
+def _creek_water(x, y, *, feature_mm, depth_mm, regularity, seed, direction_rad=0.0, **_):
+    """Narrow, turbulent flowing water: fractal value-noise (as Plains) evaluated
+    in the flow-aligned frame with the along-flow frequency compressed, so
+    turbulence streaks trail downstream instead of scattering isotropically.
+    `regularity` sets octave persistence, same convention as Plains.
+    Anisotropic — turbulence elongates ALONG `direction_rad`."""
+    pitch = max(feature_mm, 1e-6)
+    c, s = math.cos(direction_rad), math.sin(direction_rad)
+    along = c * x + s * y
+    across = -s * x + c * y
+    persistence = 0.65 - 0.45 * max(0.0, min(regularity, 1.0))
+    elongation = 3.0
+    amp = 1.0
+    freq = 1.0
+    total = 0.0
+    norm = 0.0
+    for octave in range(4):
+        total += amp * _value_noise(along * freq / elongation, across * freq,
+                                    pitch, seed ^ (octave * 0x1000193))
+        norm += amp
+        amp *= persistence
+        freq *= 2.0
+    return (total / norm) * depth_mm
+
+
 # ---------------------------------------------------------------------------
 # Scatter surfaces — a SECOND fundamental kind of parametric surface. Where a
 # `displace` surface returns a per-point Z offset (above), a `scatter` surface
@@ -483,6 +553,20 @@ SURFACES = {
                 "Gentle rolling fractal noise for natural grassland/plains ground",
                 reference_mm=900.0, generator=_plains,
                 default_depth_mm=2.0, default_regularity=0.4),
+        Surface("LAKE_WATER", "Lake / Still Water",
+                "Gentle interference ripples for calm standing water",
+                reference_mm=150.0, generator=_lake_water,
+                default_depth_mm=1.0, default_regularity=0.7),
+        Surface("RIVER_WATER", "River / Flowing Water",
+                "Directional current ripples with elongated streak texture",
+                reference_mm=300.0, generator=_river_water,
+                default_depth_mm=1.5, default_regularity=0.5,
+                uses_direction=True),
+        Surface("CREEK_WATER", "Creek / Stream",
+                "Narrow, turbulent flowing water — choppier than a river",
+                reference_mm=100.0, generator=_creek_water,
+                default_depth_mm=1.2, default_regularity=0.35,
+                uses_direction=True),
         Surface("BOULDERS", "Boulder Field",
                 "Scattered boulder objects across a range of sizes "
                 "(does not change the tile surface)",

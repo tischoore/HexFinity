@@ -57,6 +57,9 @@ feature_mm = reference_mm · man_height_mm / 1800     (1800 mm ≈ a real human)
 | Gravel       | 30 mm                | ~0.5 mm        |
 | Plough/furrow| 700 mm (pitch)       | ~10.9 mm       |
 | Uncultivated Plains | 900 mm (dominant wavelength) | ~14.0 mm |
+| Lake / Still Water | 150 mm (ripple wavelength) | ~2.3 mm  |
+| River / Flowing Water | 300 mm (ripple/streak pitch) | ~4.7 mm |
+| Creek / Stream | 100 mm (turbulence pitch) | ~1.6 mm |
 
 The auto-filled value is just a starting point — every region's **Feature Size**,
 **Depth**, **Regularity**, **Direction**, and **Edge Blend** stay editable.
@@ -126,4 +129,8 @@ entry is usable both as a Draw Area region type and — since Surface Texture is
 just the same registry through the whole-tile-region mechanism — as a Surface
 Texture base layer, with no extra wiring either way. Planned additions: **Tiles**
 (regular Voronoi, sharp edges) and **Cracked** (irregular Voronoi edges carved as
-valleys); a future **Water** base layer would likely live in Surface Texture too.
+valleys). **Lake / Still Water**, **River / Flowing Water**, and **Creek /
+Stream** now exist as water surfaces — Lake is isotropic interference ripples,
+River and Creek are directional (like Furrow) and follow a **Direction (deg)**
+you set. Any of the three works as a Surface Texture base layer or a drawn
+Draw Area region, same as every other surface.
