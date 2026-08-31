@@ -290,18 +290,20 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         box.label(text="Surface Texture", icon='MOD_NOISE')
         reg = tile.surface_texture
         box.prop(reg, "surface_type", text="")
-        if reg.surface_type == 'NONE':
-            return
-        from . import procedural_surfaces as ps
-        surf = ps.SURFACES.get(reg.surface_type)
-        if surf is None:
-            return
-        sub = box.column(align=True)
-        if surf.kind == 'scatter':
-            HEXFINITY_PT_panel._draw_scatter_params(box, reg, surf, map_props)
-            return
-        HEXFINITY_PT_panel._draw_displacement_params(
-            box, sub, reg, surf, map_props, tile, show_mask_falloff=False)
+        if reg.surface_type != 'NONE':
+            from . import procedural_surfaces as ps
+            surf = ps.SURFACES.get(reg.surface_type)
+            if surf is not None:
+                sub = box.column(align=True)
+                if surf.kind == 'scatter':
+                    HEXFINITY_PT_panel._draw_scatter_params(box, reg, surf, map_props)
+                else:
+                    HEXFINITY_PT_panel._draw_displacement_params(
+                        box, sub, reg, surf, map_props, tile, show_mask_falloff=False)
+
+        row = box.row(align=True)
+        row.operator("hexfinity.copy_surface_texture", text="Copy Settings", icon='COPYDOWN')
+        row.operator("hexfinity.apply_surface_texture", text="Apply", icon='PASTEDOWN')
 
     @staticmethod
     def _draw_path_features(context, layout, scene, tile):

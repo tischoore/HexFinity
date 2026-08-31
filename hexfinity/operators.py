@@ -45,6 +45,17 @@ _MULTI_APPLYING = False
 _ACTIVE_SNAPSHOT = None
 _ACTIVE_SNAPSHOT_KEY = None
 
+# Session-only clipboard for the Surface Texture "Copy Settings"/"Apply"
+# buttons (panel.py). Plain module global, not scene data — cleared on addon
+# reload / .blend reopen by design, matching _ACTIVE_SNAPSHOT above.
+# None = nothing copied yet; HEXFINITY_OT_apply_surface_texture.poll() gates
+# on this to grey the Apply button out until a copy has happened.
+_SURFACE_TEXTURE_FIELDS = (
+    "surface_type", "feature_mm", "depth_mm", "regularity", "direction_deg",
+    "mask_falloff_mm", "param0", "param1", "param2", "param3", "scatter_merge",
+)
+_SURFACE_TEXTURE_CLIPBOARD = None
+
 
 def _corner_levels(obj):
     """Return the (p1..p6) tuple for a tile object."""
@@ -1473,3 +1484,74 @@ class HEXFINITY_OT_export_tiles(bpy.types.Operator):
         with open(os.path.join(out_dir, "flora_manifest.json"), "w",
                   encoding="utf-8") as fh:
             json.dump(rows, fh, indent=2)
+
+
+class HEXFINITY_OT_copy_surface_texture(bpy.types.Operator):
+    bl_idname = "hexfinity.copy_surface_texture"
+    bl_label = "Copy Settings"
+    bl_description = ("Copy the active tile's Surface Texture settings "
+                      "(surface type, feature/depth/regularity/direction, "
+                      "edge blend, and its extra params) into a session-only "
+                      "clipboard for Apply")
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return obj is not None and obj.hexfinity_tile.is_generated
+
+    def execute(self, context):
+        global _SURFACE_TEXTURE_CLIPBOARD
+        reg = context.active_object.hexfinity_tile.surface_texture
+        _SURFACE_TEXTURE_CLIPBOARD = {
+            f: getattr(reg, f) for f in _SURFACE_TEXTURE_FIELDS
+        }
+        self.report({'INFO'}, f"Copied Surface Texture ({reg.surface_type})")
+        return {'FINISHED'}
+
+
+class HEXFINITY_OT_apply_surface_texture(bpy.types.Operator):
+    bl_idname = "hexfinity.apply_surface_texture"
+    bl_label = "Apply"
+    bl_description = ("Paste the copied Surface Texture settings onto the "
+                      "active tile and every other selected tile (absolute "
+                      "overwrite, not a delta). Disabled until something has "
+                      "been copied via Copy Settings this session")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        if _SURFACE_TEXTURE_CLIPBOARD is None:
+            return False
+        obj = context.active_object
+        return obj is not None and obj.hexfinity_tile.is_generated
+
+    def execute(self, context):
+        clip = _SURFACE_TEXTURE_CLIPBOARD
+        active = context.active_object
+        targets = [active] + _selected_other_tiles(active)
+
+        from . import properties
+
+        for o in targets:
+            reg = o.hexfinity_tile.surface_texture
+            # Assigning surface_type always fires _on_region_type_update's own
+            # rebuild-once-with-registry-defaults, regardless of any guard we
+            # set beforehand (it resets the guard to False itself before
+            # calling back out) — so let that transient rebuild happen, then
+            # overwrite the type-defaulted fields with the actually-copied
+            # values under our own guard before doing the authoritative
+            # rebuild. See properties._on_region_type_update.
+            reg.surface_type = clip["surface_type"]
+            properties._REGION_FILLING = True
+            try:
+                for f in _SURFACE_TEXTURE_FIELDS:
+                    if f == "surface_type":
+                        continue
+                    setattr(reg, f, clip[f])
+            finally:
+                properties._REGION_FILLING = False
+            rebuild_tile(o)
+
+        self.report({'INFO'}, f"Applied Surface Texture to {len(targets)} tile(s)")
+        return {'FINISHED'}

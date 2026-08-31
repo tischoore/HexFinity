@@ -27,6 +27,8 @@ def _classes():
         operators.HEXFINITY_OT_redrop_terrain_object,
         operators.HEXFINITY_OT_generate_terrain_plateau,
         operators.HEXFINITY_OT_export_tiles,
+        operators.HEXFINITY_OT_copy_surface_texture,
+        operators.HEXFINITY_OT_apply_surface_texture,
         brush.HEXFINITY_OT_paint_brush,
         flora.HEXFINITY_OT_flora_marker,
         flora.HEXFINITY_OT_finalize_flora,
