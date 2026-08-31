@@ -14,8 +14,7 @@ from .map import (SHARED_CORNERS, neighbour_coord, tile_world_xy, find_tile,
                   clamp_level)
 from .tile_export import (is_custom_tile, manifest_rows, short_hash,
                           tile_filename, tile_geometry_hash,
-                          flora_tree_filename, flora_pin_filename,
-                          flora_manifest_rows)
+                          flora_placement_filename, flora_manifest_rows)
 
 
 # Re-entrancy guard: writing clamped XY back to a tile's property group
@@ -1143,12 +1142,13 @@ class HEXFINITY_OT_export_tiles(bpy.types.Operator):
     bl_label = "Export Tiles to STL"
     bl_description = ("Export every distinct hex tile (including its parented "
                       "terrain objects, but not planted trees) to an "
-                      "individual STL file, plus two more STLs per finalized "
-                      "planted tree — the tree and its pin as separate parts, "
-                      "flipped as one rigid body so the tree's own base (not "
-                      "the pin's tip) sits on the print bed. Identical tiles "
-                      "collapse to one file; manifest.csv/flora_manifest.csv "
-                      "map coordinates to the files they use.")
+                      "individual STL file, plus one more STL per finalized "
+                      "planted tree — the tree and its pin merged into a "
+                      "single file, flipped as one rigid body so the tree's "
+                      "own base (not the pin's tip) sits on the print bed. "
+                      "Identical tiles collapse to one file; "
+                      "manifest.csv/flora_manifest.csv map coordinates to "
+                      "the files they use.")
     bl_options = {'REGISTER'}
 
     # Populated by the file browser (fileselect_add, DIR_PATH mode).
@@ -1256,15 +1256,14 @@ class HEXFINITY_OT_export_tiles(bpy.types.Operator):
                 records.append({"q": tp.coord_q, "r": tp.coord_r,
                                 "file": fname, "custom": custom})
 
-                # Planted trees export as their own tree STL and pin STL,
-                # separate from the tile and from each other — that's the
-                # whole point of the pin/socket interlock: two independently
-                # printed parts assembled by hand. A pin is parented to its
-                # own tree (see
-                # `flora.sync_flora`), not the tile, so it's found via the
-                # tree's own children. Only placements with a matching pin
-                # (i.e. flora was finalized) are exportable; the rest are
-                # silently skipped here and rolled into one warning below.
+                # Planted trees export as their own STL, separate from the
+                # tile — that's the whole point of the pin/socket interlock:
+                # an independently printed part assembled by hand. A pin is
+                # parented to its own tree (see `flora.sync_flora`), not the
+                # tile, so it's found via the tree's own children. Only
+                # placements with a matching pin (i.e. flora was finalized)
+                # are exportable; the rest are silently skipped here and
+                # rolled into one warning below.
                 tree_objs = {c[flora.FLORA_PLACEMENT_INDEX]: c
                             for c in tile.children if c.get(flora.FLORA_OF)}
                 unfinalized_here = False
@@ -1276,17 +1275,14 @@ class HEXFINITY_OT_export_tiles(bpy.types.Operator):
                         unfinalized_here = True
                         continue
 
-                    tree_fname = flora_tree_filename(tp.coord_q, tp.coord_r, idx)
-                    pin_fname = flora_pin_filename(tp.coord_q, tp.coord_r, idx)
+                    fname = flora_placement_filename(tp.coord_q, tp.coord_r, idx)
                     self._export_flora_pair(
                         context, depsgraph, tree_obj, pin_obj,
-                        os.path.join(out_dir, tree_fname),
-                        os.path.join(out_dir, pin_fname))
+                        os.path.join(out_dir, fname))
                     flora_written += 1
 
                     flora_records.append({"q": tp.coord_q, "r": tp.coord_r,
-                                          "index": idx, "tree_file": tree_fname,
-                                          "pin_file": pin_fname})
+                                          "index": idx, "file": fname})
                 if unfinalized_here:
                     unfinalized_tiles += 1
         finally:
@@ -1307,8 +1303,8 @@ class HEXFINITY_OT_export_tiles(bpy.types.Operator):
                 f"finalized pin — run Finalize Flora first to export them.")
         self.report({'INFO'},
                     f"Exported {written} unique tile STL(s) and "
-                    f"{flora_written} planted tree(s) (tree+pin STL each) "
-                    f"from {len(tiles)} tile(s) to {out_dir}")
+                    f"{flora_written} planted tree(s) (tree+pin merged into "
+                    f"one STL each) from {len(tiles)} tile(s) to {out_dir}")
         return {'FINISHED'}
 
     @staticmethod
@@ -1342,15 +1338,18 @@ class HEXFINITY_OT_export_tiles(bpy.types.Operator):
             context.view_layer.update()
 
     @staticmethod
-    def _export_flora_pair(context, depsgraph, tree_obj, pin_obj,
-                           tree_path, pin_path):
-        """Export a planted tree and its paired pin as two separate STLs.
+    def _export_flora_pair(context, depsgraph, tree_obj, pin_obj, path):
+        """Export a planted tree and its paired pin merged into one STL.
 
         The pin is parented to the tree (`flora.sync_flora`) with a fixed
         local offset/rotation/scale, so rotating/moving only `tree_obj`
         carries the pin along rigidly, unchanged relative to it — the two
-        parts are flipped and anchored as a single rigid body, then each is
-        selected and exported on its own so they print as separate parts.
+        parts are flipped and anchored as a single rigid body, then both are
+        selected together and exported in one `wm.stl_export` call. STL has
+        no object concept (see `_export_objects`), so the two meshes merge
+        into one triangle soup — no boolean/topology fusion, just two
+        disjoint shells sharing a file, printable exactly as they were as
+        separate files.
 
         As-authored (tree upright, pin hanging from the tree's base down into
         the tile's socket), the pin's tip is always the combined part's
@@ -1386,15 +1385,14 @@ class HEXFINITY_OT_export_tiles(bpy.types.Operator):
             tree_obj.location.z -= min_z
             context.view_layer.update()
 
-            for obj, path in ((tree_obj, tree_path), (pin_obj, pin_path)):
-                obj.select_set(True)
-                context.view_layer.objects.active = obj
-                bpy.ops.wm.stl_export(
-                    filepath=path,
-                    export_selected_objects=True,
-                    apply_modifiers=True,
-                )
-                obj.select_set(False)
+            tree_obj.select_set(True)
+            pin_obj.select_set(True)
+            context.view_layer.objects.active = tree_obj
+            bpy.ops.wm.stl_export(
+                filepath=path,
+                export_selected_objects=True,
+                apply_modifiers=True,
+            )
         finally:
             tree_obj.select_set(False)
             pin_obj.select_set(False)
@@ -1418,13 +1416,13 @@ class HEXFINITY_OT_export_tiles(bpy.types.Operator):
     @staticmethod
     def _write_flora_manifest(out_dir, records):
         """Write flora_manifest.csv and flora_manifest.json mapping each
-        planted tree's (coordinate, placement index) to its tree and pin
-        STL files."""
+        planted tree's (coordinate, placement index) to its merged
+        tree+pin STL file."""
         rows = flora_manifest_rows(records)
         with open(os.path.join(out_dir, "flora_manifest.csv"), "w",
                   newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(
-                fh, fieldnames=["q", "r", "index", "tree_file", "pin_file"])
+                fh, fieldnames=["q", "r", "index", "file"])
             writer.writeheader()
             writer.writerows(rows)
         with open(os.path.join(out_dir, "flora_manifest.json"), "w",

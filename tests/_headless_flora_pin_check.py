@@ -2,8 +2,8 @@
 plant a tree, and exercise the pin/notch interlock end to end — including the
 "only exists right after finalize" contract, the pin being a CHILD of its
 tree (not a sibling under the tile), the tree/pin NOT sinking into the socket
-after finalizing (the bug this check exists to catch), and the separate STL
-export path.
+after finalizing (the bug this check exists to catch), and the merged
+tree+pin STL export path.
 Run with:
     blender --background --python tests/_headless_flora_pin_check.py
 Exits non-zero on failure (raises) so it can gate CI / manual checks.
@@ -181,9 +181,11 @@ print("unrelated rebuild: pin/notch gone again, verts back to", after_verts)
 operators.rebuild_tile(tile, finalize_flora=True)
 tree_obj, pin_obj = _tree_and_pin(tile)
 
-# ---- Export: tile STL excludes tree/pin geometry, tree and pin export as --
-# two separate STLs sharing the tile's hex_qNN_rNN naming, and their combined
-# lowest point sits at z=0 (not at the tree's arbitrary local mesh origin). -
+# ---- Export: tile STL excludes tree/pin geometry; tree and pin export --
+# merged into one STL sharing the tile's hex_qNN_rNN naming (two disjoint,
+# unwelded shells in one triangle soup — no boolean union), and their
+# combined lowest point sits at z=0 (not at the tree's arbitrary local mesh
+# origin). -
 out_dir = tempfile.mkdtemp(prefix="hf_flora_pin_export_")
 try:
     res = bpy.ops.hexfinity.export_tiles(
@@ -193,15 +195,13 @@ try:
     files = os.listdir(export_dir)
     tile_stls = [f for f in files
                 if f.startswith("hex_") and f.endswith(".stl") and "_tree" not in f]
-    tree_stls = [f for f in files
-                if f.startswith("hex_") and "_tree" in f and not f.endswith("_pin.stl")]
-    pin_stls = [f for f in files if f.endswith("_pin.stl")]
+    tree_stls = [f for f in files if f.startswith("hex_") and "_tree" in f]
     assert len(tile_stls) == 1, files
     assert len(tree_stls) == 1, files
-    assert len(pin_stls) == 1, files
+    assert not any(f.endswith("_pin.stl") for f in files), (
+        "tree and pin must be merged into one file, not exported separately", files)
     assert "flora_manifest.csv" in files, files
-    print("export: tile STL =", tile_stls[0], " tree STL =", tree_stls[0],
-         " pin STL =", pin_stls[0])
+    print("export: tile STL =", tile_stls[0], " tree+pin STL =", tree_stls[0])
 
     def _import_mesh(path):
         before = set(scene.objects)
@@ -214,11 +214,49 @@ try:
         bpy.data.objects.remove(obj, do_unlink=True)
         return tri_count, min(zs), max(zs)
 
+    def _import_and_split_loose_parts(path):
+        """Import a merged tree+pin STL and split its unwelded shells apart
+        by connectivity, so the pin's own stats can be checked separately
+        from the tree's — the merge is a plain triangle-soup union (see
+        `_export_flora_pair`), so the tree and pin never share a vertex.
+        The tree asset itself may be more than one loose part (disjoint
+        foliage clusters), so this doesn't assume exactly two parts: the
+        smallest part by triangle count is the pin (a plain 12-gon
+        cylinder, far simpler than any tree geometry), everything else is
+        pooled as "the tree"."""
+        before = set(scene.objects)
+        bpy.ops.wm.stl_import(filepath=path)
+        imported = [o for o in scene.objects if o not in before]
+        assert len(imported) == 1, imported
+        obj = imported[0]
+        bpy.context.view_layer.objects.active = obj
+        obj.select_set(True)
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_all(action='SELECT')
+        bpy.ops.mesh.separate(type='LOOSE')
+        bpy.ops.object.mode_set(mode='OBJECT')
+        parts = [o for o in scene.objects if o not in before]
+        assert len(parts) >= 2, (
+            "expected at least two disjoint shells (tree, pin)", parts)
+        stats = []
+        for p in parts:
+            tri_count = len(p.data.polygons)
+            zs = [v.co.z for v in p.data.vertices]
+            stats.append((tri_count, min(zs), max(zs)))
+            bpy.data.objects.remove(p, do_unlink=True)
+        stats.sort(key=lambda s: s[0])
+        pin_export_tris, pin_min_z, pin_max_z = stats[0]
+        tree_parts = stats[1:]
+        tree_export_tris = sum(s[0] for s in tree_parts)
+        tree_min_z = min(s[1] for s in tree_parts)
+        tree_max_z = max(s[2] for s in tree_parts)
+        return (tree_export_tris, tree_min_z, tree_max_z,
+                pin_export_tris, pin_min_z, pin_max_z)
+
     tile_export_tris, _, _ = _import_mesh(os.path.join(export_dir, tile_stls[0]))
-    tree_export_tris, tree_min_z, tree_max_z = _import_mesh(
+    (tree_export_tris, tree_min_z, tree_max_z,
+     pin_export_tris, pin_min_z, pin_max_z) = _import_and_split_loose_parts(
         os.path.join(export_dir, tree_stls[0]))
-    pin_export_tris, pin_min_z, pin_max_z = _import_mesh(
-        os.path.join(export_dir, pin_stls[0]))
 
     # Baseline: export the tile object ALONE (no children at all) through
     # the same STL exporter/triangulation, independent of the real operator's

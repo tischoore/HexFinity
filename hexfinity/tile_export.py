@@ -111,8 +111,8 @@ def tile_filename(q, r, custom, short):
     return f"{stem}.stl"
 
 
-def flora_tree_filename(q, r, index):
-    """STL filename for one planted tree (pin exported separately).
+def flora_placement_filename(q, r, index):
+    """STL filename for one planted tree, tree and pin merged into one file.
 
     Shares the `hex_qNN_rNN` stem used by `tile_filename` (instead of the old
     `flora_` prefix) so a tile's own STL and its trees' STLs sort together in
@@ -123,27 +123,21 @@ def flora_tree_filename(q, r, index):
     return f"hex_q{q:02d}_r{r:02d}_tree{index:02d}.stl"
 
 
-def flora_pin_filename(q, r, index):
-    """STL filename for one planted tree's pin — see `flora_tree_filename`."""
-    return f"hex_q{q:02d}_r{r:02d}_tree{index:02d}_pin.stl"
-
-
 def flora_manifest_rows(records):
     """Normalize flora export records into serializable manifest rows.
 
-    `records` is an iterable of dicts with ``q``, ``r``, ``index``,
-    ``tree_file`` and ``pin_file`` keys — one row per placement, both of its
-    exported files. Kept as its own schema rather than overloading
-    `manifest_rows`, since every flora row means something slightly different
-    from a tile row. Sorted by (q, r, index) for a stable, diffable manifest.
+    `records` is an iterable of dicts with ``q``, ``r``, ``index`` and
+    ``file`` keys — one row per placement. Kept as its own schema rather than
+    overloading `manifest_rows`, since every flora row means something
+    slightly different from a tile row. Sorted by (q, r, index) for a
+    stable, diffable manifest.
     """
     rows = [
         {
             "q": int(rec["q"]),
             "r": int(rec["r"]),
             "index": int(rec["index"]),
-            "tree_file": str(rec["tree_file"]),
-            "pin_file": str(rec["pin_file"]),
+            "file": str(rec["file"]),
         }
         for rec in records
     ]

@@ -239,7 +239,7 @@ Cutting a real socket is too expensive to do on every interactive rebuild, so it
 
 The pin is **parented to its own tree** (not a loose sibling under the tile), counter-scaled so it stays exactly `FLORA_PIN_DIAMETER_MM` regardless of that tree's own random scale — it moves as one unit with the tree and shows up nested under it in the Outliner. Seating uses the exact pre-drill pad height rather than a raycast (which, once a socket exists, would otherwise hit the socket floor instead of the surrounding surface) — the tree and pin sit flush on top, with the pin and socket both hidden inside the print.
 
-*Export Tiles to STL* then writes each finalized tree and its pin as **two separate** STL files (`hex_qNN_rNN_treeII.stl` / `..._pin.stl`), separate from the tile (which keeps the socket baked into its own mesh). The pair is flipped 180° as one rigid body before export so the canopy tip — not the pin's thin tip — sits on the print bed, with the pin (parented to the tree, so it's carried along by the same rotation) pointing up; a tile with unfinalized trees warns instead of exporting mismatched parts.
+*Export Tiles to STL* then writes each finalized tree and its pin merged into **one** STL file (`hex_qNN_rNN_treeII.stl`), separate from the tile (which keeps the socket baked into its own mesh). The pair is flipped 180° as one rigid body before export so the canopy tip — not the pin's thin tip — sits on the print bed, with the pin (parented to the tree, so it's carried along by the same rotation) pointing up; a tile with unfinalized trees warns instead of exporting mismatched parts.
 
 See **[docs/flora.md](docs/flora.md)** for the mesh caching, the overlap algorithm, the pin/notch cut algorithm, and the manual checklist.
 
@@ -278,11 +278,11 @@ file per **distinct** hex tile into a folder you choose. Each file contains the 
 *and its terrain objects and scatter boulders* — merged into the same STL (STL is
 just triangles, so no boolean union is performed). Each tile is centered at
 the origin in its file so it drops straight onto a printer bed. Planted trees are
-**not** included — each finalized tree exports as two separate STLs (tree and
-pin), flipped together as one rigid body so the pin prints pointing up rather
-than on its own thin tip, so the pair can be printed and assembled separately
-(see [Pin/notch interlock](#pinnotch-interlock)); a tile with unfinalized trees
-warns instead of exporting mismatched parts.
+**not** included — each finalized tree exports as its own STL containing both
+the tree and its pin (merged the same triangle-soup way, no boolean union),
+flipped together as one rigid body so the pin prints pointing up rather
+than on its own thin tip (see [Pin/notch interlock](#pinnotch-interlock));
+a tile with unfinalized trees warns instead of exporting mismatched parts.
 
 **Dedup & naming.** Identical tiles collapse to a single file, so you only slice each
 distinct tile once:
@@ -299,8 +299,8 @@ distinct tile once:
 `manifest.json` mapping every `(q, r)` coordinate to the file it uses, so you can
 place printed tiles correctly even after duplicates were merged away. A second
 `flora_manifest.csv`/`.json` maps each `(q, r, placement index)` to its
-`tree_file`/`pin_file` pair the same way. Unlike tiles, flora files are never
-deduped — every placement gets its own uniquely-named pair.
+merged tree+pin `file` the same way. Unlike tiles, flora files are never
+deduped — every placement gets its own uniquely-named file.
 
 See **[docs/export.md](docs/export.md)** for the dedup contract and manifest format.
 
