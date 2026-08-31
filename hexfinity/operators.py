@@ -190,6 +190,9 @@ def rebuild_tile(obj, finalize_flora=False):
         notch_heights = {} if finalize_flora else None
         terrain_pads = terrain_pad_specs(obj)
 
+        from . import path_features
+        path_feature_specs = path_features.path_specs(obj)
+
         verts, faces = build_hex_tile(
             diameter_mm=map_props.diameter_mm,
             level_height_mm=map_props.level_height_mm,
@@ -211,6 +214,7 @@ def rebuild_tile(obj, finalize_flora=False):
             flora_notch_ok_indices=notch_ok_indices,
             flora_notch_heights=notch_heights,
             terrain_pads=terrain_pads,
+            path_features=path_feature_specs,
         )
         assert_two_manifold(verts, faces)
         if notch_warnings:

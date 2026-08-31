@@ -96,7 +96,7 @@ def corner_xy(i, diameter_mm):
     Matches the angle formula used by mesh_builder.build_hex_tile's
     corners_xy and overlay._tile_corner_world_positions — kept here as the
     single canonical definition for new bpy-free callers (those two sites
-    predate this helper and are left as-is, see terrain_features design)."""
+    predate this helper and are left as-is, see path_features design)."""
     R = diameter_mm / 2.0
     angle = math.pi / 3.0 - i * (math.pi / 3.0)
     return (R * math.cos(angle), R * math.sin(angle))

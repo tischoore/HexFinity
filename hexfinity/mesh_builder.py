@@ -212,6 +212,7 @@ def build_hex_tile(
     flora_notch_ok_indices=None,
     flora_notch_heights=None,
     terrain_pads=None,
+    path_features=None,
 ):
     """Build a single HexFinity tile.
 
@@ -278,6 +279,16 @@ def build_hex_tile(
     either kind sample their targets from the same pre-flatten surface — two
     sequential calls would let one kind's flattening bake in before the
     other samples, double-blending where footprints overlap.
+
+    `path_features`, when given, is a list of `{"points", "width_mm",
+    "depth_mm", "blend_mm", "repeat_mm", "pixels", "tex_width",
+    "tex_height"}` dicts (tile-local mm) — one per drawn path feature line.
+    Applied via `tree_pads.refine_and_displace_along_path`, strictly after
+    the merged `flora_pads`/`terrain_pads` flatten pass and before
+    `flora_notches`, so a path carves into whatever landform/pad flattening
+    already produced (the topmost layer in the user-facing Water/Land/Draw
+    Area/Path Feature stack). New vertices are appended after the existing
+    prefix, same contract as `flora_pads`/`terrain_pads`.
     """
     if diameter_mm <= 0:
         raise ValueError(f"diameter_mm must be positive, got {diameter_mm}")
@@ -471,6 +482,14 @@ def build_hex_tile(
             import tree_pads
         top_faces = tree_pads.refine_and_flatten(
             verts_mm, top_faces, protected_edges, combined_pads,
+            diameter_mm, base_thickness_mm)
+    if path_features:
+        try:
+            from . import tree_pads
+        except ImportError:
+            import tree_pads
+        top_faces = tree_pads.refine_and_displace_along_path(
+            verts_mm, top_faces, protected_edges, path_features,
             diameter_mm, base_thickness_mm)
     if flora_notches:
         try:

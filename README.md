@@ -400,12 +400,15 @@ HexFinity
 │  │   ├─ displace: Feature / Depth / Regularity / (Direction) + resolution warning
 │  │   └─ scatter:  Min/Max Size / Density / Distribution + budget warning
 │  │                + Merge into Tile / [ Merge Boulders into Tile ]
-│  ├─ Terrain Features         (line list + Edge Snap + Draw Feature — see below)
-│  │   ├─ Edge Snap (int ≥ 2)  (snap points per hex edge, incl. both corners)
-│  │   ├─ [ Draw Feature ]     (click waypoints above the tile; snapping to a
-│  │   │                        hex-edge point or another line's waypoint ends it)
+│  ├─ Path Feature              (line list + Edge Snap + Draw Feature — see below)
+│  │   ├─ Edge Snap (int ≥ 2)   (snap points per hex edge, incl. both corners)
+│  │   ├─ [ Draw Feature ]      (click waypoints above the tile; snapping to a
+│  │   │                         hex-edge point or another line's waypoint ends it)
 │  │   ├─ Name + Type (Footpath / Animal Track / Gravel Road / Country Road / Paved Road)
-│  │   └─ [ Generate ]         (disabled — geometry generation is future work)
+│  │   └─ Texture + Width / Depth / Repeat  (grayscale displacement texture
+│  │                             sampled along the line — white raises, black
+│  │                             carves; auto-carves into the tile on every
+│  │                             edit, no manual step)
 │  └─ Terrain Brush            (Raise/Lower, Radius, Strength, Preserve Edge → Paint)
 │
 ├─ If active object is a dropped terrain object:
@@ -438,13 +441,13 @@ C:\Work\Hexfinity\
 │   ├─ overlay.py              # floating P1..P6 labels + region loops/direction + terrain feature lines
 │   ├─ brush.py                # modal terrain paint brush
 │   ├─ regions.py              # modal draw-region operator + region list UI
-│   ├─ terrain_features.py     # modal draw-feature (waypoint line) operator + feature list UI
+│   ├─ path_features.py        # modal draw-feature (waypoint line) operator + texture-carve pipeline + feature list UI
 │   ├─ scatter.py              # bpy shell for scatter surfaces (boulder objects + merge)
 │   ├─ flora.py                # modal click-to-plant tree tool + mesh cache + overlap check + pin objects
 │   ├─ assets\
 │   │   └─ leefytree\           # planted-tree STL assets (one file per species)
 │   ├─ mesh_builder.py         # pure-Python mesh construction (no bpy)
-│   ├─ tree_pads.py            # pure-Python tree-base-pad refine+flatten + pin/notch socket cut (no bpy)
+│   ├─ tree_pads.py            # pure-Python tree-base-pad refine+flatten + pin/notch socket cut + path-feature curvilinear texture displacement (no bpy)
 │   ├─ terrain_pads.py         # pure-Python footprint-grid → circular pad tiling (no bpy)
 │   ├─ subdivision.py          # pure-Python Loop + linear-midpoint subdivision (no bpy)
 │   ├─ procedural_surfaces.py  # pure-Python surface registry + masks + scatter geometry + obb_overlap (no bpy)

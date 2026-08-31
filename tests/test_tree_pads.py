@@ -585,3 +585,203 @@ def test_flora_and_terrain_pads_merge_into_one_refinement_pass():
     assert len(terrain_inside) >= 1
     for v in terrain_inside:
         assert v[2] == pytest.approx(30.0, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Path Feature — curvilinear_coords / sample_grayscale (pure math).
+
+def test_curvilinear_coords_on_segment_midpoint():
+    s, t = tree_pads.curvilinear_coords(5.0, 0.0, [(0.0, 0.0), (10.0, 0.0)])
+    assert s == pytest.approx(5.0)
+    assert t == pytest.approx(0.0, abs=1e-9)
+
+
+def test_curvilinear_coords_off_to_the_side():
+    s, t = tree_pads.curvilinear_coords(5.0, 3.0, [(0.0, 0.0), (10.0, 0.0)])
+    assert s == pytest.approx(5.0)
+    assert t == pytest.approx(3.0)
+
+
+def test_curvilinear_coords_other_side_is_negative():
+    s, t = tree_pads.curvilinear_coords(5.0, -3.0, [(0.0, 0.0), (10.0, 0.0)])
+    assert t == pytest.approx(-3.0)
+
+
+def test_curvilinear_coords_past_endpoint_clamps():
+    s, t = tree_pads.curvilinear_coords(20.0, 0.0, [(0.0, 0.0), (10.0, 0.0)])
+    assert s == pytest.approx(10.0)
+    s2, t2 = tree_pads.curvilinear_coords(-5.0, 0.0, [(0.0, 0.0), (10.0, 0.0)])
+    assert s2 == pytest.approx(0.0)
+
+
+def test_curvilinear_coords_multi_segment_accumulates_arc_length():
+    points = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)]
+    s, t = tree_pads.curvilinear_coords(10.0, 5.0, points)
+    assert s == pytest.approx(15.0)
+    assert t == pytest.approx(0.0, abs=1e-9)
+
+
+def test_sample_grayscale_bilinear_interpolation():
+    # 2x2 texture, both rows [0.0, 1.0] — dead centre averages all 4 corners.
+    pixels = [0.0, 1.0, 0.0, 1.0]
+    val = tree_pads.sample_grayscale(pixels, 2, 2, 0.5, 0.5)
+    assert val == pytest.approx(0.5, abs=1e-6)
+
+
+def test_sample_grayscale_u_wraps():
+    pixels = [0.0, 1.0]
+    v0 = tree_pads.sample_grayscale(pixels, 2, 1, 0.25, 0.5)
+    v1 = tree_pads.sample_grayscale(pixels, 2, 1, 1.25, 0.5)
+    assert v1 == pytest.approx(v0, abs=1e-6)
+
+
+def test_sample_grayscale_v_clamps_no_wrap():
+    pixels = [0.0, 1.0]  # height=2, single column: row0=0.0, row1=1.0
+    low = tree_pads.sample_grayscale(pixels, 1, 2, 0.5, -0.5)
+    high = tree_pads.sample_grayscale(pixels, 1, 2, 0.5, 1.5)
+    assert low == pytest.approx(0.0, abs=1e-6)
+    assert high == pytest.approx(1.0, abs=1e-6)
+
+
+def test_sample_grayscale_degenerate_1x1_texture():
+    val = tree_pads.sample_grayscale([0.7], 1, 1, 0.9, 0.1)
+    assert val == pytest.approx(0.7, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Path Feature — refine_and_displace_along_path.
+
+CENTER_PATH = [{
+    "points": [(-30.0, 0.0), (30.0, 0.0)],
+    "width_mm": 10.0, "depth_mm": 2.0, "blend_mm": 5.0,
+    "repeat_mm": 20.0, "pixels": None, "tex_width": 0, "tex_height": 0,
+}]
+
+
+def test_path_feature_tile_is_manifold():
+    verts, faces = _sloped_tile(path_features=CENTER_PATH)
+    assert_two_manifold(verts, faces)
+
+
+def test_refine_and_displace_along_path_grid_is_crack_free_and_protects_boundary():
+    verts, faces, protected = _grid_mesh(6, 60.0)
+    paths = [{
+        "points": [(10.0, 30.0), (50.0, 30.0)],
+        "width_mm": 10.0, "depth_mm": 2.0, "blend_mm": 3.0,
+        "repeat_mm": 20.0, "pixels": None, "tex_width": 0, "tex_height": 0,
+    }]
+    new_faces = tree_pads.refine_and_displace_along_path(
+        verts, faces, protected, paths, diameter_mm=1000.0, base_thickness_mm=-1e9)
+    _assert_crack_free(new_faces, protected)
+    referenced = set()
+    for f in new_faces:
+        referenced.update(f)
+    assert referenced == set(range(len(verts))), "orphan vertex after refinement"
+
+
+def test_path_feature_top_prefix_unchanged():
+    num_top = top_vertex_count(3, 0)
+    verts_plain, _ = _sloped_tile()
+    verts_path, _ = _sloped_tile(path_features=CENTER_PATH)
+    assert len(verts_path) >= num_top
+    for i in range(num_top):
+        assert verts_path[i][:2] == pytest.approx(verts_plain[i][:2], abs=1e-9)
+
+
+def test_no_path_features_adds_zero_vertices():
+    verts_plain, _ = _sloped_tile()
+    verts_none, _ = _sloped_tile(path_features=None)
+    verts_empty, _ = _sloped_tile(path_features=[])
+    assert len(verts_none) == len(verts_plain)
+    assert len(verts_empty) == len(verts_plain)
+
+
+def test_path_feature_verts_beyond_reach_unchanged():
+    path = CENTER_PATH[0]
+    half = path["width_mm"] / 2.0
+    reach = half + path["blend_mm"]
+    num_top = top_vertex_count(3, 0)
+    verts_plain, _ = _sloped_tile()
+    verts_path, _ = _sloped_tile(path_features=CENTER_PATH)
+    for i in range(num_top):
+        x, y, z = verts_plain[i]
+        s, t = tree_pads.curvilinear_coords(x, y, path["points"])
+        if abs(t) > reach + 1e-6:
+            assert verts_path[i] == pytest.approx((x, y, z), abs=1e-9)
+
+
+def test_path_feature_no_texture_fallback_is_full_depth_groove():
+    # A flat (all-equal-corner-level) tile raised well above base_thickness_mm
+    # so the groove has real room to carve into without hitting the "top
+    # can't go below base_thickness_mm" safety floor.
+    base_thickness = 10.0
+    flat_z = base_thickness + 3 * 10.0
+    depth = 2.0
+    half = 5.0
+    path = {
+        "points": [(-30.0, 0.0), (30.0, 0.0)],
+        "width_mm": half * 2.0, "depth_mm": depth, "blend_mm": 3.0,
+        "repeat_mm": 20.0, "pixels": None, "tex_width": 0, "tex_height": 0,
+    }
+    verts, _ = _tile(
+        corner_levels=(3, 3, 3, 3, 3, 3), center_level=None,
+        base_thickness_mm=base_thickness, smoothness_passes=3,
+        path_features=[path])
+    inside = [v for v in verts
+              if v[2] >= base_thickness - 1e-6
+              and abs(v[1]) <= half - 0.5
+              and abs(v[0]) <= 20.0]
+    assert len(inside) >= 3, "expected several verts inside the path's core width"
+    for v in inside:
+        assert v[2] == pytest.approx(flat_z - depth, abs=1e-3)
+
+
+def test_path_feature_white_texture_raises():
+    base_thickness = 10.0
+    flat_z = base_thickness + 3 * 10.0
+    depth = 2.0
+    half = 5.0
+    path = {
+        "points": [(-30.0, 0.0), (30.0, 0.0)],
+        "width_mm": half * 2.0, "depth_mm": depth, "blend_mm": 3.0,
+        "repeat_mm": 20.0, "pixels": [1.0, 1.0, 1.0, 1.0],
+        "tex_width": 2, "tex_height": 2,
+    }
+    verts, _ = _tile(
+        corner_levels=(3, 3, 3, 3, 3, 3), center_level=None,
+        base_thickness_mm=base_thickness, smoothness_passes=3,
+        path_features=[path])
+    inside = [v for v in verts
+              if v[2] >= base_thickness - 1e-6
+              and abs(v[1]) <= half - 0.5
+              and abs(v[0]) <= 20.0]
+    assert len(inside) >= 3
+    for v in inside:
+        assert v[2] == pytest.approx(flat_z + depth, abs=1e-3)
+
+
+def test_path_feature_near_rim_leaves_rim_corners_at_analytic_height():
+    R = 220.0 / 2.0
+    diameter = 220.0
+    lh = 10.0
+    base = 10.0
+    levels = (0, 1, 2, 3, 4, 5)
+    path = {
+        "points": [(R - 20.0, 0.0), (R - 6.0, 0.0)],
+        "width_mm": 6.0, "depth_mm": 3.0, "blend_mm": 5.0,
+        "repeat_mm": 20.0, "pixels": None, "tex_width": 0, "tex_height": 0,
+    }
+    verts, faces = build_hex_tile(
+        diameter_mm=diameter, level_height_mm=lh, base_thickness_mm=base,
+        corner_levels=levels, center_level=None, smoothness_passes=3,
+        path_features=[path],
+    )
+    assert_two_manifold(verts, faces)
+    corner_z = [base + L * lh for L in levels]
+    for i in range(6):
+        angle = math.pi / 3.0 - i * (math.pi / 3.0)
+        cx, cy = R * math.cos(angle), R * math.sin(angle)
+        match = [v for v in verts
+                 if abs(v[0] - cx) < 1e-6 and abs(v[1] - cy) < 1e-6]
+        assert match, f"corner {i} vertex missing"
+        assert match[0][2] == pytest.approx(corner_z[i], abs=1e-9)

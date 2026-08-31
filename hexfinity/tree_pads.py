@@ -454,3 +454,165 @@ def refine_and_flatten(verts, faces, protected_edges, pads, diameter_mm, base_th
         verts[i] = (x, y, max(z, base_thickness_mm))
 
     return faces
+
+
+# ---------------------------------------------------------------------------
+# Path Feature — curvilinear texture-sampled displacement along a polyline.
+# A third refine+apply strategy sharing _iteratively_refine, alongside
+# refine_and_flatten (radial, flatten-to-target) and cut_notches (radial,
+# drill-a-cylinder): here the "target" is a grayscale value sampled in a
+# coordinate frame that follows the polyline, not a single per-pad height.
+
+def curvilinear_coords(x, y, points):
+    """Nearest-segment projection of (x, y) onto the open polyline `points`
+    (list of >= 2 (x, y) tile-local mm tuples).
+
+    Returns `(s, t)`: `s` is the arc-length along the polyline to the
+    projected point (clamped to the polyline's start/end, not wrapped past
+    the endpoints — a point beyond the last waypoint projects onto the
+    final segment's end); `t` is the signed perpendicular distance from the
+    centerline (positive to the segment direction's left). This is the
+    coordinate frame `refine_and_displace_along_path` samples a texture in.
+    """
+    best_d2 = None
+    best_s = 0.0
+    best_t = 0.0
+    cum = 0.0
+    for i in range(len(points) - 1):
+        ax, ay = points[i]
+        bx, by = points[i + 1]
+        dx, dy = bx - ax, by - ay
+        seg_len = math.hypot(dx, dy)
+        if seg_len < 1e-9:
+            d2 = (x - ax) ** 2 + (y - ay) ** 2
+            if best_d2 is None or d2 < best_d2:
+                best_d2 = d2
+                best_s = cum
+                best_t = math.hypot(x - ax, y - ay)
+            continue
+        t_param = ((x - ax) * dx + (y - ay) * dy) / (seg_len * seg_len)
+        t_param = 0.0 if t_param < 0.0 else (1.0 if t_param > 1.0 else t_param)
+        proj_x = ax + t_param * dx
+        proj_y = ay + t_param * dy
+        d2 = (x - proj_x) ** 2 + (y - proj_y) ** 2
+        if best_d2 is None or d2 < best_d2:
+            best_d2 = d2
+            best_s = cum + t_param * seg_len
+            # Signed perpendicular distance: cross(segment_dir, point - A).
+            best_t = (dx * (y - ay) - dy * (x - ax)) / seg_len
+        cum += seg_len
+    return best_s, best_t
+
+
+def sample_grayscale(pixels, width, height, u, v):
+    """Bilinear-sample a flat row-major grayscale array (values in [0, 1])
+    at normalized (u, v). `u` wraps (the texture repeats along a path's
+    length); `v` clamps (texture edges hold, no wrap across width).
+    Degenerate `width`/`height` (<= 0) returns a neutral 0.5."""
+    if width <= 0 or height <= 0:
+        return 0.5
+    u = u - math.floor(u)
+    v = 0.0 if v < 0.0 else (1.0 if v > 1.0 else v)
+
+    fx = u * width - 0.5
+    fy = v * height - 0.5
+    x0 = int(math.floor(fx))
+    y0 = int(math.floor(fy))
+    tx = fx - x0
+    ty = fy - y0
+
+    x0i, x1i = x0 % width, (x0 + 1) % width
+    y0i = 0 if y0 < 0 else (height - 1 if y0 >= height else y0)
+    y1i = 0 if y0 + 1 < 0 else (height - 1 if y0 + 1 >= height else y0 + 1)
+
+    def px(ix, iy):
+        return pixels[iy * width + ix]
+
+    top = px(x0i, y0i) * (1.0 - tx) + px(x1i, y0i) * tx
+    bot = px(x0i, y1i) * (1.0 - tx) + px(x1i, y1i) * tx
+    return top * (1.0 - ty) + bot * ty
+
+
+def refine_and_displace_along_path(verts, faces, protected_edges, paths,
+                                    diameter_mm, base_thickness_mm):
+    """Refine + curvilinear-texture-displace `faces` along each path's
+    polyline. Append-only on `verts`, same contract as `refine_and_flatten`.
+
+    `paths` is a list of
+    `{"points": [(x,y),...], "width_mm", "depth_mm", "blend_mm",
+      "repeat_mm", "pixels", "tex_width", "tex_height"}` dicts in the same
+    local mm frame as `verts`. `pixels` may be `None`.
+
+    Heightmap convention: white = +depth_mm (raised), mid-gray = no
+    change, black = -depth_mm (carved). `pixels=None` samples as a
+    constant 0.0 (solid black) — a uniform full-depth groove, not a
+    no-op, so a line is visibly functional before any texture asset is
+    supplied; dropping in a real grayscale PNG later only refines the
+    shape, no code changes needed.
+
+    Multiple overlapping paths apply sequentially (each path's weighted
+    offset is added to whatever the previous one left), the same
+    "each contribution modifies the running result" shape
+    `refine_and_flatten`'s per-pad loop already uses.
+    """
+    if not paths:
+        return list(faces)
+
+    # Refinement pad-chain per path: small circular specs stepped along the
+    # polyline (overlapping, so _iteratively_refine marks a continuous
+    # corridor rather than a dashed one) — same {x,y,radius_mm,blend_mm}
+    # shape _iteratively_refine already consumes for radial pads.
+    refine_specs = []
+    for p in paths:
+        pts = p["points"]
+        half = p["width_mm"] / 2.0
+        blend = p.get("blend_mm", 0.0)
+        step = max(half, 1.0)
+        for i in range(len(pts) - 1):
+            ax, ay = pts[i]
+            bx, by = pts[i + 1]
+            seg_len = math.hypot(bx - ax, by - ay)
+            n_steps = max(1, int(math.ceil(seg_len / step)))
+            for k in range(n_steps + 1):
+                t = k / n_steps
+                refine_specs.append({
+                    "x": ax + (bx - ax) * t, "y": ay + (by - ay) * t,
+                    "radius_mm": half, "blend_mm": blend,
+                })
+
+    faces = _iteratively_refine(verts, faces, protected_edges, refine_specs, MAX_LEVELS)
+
+    for i in range(len(verts)):
+        x, y, z = verts[i]
+        for p in paths:
+            half = p["width_mm"] / 2.0
+            blend = p.get("blend_mm", 0.0)
+            s, t = curvilinear_coords(x, y, p["points"])
+            d = abs(t)
+            if d <= half:
+                w = 1.0
+            elif blend > 1e-9 and d <= half + blend:
+                w = 1.0 - _smoothstep((d - half) / blend)
+            else:
+                continue
+            if blend > 1e-9:
+                rim = rim_edge_distance(x, y, diameter_mm)
+                w *= 0.0 if rim < 0.0 else (1.0 if rim > blend else rim / blend)
+            if w <= 0.0:
+                continue
+            repeat_mm = p.get("repeat_mm") or 1.0
+            width_mm = p["width_mm"] if p["width_mm"] > 1e-9 else 1.0
+            u = s / repeat_mm
+            v = 0.5 + t / width_mm
+            v = 0.0 if v < 0.0 else (1.0 if v > 1.0 else v)
+            pixels = p.get("pixels")
+            if pixels:
+                gray = sample_grayscale(pixels, p.get("tex_width", 0),
+                                        p.get("tex_height", 0), u, v)
+            else:
+                gray = 0.0
+            offset = (gray - 0.5) * 2.0 * p["depth_mm"]
+            z = z + w * offset
+        verts[i] = (x, y, max(z, base_thickness_mm))
+
+    return faces

@@ -196,8 +196,8 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         # ---- Procedural Surface regions -----------------------------------
         self._draw_surface_regions(context, layout, map_props, obj, tile)
 
-        # ---- Terrain Features -----------------------------------------------
-        self._draw_terrain_features(context, layout, scene, tile)
+        # ---- Path Feature ---------------------------------------------------
+        self._draw_path_features(context, layout, scene, tile)
 
         # ---- Terrain Brush ------------------------------------------------
         brush = scene.hexfinity_brush
@@ -275,33 +275,34 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
             box.label(text=f"Vert spacing ~{spacing:.1f}mm", icon='INFO')
 
     @staticmethod
-    def _draw_terrain_features(context, layout, scene, tile):
-        tool = scene.hexfinity_terrain_features
+    def _draw_path_features(context, layout, scene, tile):
+        tool = scene.hexfinity_path_features
         box = layout.box()
-        box.label(text="Terrain Features", icon='MOD_CURVE')
+        box.label(text="Path Feature", icon='MOD_CURVE')
         box.prop(tool, "edge_snap")
-        box.operator("hexfinity.draw_terrain_feature", text="Draw Feature",
+        box.operator("hexfinity.draw_path_feature", text="Draw Feature",
                      icon='GREASEPENCIL')
 
         row = box.row()
         row.template_list(
-            "HEXFINITY_UL_terrain_features", "",
-            tile, "terrain_features",
-            tile, "active_terrain_feature_index",
+            "HEXFINITY_UL_path_features", "",
+            tile, "path_features",
+            tile, "active_path_feature_index",
             rows=2,
         )
         col = row.column(align=True)
-        col.operator("hexfinity.remove_terrain_feature", text="", icon='REMOVE')
+        col.operator("hexfinity.remove_path_feature", text="", icon='REMOVE')
 
-        idx = tile.active_terrain_feature_index
-        if 0 <= idx < len(tile.terrain_features):
-            feature = tile.terrain_features[idx]
+        idx = tile.active_path_feature_index
+        if 0 <= idx < len(tile.path_features):
+            feature = tile.path_features[idx]
             sub = box.column(align=True)
             sub.prop(feature, "name")
             sub.prop(feature, "feature_type")
-
-        box.operator("hexfinity.generate_terrain_features", text="Generate",
-                     icon='MOD_BUILD')
+            sub.prop(feature, "texture")
+            sub.prop(feature, "width_mm")
+            sub.prop(feature, "depth_mm")
+            sub.prop(feature, "repeat_mm")
 
     @staticmethod
     def _draw_scatter_params(box, reg, surf, map_props):

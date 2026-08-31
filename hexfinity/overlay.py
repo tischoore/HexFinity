@@ -20,7 +20,7 @@ _HANDLE = None
 
 _REGION_COLOR = (1.0, 0.8, 0.2, 0.9)
 _DIRECTION_COLOR = (0.3, 1.0, 0.5, 0.95)
-_FEATURE_COLOR = (0.85, 0.55, 0.25, 0.9)
+_PATH_FEATURE_COLOR = (0.85, 0.55, 0.25, 0.9)
 
 _FONT_ID = 0
 _FONT_SIZE = 14
@@ -133,19 +133,19 @@ def _draw_regions(context, region, rv3d, map_props, tiles):
     gpu.state.blend_set('NONE')
 
 
-def _terrain_feature_hover_z(obj, map_props):
-    """A z (mm, tile-local) just above the tile top to float the terrain
+def _path_feature_hover_z(obj, map_props):
+    """A z (mm, tile-local) just above the tile top to float the path
     feature guide on — same shape as _region_hover_z, plus one man-height of
-    clearance (matches the plane terrain_features.py draws waypoints on)."""
+    clearance (matches the plane path_features.py draws waypoints on)."""
     tile = obj.hexfinity_tile
     levels = (tile.p1, tile.p2, tile.p3, tile.p4, tile.p5, tile.p6)
     return (map_props.base_thickness_mm + max(levels) * map_props.level_height_mm
             + map_props.man_height_mm)
 
 
-def _draw_terrain_features(context, region, rv3d, map_props, tiles):
-    """Draw each tile's committed terrain-feature lines as open polylines,
-    so they stay visible after the modal draw operator ends."""
+def _draw_path_features(context, region, rv3d, map_props, tiles):
+    """Draw each tile's committed path-feature lines as open polylines, so
+    they stay visible after the modal draw operator ends."""
     shader = gpu.shader.from_builtin('UNIFORM_COLOR')
     gpu.state.blend_set('ALPHA')
     gpu.state.line_width_set(2.0)
@@ -153,11 +153,11 @@ def _draw_terrain_features(context, region, rv3d, map_props, tiles):
 
     for obj in tiles:
         tile = obj.hexfinity_tile
-        if not len(tile.terrain_features):
+        if not len(tile.path_features):
             continue
         mw = obj.matrix_world
-        z = _terrain_feature_hover_z(obj, map_props)
-        for feature in tile.terrain_features:
+        z = _path_feature_hover_z(obj, map_props)
+        for feature in tile.path_features:
             pts = feature.points
             if len(pts) < 2:
                 continue
@@ -169,7 +169,7 @@ def _draw_terrain_features(context, region, rv3d, map_props, tiles):
                     line.append((s.x, s.y))
             if len(line) < 2:
                 continue
-            shader.uniform_float("color", _FEATURE_COLOR)
+            shader.uniform_float("color", _PATH_FEATURE_COLOR)
             batch_for_shader(shader, 'LINE_STRIP', {"pos": line}).draw(shader)
 
     gpu.state.line_width_set(1.0)
@@ -199,7 +199,7 @@ def _draw_callback():
         return
 
     _draw_regions(context, region, rv3d, map_props, tiles)
-    _draw_terrain_features(context, region, rv3d, map_props, tiles)
+    _draw_path_features(context, region, rv3d, map_props, tiles)
 
     blf.size(_FONT_ID, _FONT_SIZE)
     blf.enable(_FONT_ID, blf.SHADOW)

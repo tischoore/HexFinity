@@ -243,11 +243,12 @@ class HexFinityBrushProperties(bpy.types.PropertyGroup):
 
 
 # ---------------------------------------------------------------------------
-# Scene-level — terrain feature (waypoint line) drawing settings. Read by the
-# modal draw operator each click; no update callback (changing it never
-# rebuilds a tile — nothing downstream consumes drawn features yet).
+# Scene-level — path feature (waypoint line) drawing settings. `edge_snap` is
+# read by the modal draw operator each click; no update callback (it only
+# affects where a *new* click snaps, not any already-committed line, so
+# there is nothing to rebuild).
 
-class HexFinityTerrainFeatureProperties(bpy.types.PropertyGroup):
+class HexFinityPathFeatureProperties(bpy.types.PropertyGroup):
     edge_snap: bpy.props.IntProperty(
         name="Edge Snap",
         description="Number of evenly-spaced snap points per hex edge, "
@@ -498,22 +499,83 @@ class HexFinitySurfaceRegion(bpy.types.PropertyGroup):
 
 
 # ---------------------------------------------------------------------------
-# Per-tile terrain features (waypoint lines) — footpaths/tracks/roads drawn
-# on the tile top. An open polyline (tile-local mm), reusing the same
-# HexFinitySurfacePoint type as surface regions. No update callback on
-# name/feature_type yet: nothing downstream consumes this data until the
-# (currently inert) Generate operator is implemented.
+# Per-tile path features (waypoint lines) — footpaths/tracks/roads drawn on
+# the tile top, auto-carved into the surface on every edit (see
+# path_features.refine_and_displace_along_path). An open polyline
+# (tile-local mm), reusing the same HexFinitySurfacePoint type as surface
+# regions.
 
-class HexFinityTerrainFeature(bpy.types.PropertyGroup):
+# Guard: while auto-filling a line's width/depth/repeat/texture on a type
+# change, suppress the per-field rebuilds so the dropdown triggers a single
+# rebuild, not several. Mirrors _REGION_FILLING above.
+_PATH_FEATURE_FILLING = False
+
+
+def _on_path_feature_update(self, context):
+    if _PATH_FEATURE_FILLING:
+        return
+    owner = self.id_data
+    if not isinstance(owner, bpy.types.Object):
+        return
+    tile = getattr(owner, "hexfinity_tile", None)
+    if tile is None or not tile.is_generated:
+        return
+    from .operators import rebuild_tile
+    try:
+        rebuild_tile(owner)
+    except Exception:
+        pass
+
+
+def _default_path_feature_name(feature):
+    """Auto-name a line "Path N" from its 1-based index in the tile, mirroring
+    _default_region_name above."""
+    owner = feature.id_data
+    tile = getattr(owner, "hexfinity_tile", None)
+    if tile is None:
+        return "Path 1"
+    for i, f in enumerate(tile.path_features):
+        if f == feature:
+            return f"Path {i + 1}"
+    return f"Path {len(tile.path_features)}"
+
+
+def _on_path_feature_type_update(self, context):
+    # Pick type-appropriate width/depth/repeat/texture defaults (and a
+    # default name, on first assignment) then rebuild once. Mirrors
+    # _on_region_type_update's guarded-autofill shape — this is also the
+    # sole trigger _commit_feature relies on, so a freshly drawn line gets
+    # correctly scaled even though its type equals the property's own
+    # default (Blender's update= still fires on a same-value assignment).
+    global _PATH_FEATURE_FILLING
+    from . import path_features as pf
+    man_height_mm = context.scene.hexfinity_map.man_height_mm
+    _PATH_FEATURE_FILLING = True
+    try:
+        pf.apply_type_defaults(self, man_height_mm)
+        if not self.name:
+            self.name = _default_path_feature_name(self)
+    finally:
+        _PATH_FEATURE_FILLING = False
+    _on_path_feature_update(self, context)
+
+
+def _path_texture_items(self, context):
+    from . import path_features as pf
+    return [(k, v["label"], v["label"]) for k, v in pf.PATH_TEXTURES.items()]
+
+
+class HexFinityPathFeature(bpy.types.PropertyGroup):
     name: bpy.props.StringProperty(
         name="Feature Name",
         description="Editable label for this line. Auto-defaulted to "
-                    "\"Feature N\" when the line is drawn",
+                    "\"Path N\" when the line is drawn",
         default="",
+        update=_on_path_feature_update,
     )
     feature_type: bpy.props.EnumProperty(
         name="Type",
-        description="What kind of terrain feature this line represents",
+        description="What kind of path feature this line represents",
         items=[
             ('FOOTPATH', "Footpath", "A narrow foot-worn path"),
             ('ANIMAL_TRACK', "Animal Track", "A rough trail worn by animals"),
@@ -522,6 +584,44 @@ class HexFinityTerrainFeature(bpy.types.PropertyGroup):
             ('PAVED_ROAD', "Paved Road", "A paved road"),
         ],
         default='FOOTPATH',
+        update=_on_path_feature_type_update,
+    )
+    width_mm: bpy.props.FloatProperty(
+        name="Width (mm)",
+        description="Width of the carved/raised cross-section, centred on "
+                    "the drawn line. Auto-filled from Man Height on a type "
+                    "change; editable here",
+        default=3.0,
+        min=0.001,
+        soft_max=100.0,
+        update=_on_path_feature_update,
+    )
+    depth_mm: bpy.props.FloatProperty(
+        name="Depth (mm)",
+        description="Maximum displacement — white texture pixels raise the "
+                    "surface by this much, black pixels carve it down by "
+                    "this much, mid-gray leaves it unchanged",
+        default=0.15,
+        min=0.0,
+        soft_max=20.0,
+        update=_on_path_feature_update,
+    )
+    repeat_mm: bpy.props.FloatProperty(
+        name="Texture Repeat (mm)",
+        description="Distance along the line after which the texture "
+                    "repeats",
+        default=5.5,
+        min=0.001,
+        soft_max=200.0,
+        update=_on_path_feature_update,
+    )
+    texture: bpy.props.EnumProperty(
+        name="Texture",
+        description="Grayscale displacement texture sampled along the line. "
+                    "\"None (flat)\" carves a uniform full-depth groove "
+                    "instead of a textured profile",
+        items=_path_texture_items,
+        update=_on_path_feature_update,
     )
     points: bpy.props.CollectionProperty(type=HexFinitySurfacePoint)
 
@@ -620,9 +720,9 @@ class HexFinityProperties(bpy.types.PropertyGroup):
         options={'HIDDEN'},
     )
     flora_placements: bpy.props.CollectionProperty(type=HexFinityFloraPlacement)
-    terrain_features: bpy.props.CollectionProperty(type=HexFinityTerrainFeature)
-    active_terrain_feature_index: bpy.props.IntProperty(
-        name="Active Terrain Feature",
+    path_features: bpy.props.CollectionProperty(type=HexFinityPathFeature)
+    active_path_feature_index: bpy.props.IntProperty(
+        name="Active Path Feature",
         default=0,
         options={'HIDDEN'},
     )
