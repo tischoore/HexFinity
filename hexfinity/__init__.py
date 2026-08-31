@@ -22,6 +22,7 @@ def _classes():
         operators.HEXFINITY_OT_clear_map,
         operators.HEXFINITY_OT_import_terrain_object,
         operators.HEXFINITY_OT_redrop_terrain_object,
+        operators.HEXFINITY_OT_generate_terrain_plateau,
         operators.HEXFINITY_OT_export_tiles,
         brush.HEXFINITY_OT_paint_brush,
         flora.HEXFINITY_OT_flora_marker,

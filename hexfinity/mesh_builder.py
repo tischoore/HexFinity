@@ -211,6 +211,7 @@ def build_hex_tile(
     flora_notch_warnings=None,
     flora_notch_ok_indices=None,
     flora_notch_heights=None,
+    terrain_pads=None,
 ):
     """Build a single HexFinity tile.
 
@@ -263,6 +264,20 @@ def build_hex_tile(
     `{index: pad_z}` — the exact pre-drill flat height at each successful
     cut, so the caller can seat a tree/pin there directly instead of
     raycasting against a mesh that now has a hole exactly where it would aim.
+
+    `terrain_pads`, when given, is a list of `{"x", "y", "radius_mm",
+    "blend_mm", "z"}` dicts (tile-local mm) — one per locally-flat cluster of
+    a terrain object's footprint (see `terrain_pads.cluster_grid_hits` /
+    `operators.terrain_pad_specs`). This is the sole mechanism that deforms a
+    hex to match a terrain object — there is no separate displacement layer.
+    Unlike a flora pad, a terrain pad always carries an explicit `"z"` (the
+    model's own target height), rather than sampling the pre-flatten
+    surface, since the whole point is moving the surface to an
+    externally-dictated height. `flora_pads` and `terrain_pads` are merged
+    into a single `tree_pads.refine_and_flatten` call so nearby pads of
+    either kind sample their targets from the same pre-flatten surface — two
+    sequential calls would let one kind's flattening bake in before the
+    other samples, double-blending where footprints overlap.
     """
     if diameter_mm <= 0:
         raise ValueError(f"diameter_mm must be positive, got {diameter_mm}")
@@ -448,13 +463,14 @@ def build_hex_tile(
             verts_mm[i] = (x, y, max(z + dz, base_thickness_mm))
 
     top_faces = [tuple(top_remap[v] for v in f) for f in sub_faces]
-    if flora_pads:
+    combined_pads = list(flora_pads or ()) + list(terrain_pads or ())
+    if combined_pads:
         try:
             from . import tree_pads
         except ImportError:
             import tree_pads
         top_faces = tree_pads.refine_and_flatten(
-            verts_mm, top_faces, protected_edges, flora_pads,
+            verts_mm, top_faces, protected_edges, combined_pads,
             diameter_mm, base_thickness_mm)
     if flora_notches:
         try:

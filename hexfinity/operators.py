@@ -134,35 +134,21 @@ def rebuild_tile(obj, finalize_flora=False):
                          tile_props.p4, tile_props.p5, tile_props.p6)
         center_level = tile_props.center_level if tile_props.override_center else None
 
-        # Two per-top-vertex z-offset layers live on the Object and outlive the
-        # mesh replaced every rebuild: `hf_brush_disp` (terrain brush) and
-        # `hf_snap_disp` (snap-to-model). Both are keyed to the current
-        # top-surface topology, so a subdivision/resample change that alters the
-        # top vert count invalidates them — drop the stale layer (the agreed
-        # "survives height edits only" contract) rather than misapply it. The two
-        # layers are summed and applied together.
+        # `hf_brush_disp` (terrain brush) is a per-top-vertex z-offset layer
+        # that lives on the Object and outlives the mesh replaced every
+        # rebuild. It's keyed to the current top-surface topology, so a
+        # subdivision/resample change that alters the top vert count
+        # invalidates it — drop the stale layer (the agreed "survives height
+        # edits only" contract) rather than misapply it.
         resample = _effective_resample(obj, map_props)
         num_top = top_vertex_count(map_props.smoothness_passes, resample)
 
-        def _layer(key):
-            arr = obj.get(key)
-            if arr is not None and len(arr) != num_top:
-                del obj[key]
-                if key == "hf_snap_disp":
-                    _drop_snap_cache(obj)
-                arr = None
-            return arr
-
-        brush = _layer("hf_brush_disp")
-        snap = _layer("hf_snap_disp")
+        brush = obj.get("hf_brush_disp")
+        if brush is not None and len(brush) != num_top:
+            del obj["hf_brush_disp"]
+            brush = None
         obj["hf_brush_ntop"] = num_top
-
-        if brush is None and snap is None:
-            combined = None
-        else:
-            b = brush if brush is not None else [0.0] * num_top
-            s = snap if snap is not None else [0.0] * num_top
-            combined = [b[i] + s[i] for i in range(num_top)]
+        combined = list(brush) if brush is not None else None
 
         # Procedural surface regions: closed polygons (tile-local mm) + params.
         # Marshalled into plain dicts the bpy-free builder understands. Sampled
@@ -202,6 +188,7 @@ def rebuild_tile(obj, finalize_flora=False):
         notch_warnings = [] if finalize_flora else None
         notch_ok_indices = [] if finalize_flora else None
         notch_heights = {} if finalize_flora else None
+        terrain_pads = terrain_pad_specs(obj)
 
         verts, faces = build_hex_tile(
             diameter_mm=map_props.diameter_mm,
@@ -223,6 +210,7 @@ def rebuild_tile(obj, finalize_flora=False):
             flora_notch_warnings=notch_warnings,
             flora_notch_ok_indices=notch_ok_indices,
             flora_notch_heights=notch_heights,
+            terrain_pads=terrain_pads,
         )
         assert_two_manifold(verts, faces)
         if notch_warnings:
@@ -881,222 +869,50 @@ class HEXFINITY_OT_redrop_terrain_object(bpy.types.Operator):
 
 
 # ---------------------------------------------------------------------------
-# Terrain snap-to-model — driven by the per-model `snap_mm` slider
-# (properties.HexFinityTerrainProperties.snap_mm update callback).
+# Terrain snap-to-model — the plateau is the only mechanism that deforms the
+# hex to match a terrain object (see the "Terrain-object plateau pads"
+# section below); this just holds the shared constants/helper it raycasts
+# with, plus the `snap_mm`/`snap_damp_mm` update entry point
+# (properties.HexFinityTerrainProperties).
 
 EMBED_MM = 0.2          # seat the surface this far past the base (overlap)
 SNAP_BASE_TOL_MM = 1.0  # an up-hit within this of base_z counts as "flat base"
 
 
-def _smooth_falloff(t):
-    """Smoothstep falloff: 1 at t=0, 0 at t=1, C1 at both ends.
-
-    Mirrors brush._smooth_falloff; kept local so operators doesn't import the
-    bpy brush module (which imports back into operators)."""
-    s = t * t * (3.0 - 2.0 * t)
-    return 1.0 - s
-
-
-def _drop_snap_cache(tile):
-    """Remove the cached snap gap/weight/signature id-properties from `tile`."""
-    for k in ("hf_snap_gap", "hf_snap_weight", "hf_snap_sig"):
-        if tile.get(k) is not None:
-            del tile[k]
-
-
-def _reset_tile_snap(tile):
-    """Strip a tile's snap state — disp layer and gap cache — and rebuild it.
-    Used when a model moves off a tile it had snapped.
-
-    Does NOT touch `local_subdiv`: that's a persistent per-tile parameter now,
-    not snap state, so a model leaving must not reset the tile's subdivision."""
-    changed = False
-    if tile.get("hf_snap_disp") is not None:
-        del tile["hf_snap_disp"]
-        changed = True
-    _drop_snap_cache(tile)
-    if changed:
-        rebuild_tile(tile)
-
-
-def _snap_signature(model, tile, num_top, target_z):
-    """Staleness key for the cached gap pass (a string, for id-prop storage)."""
-    p = tile.hexfinity_tile
-    mw = tuple(round(c, 4) for row in model.matrix_world for c in row)
-    return repr((
-        model.name, num_top, round(target_z, 4), mw,
-        p.local_subdiv,
-        round(model.hexfinity_terrain.snap_damp_mm, 4),
-        (p.p1, p.p2, p.p3, p.p4, p.p5, p.p6),
-        round(p.center_x_mm, 4), round(p.center_y_mm, 4),
-        bool(p.override_center), int(p.center_level),
-        round(p.dome_area, 6), round(p.dome_damping, 6),
-    ))
-
-
-def _compute_snap_gap(tile, map_props, model, mmin, mmax, base_z, target_z, num_top):
-    """Expensive pass: undisplaced build + per-vertex up-raycast of the model.
-
-    Returns (gap, weight), both length num_top:
-    - `gap[i]` is the signed distance `target_z - baseline` (baseline =
-      undisplaced top Z + current brush offset), for every near vertex.
-    - `weight[i] in [0, 1]`: 1.0 for "core" verts under the model's flat base
-      (first up-hit within SNAP_BASE_TOL_MM of base_z — so arch openings and
-      overhang shadows stay 0); a smoothstep falloff of the XY distance to the
-      nearest core vertex out to `snap_damp_mm` for the organic skirt around the
-      footprint; 0 beyond. The skirt is faded toward the rim so a model near a
-      hex edge doesn't desync the seam with its neighbour.
+def _raycast_under_flat_base(model, inv, up_local, base_z, mmin, mmax, xw, yw, eps=1e-4):
+    """True if world XY (xw, yw) is under `model`'s flat base: within its XY
+    bbox and an up-raycast against its mesh (in its own local space, via
+    `inv`/`up_local`) lands within `SNAP_BASE_TOL_MM` of `base_z`. Excludes
+    arch openings and overhang shadows. Used by `_terrain_pad_grid_hits`'s
+    per-grid-point footprint classification.
     """
-    p = tile.hexfinity_tile
-    cx, cy = clamp_center_to_hexagon(
-        p.center_x_mm, p.center_y_mm, map_props.diameter_mm)
-    undisp, _faces = build_hex_tile(
-        diameter_mm=map_props.diameter_mm,
-        level_height_mm=map_props.level_height_mm,
-        base_thickness_mm=map_props.base_thickness_mm,
-        corner_levels=(p.p1, p.p2, p.p3, p.p4, p.p5, p.p6),
-        center_level=(p.center_level if p.override_center else None),
-        smoothness_passes=map_props.smoothness_passes,
-        resample_density=_effective_resample(tile, map_props),
-        center_xy=(cx, cy),
-        dome_area=p.dome_area,
-        dome_damping=p.dome_damping,
-        top_displacement=None,
-        flora_pads=None,   # clean undisplaced baseline — must not bake pads in
-    )
-    brush = tile.get("hf_brush_disp")
-    if brush is None or len(brush) != num_top:
-        brush = [0.0] * num_top
-
-    inv = model.matrix_world.inverted()
-    up_local = (inv.to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()
-    tx, ty = tile.location.x, tile.location.y
-    eps = 1e-4
-    gap = [0.0] * num_top
-    weight = [0.0] * num_top
-
-    # Core pass: gap for every vert, and the binary footprint via up-raycast.
-    core_pts = []  # world XY of verts under the flat base
-    for i in range(num_top):
-        vx, vy, vz = undisp[i]
-        gap[i] = target_z - (vz + brush[i])
-        xw, yw = tx + vx, ty + vy
-        if (xw < mmin.x - eps or xw > mmax.x + eps
-                or yw < mmin.y - eps or yw > mmax.y + eps):
-            continue
-        hit, loc, _n, _idx = model.ray_cast(
-            inv @ Vector((xw, yw, base_z - 2.0)), up_local)
-        if not hit:
-            continue
-        if abs((model.matrix_world @ loc).z - base_z) > SNAP_BASE_TOL_MM:
-            continue
-        weight[i] = 1.0
-        core_pts.append((xw, yw))
-
-    # Skirt pass: smoothstep falloff of the distance to the nearest core vert,
-    # out to snap_damp_mm, faded toward the rim. Core verts keep weight 1.
-    damp = max(0.0, model.hexfinity_terrain.snap_damp_mm)
-    if damp > 0.0 and core_pts:
-        diameter = map_props.diameter_mm
-        damp2 = damp * damp
-        for i in range(num_top):
-            if weight[i] >= 1.0:
-                continue
-            vx, vy, _vz = undisp[i]
-            xw, yw = tx + vx, ty + vy
-            if (xw < mmin.x - damp or xw > mmax.x + damp
-                    or yw < mmin.y - damp or yw > mmax.y + damp):
-                continue
-            best2 = None
-            for (cxw, cyw) in core_pts:
-                d2 = (xw - cxw) ** 2 + (yw - cyw) ** 2
-                if best2 is None or d2 < best2:
-                    best2 = d2
-                    if best2 == 0.0:
-                        break
-            if best2 is None or best2 >= damp2:
-                continue
-            w = _smooth_falloff((best2 ** 0.5) / damp)
-            # Fade the skirt toward the rim so seams with neighbours stay put.
-            rim = rim_edge_distance(vx, vy, diameter)
-            w *= max(0.0, min(1.0, rim / damp))
-            if w > 0.0:
-                weight[i] = w
-    return gap, weight
+    if (xw < mmin.x - eps or xw > mmax.x + eps
+            or yw < mmin.y - eps or yw > mmax.y + eps):
+        return False
+    hit, loc, _n, _idx = model.ray_cast(
+        inv @ Vector((xw, yw, base_z - 2.0)), up_local)
+    if not hit:
+        return False
+    return abs((model.matrix_world @ loc).z - base_z) <= SNAP_BASE_TOL_MM
 
 
-def apply_terrain_snap(model, snap_mm):
-    """Move the hex top under `model`'s flat base toward it by `snap_mm` mm.
+def on_terrain_snap_changed(model):
+    """Handle an edit to `model.hexfinity_terrain.snap_mm`/`snap_damp_mm`.
 
-    Absolute and bidirectional: each footprint vertex moves `min(snap_mm, |gap|)`
-    toward `target_z = base_z + EMBED_MM` (verts below the base rise, verts above
-    descend). Writes the static `hf_snap_disp` layer on the tile (merged with the
-    brush layer by `rebuild_tile`) and rebuilds it. The expensive footprint/gap
-    pass is cached and reused across slider steps. Off-map / no-tile situations
-    are silent no-ops (callbacks can't report).
+    Both properties are read directly off `model.hexfinity_terrain` by
+    `terrain_pad_specs` (via `_terrain_objects`, which walks the tile's
+    children), so there is nothing to compute here beyond finding the hex
+    `model` is parented to and rebuilding it — `rebuild_tile` unconditionally
+    recomputes the plateau, and its own signature-based cache picks up the
+    change. Off-map / unparented situations are silent no-ops (callbacks
+    can't report).
     """
     map_props = bpy.context.scene.hexfinity_map
     if not map_props.is_generated:
         return
-    tprops = model.hexfinity_terrain
-
-    mmin, mmax = _world_bbox([model])
-    fc = (mmin + mmax) * 0.5
-    tile = _tile_under_point(map_props, fc.x, fc.y)
-
-    # Clear stale snap state left on a tile the model no longer sits over.
-    prev = tprops.snap_tile
-    if prev is not None and prev is not tile:
-        _reset_tile_snap(prev)
-    tprops.snap_tile = tile  # PointerProperty has no update hook -> safe
-    if tile is None:
+    tile = model.parent
+    if tile is None or not tile.hexfinity_tile.is_generated:
         return
-
-    num_top = top_vertex_count(map_props.smoothness_passes,
-                               _effective_resample(tile, map_props))
-    if len(tile.data.vertices) < num_top:
-        return
-
-    # 0 = no snapping: drop the layer and restore the brush-only surface.
-    if snap_mm <= 0:
-        if tile.get("hf_snap_disp") is not None:
-            del tile["hf_snap_disp"]
-        rebuild_tile(tile)
-        return
-
-    base_z = mmin.z
-    # Floor-safe: the builder clamps final Z to >= base_thickness_mm, so a base
-    # below the plate can't be reached — target there is the plate itself.
-    target_z = max(base_z + EMBED_MM, map_props.base_thickness_mm)
-
-    # Reuse the cached gap/weight unless the model pose, tile shape, or damping
-    # changed (snap_damp_mm is part of the signature).
-    sig = _snap_signature(model, tile, num_top, target_z)
-    gap = tile.get("hf_snap_gap")
-    weight = tile.get("hf_snap_weight")
-    if (gap is None or weight is None or len(gap) != num_top
-            or len(weight) != num_top or tile.get("hf_snap_sig") != sig):
-        gap, weight = _compute_snap_gap(
-            tile, map_props, model, mmin, mmax, base_z, target_z, num_top)
-        tile["hf_snap_gap"] = gap
-        tile["hf_snap_weight"] = weight
-        tile["hf_snap_sig"] = sig
-
-    s = float(snap_mm)
-    snap = [0.0] * num_top
-    nonzero = False
-    for i in range(num_top):
-        w = weight[i]
-        if w <= 0.0:
-            continue
-        g = gap[i]
-        snap[i] = w * math.copysign(min(s, abs(g)), g)
-        if snap[i] != 0.0:
-            nonzero = True
-    if nonzero:
-        tile["hf_snap_disp"] = snap
-    elif tile.get("hf_snap_disp") is not None:
-        del tile["hf_snap_disp"]
     rebuild_tile(tile)
 
 
@@ -1117,6 +933,217 @@ def _terrain_children(obj):
     from . import flora
     return [c for c in _mesh_children(obj)
            if not c.get(flora.FLORA_OF) and not c.get(flora.FLORA_PIN_OF)]
+
+
+def _terrain_objects(tile):
+    """`_terrain_children(tile)` minus scatter boulder objects — the actual
+    imported terrain-object meshes carrying `hexfinity_terrain` snap settings,
+    the ones `terrain_pad_specs` builds plateau pads for."""
+    from . import scatter
+    return [c for c in _terrain_children(tile) if c.get(scatter.SCATTER_OF) is None]
+
+
+def _is_terrain_object(o):
+    """True if `o` is an imported terrain-object mesh (not a tile, not a
+    planted tree/pin, not a scatter boulder) — the same eligibility
+    `_terrain_objects` filters a tile's children down to, but usable directly
+    on a candidate object from the current selection."""
+    if o.type != 'MESH' or o.hexfinity_tile.is_generated:
+        return False
+    from . import flora, scatter
+    if o.get(flora.FLORA_OF) or o.get(flora.FLORA_PIN_OF):
+        return False
+    if o.get(scatter.SCATTER_OF) is not None:
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Terrain-object plateau pads — the sole mechanism that deforms a hex to
+# match a terrain object's footprint. Reuses the flora "tree pad" mechanism
+# (adaptive local refinement + flatten-to-height, see tree_pads.py): a
+# terrain object's footprint gets genuine local mesh density under it,
+# rather than being limited by the tile's existing top-vertex spacing, and
+# the flattened area is an exact geometric constraint (unlike a per-vertex
+# displacement, which would only ever be as flat as however many top
+# vertices happen to already exist there). See terrain_pads.py for why the
+# footprint is tiled into several small pads rather than one big circle —
+# a single circle can't exclude overhangs/holes in the model's base the way
+# per-point raycast classification can.
+
+TERRAIN_PAD_GRID_SPACING_MM = 5.0  # footprint-classification sample spacing
+TERRAIN_PAD_MARGIN = 1.15
+TERRAIN_PAD_BLOCK_CELLS = 3        # cells per pad tile (see cluster_grid_hits)
+
+
+def _terrain_pad_grid_hits(model, tile, base_z, mmin, mmax):
+    """(col, row, x, y) tuples — one per grid cell classified as under
+    `model`'s flat base (`_raycast_under_flat_base`) — `x`/`y` converted to
+    tile-local mm (tiles are translation-only, so this is a plain subtract)."""
+    inv = model.matrix_world.inverted()
+    up_local = (inv.to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()
+    tx, ty = tile.location.x, tile.location.y
+    spacing = TERRAIN_PAD_GRID_SPACING_MM
+    cols = max(1, int(math.ceil((mmax.x - mmin.x) / spacing)) + 1)
+    rows = max(1, int(math.ceil((mmax.y - mmin.y) / spacing)) + 1)
+    hits = []
+    for row in range(rows):
+        yw = mmin.y + row * spacing
+        for col in range(cols):
+            xw = mmin.x + col * spacing
+            if _raycast_under_flat_base(model, inv, up_local, base_z, mmin, mmax, xw, yw):
+                hits.append((col, row, xw - tx, yw - ty))
+    return hits
+
+
+def _terrain_pads_signature(tile):
+    """Staleness key for the cached plateau-pad list (a string, for id-prop
+    storage) — covers every terrain object on `tile`, since a plateau pad
+    tiling changes if ANY terrain object on the tile moves or has its snap
+    props changed. Also includes `base_thickness_mm`, since it feeds the
+    floor-clamp in each pad's `target_z`."""
+    map_props = bpy.context.scene.hexfinity_map
+    parts = [tile.hexfinity_tile.local_subdiv, round(map_props.base_thickness_mm, 4)]
+    for o in _terrain_objects(tile):
+        mw = tuple(round(c, 4) for row in o.matrix_world for c in row)
+        parts.append((
+            o.name, mw,
+            round(o.hexfinity_terrain.snap_mm, 4),
+            round(o.hexfinity_terrain.snap_damp_mm, 4),
+            len(o.data.vertices) if o.data else 0,
+        ))
+    return repr(parts)
+
+
+def _pack_terrain_pads(pads):
+    flat = []
+    for p in pads:
+        flat.extend((p["x"], p["y"], p["radius_mm"], p["blend_mm"], p["z"]))
+    return flat
+
+
+def _unpack_terrain_pads(flat):
+    return [
+        {"x": flat[i], "y": flat[i + 1], "radius_mm": flat[i + 2],
+         "blend_mm": flat[i + 3], "z": flat[i + 4]}
+        for i in range(0, len(flat), 5)
+    ]
+
+
+def _compute_terrain_pad_specs(tile):
+    map_props = bpy.context.scene.hexfinity_map
+    from . import terrain_pads
+    pads = []
+    for model in _terrain_objects(tile):
+        tprops = model.hexfinity_terrain
+        if tprops.snap_mm <= 0:
+            continue
+        mmin, mmax = _world_bbox([model])
+        base_z = mmin.z
+        target_z = max(base_z + EMBED_MM, map_props.base_thickness_mm)
+        hits = _terrain_pad_grid_hits(model, tile, base_z, mmin, mmax)
+        if not hits:
+            continue
+        blend_mm = max(0.0, tprops.snap_damp_mm)
+        for pad in terrain_pads.cluster_grid_hits(
+                hits, spacing_mm=TERRAIN_PAD_GRID_SPACING_MM,
+                margin=TERRAIN_PAD_MARGIN, block_cells=TERRAIN_PAD_BLOCK_CELLS):
+            pad["blend_mm"] = blend_mm
+            pad["z"] = target_z
+            pads.append(pad)
+    return pads
+
+
+def terrain_pad_specs(tile_obj):
+    """Plateau-pad specs for `tile_obj`'s terrain objects, ready for
+    `mesh_builder.build_hex_tile`'s `terrain_pads` kwarg.
+
+    Returns `[]` immediately — without raycasting — for a tile with no
+    terrain objects. Otherwise builds a grid of footprint-classification
+    raycasts (the expensive part, via `_raycast_under_flat_base`) per terrain
+    object with `snap_mm > 0`, tiles the hits into small circular pads via
+    `terrain_pads.cluster_grid_hits`, and stamps each with `blend_mm` = that
+    object's own `snap_damp_mm` and `z` = `target_z` = the model's own base
+    height plus `EMBED_MM`, floor-clamped to `base_thickness_mm`.
+
+    The raycast pass is cached on `tile_obj` (`hf_terrain_pads`/
+    `hf_terrain_pads_sig`), keyed by every terrain object's transform and
+    snap settings, so the routine call from `rebuild_tile` (which fires on
+    unrelated edits — corner heights, brush strokes, …) doesn't re-raycast
+    unless a terrain object actually moved or its snap settings changed.
+    """
+    if not _terrain_objects(tile_obj):
+        return []
+    sig = _terrain_pads_signature(tile_obj)
+    if tile_obj.get("hf_terrain_pads_sig") == sig:
+        cached = tile_obj.get("hf_terrain_pads")
+        if cached is not None:
+            return _unpack_terrain_pads(cached)
+    pads = _compute_terrain_pad_specs(tile_obj)
+    tile_obj["hf_terrain_pads"] = _pack_terrain_pads(pads)
+    tile_obj["hf_terrain_pads_sig"] = sig
+    return pads
+
+
+def _resolve_selected_hex(context):
+    """The hex tile `HEXFINITY_OT_generate_terrain_plateau` should act on:
+    the active object itself if it's a generated tile, or its parent tile if
+    it's a terrain object. `None` if neither applies."""
+    obj = context.active_object
+    if obj is None:
+        return None
+    if obj.hexfinity_tile.is_generated:
+        return obj
+    if _is_terrain_object(obj) and obj.parent is not None and obj.parent.hexfinity_tile.is_generated:
+        return obj.parent
+    return None
+
+
+class HEXFINITY_OT_generate_terrain_plateau(bpy.types.Operator):
+    bl_idname = "hexfinity.generate_terrain_plateau"
+    bl_label = "Regenerate Plateau"
+    bl_description = (
+        "Force-regenerate the local-refinement plateau for every terrain "
+        "object on the selected hex. The plateau is normally recomputed "
+        "automatically and cached — use this to force a fresh pass, e.g. "
+        "after editing a terrain object's mesh in place, a change the cache "
+        "can't detect on its own."
+    )
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        if not context.scene.hexfinity_map.is_generated:
+            return False
+        tile = _resolve_selected_hex(context)
+        return tile is not None and bool(_terrain_objects(tile))
+
+    def execute(self, context):
+        tile = _resolve_selected_hex(context)
+        if tile is None or not _terrain_objects(tile):
+            self.report({'ERROR'},
+                        "Select a hex tile (or a terrain object on one) "
+                        "that has terrain objects on it.")
+            return {'CANCELLED'}
+
+        for key in ("hf_terrain_pads", "hf_terrain_pads_sig"):
+            if tile.get(key) is not None:
+                del tile[key]
+        rebuild_tile(tile)
+
+        packed = tile.get("hf_terrain_pads")
+        count = len(packed) // 5 if packed else 0
+        if count == 0:
+            self.report({'WARNING'},
+                        "No flat area found under any terrain object's "
+                        f"footprint on {tile.name} (needs an up-raycast hit "
+                        f"within {SNAP_BASE_TOL_MM:g} mm of its lowest "
+                        "point) — no plateau pads were created, so the mesh "
+                        "is unchanged.")
+        else:
+            self.report({'INFO'},
+                        f"Regenerated {count} plateau pad(s) on {tile.name}.")
+        return {'FINISHED'}
 
 
 def _eval_mesh_local(obj, depsgraph, matrix):
@@ -1239,7 +1266,7 @@ class HEXFINITY_OT_export_tiles(bpy.types.Operator):
                 custom = is_custom_tile(
                     has_children=bool(children),
                     has_brush=tile.get("hf_brush_disp") is not None,
-                    has_snap=tile.get("hf_snap_disp") is not None,
+                    has_snap=bool(tile.get("hf_terrain_pads")),
                     region_count=len(tp.surface_regions),
                 )
 

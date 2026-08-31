@@ -148,15 +148,15 @@ triangles near each planted tree:
    split decision is shared by both faces on an edge, never decided
    per-triangle) up to a small cap, appending new vertices strictly *after*
    the existing top-vertex range so `top_vertex_count()` and the
-   `hf_brush_disp`/`hf_snap_disp` layers are completely unaffected by
-   planting or unplanting a tree. It never splits a rim edge, so the side
-   wall's n-gon is untouched too.
+   `hf_brush_disp` layer are completely unaffected by planting or unplanting
+   a tree. It never splits a rim edge, so the side wall's n-gon is untouched
+   too.
 4. Every vertex within `radius_mm` of a pad centre is then **lerped**
    (not additively offset) toward a height sampled from the surface *before*
    flattening, with a smoothstep falloff over `pad_blend_mm` and a
-   rim-edge-distance fade (mirroring the skirt fade in
-   `operators._compute_snap_gap`) so a pad near a hex edge shrinks rather
-   than desyncing the seam with the neighbouring tile. Because it's a lerp,
+   rim-edge-distance fade so a pad near a hex edge shrinks rather
+   than desyncing the seam with the neighbouring tile (the same fade
+   terrain-object plateau pads use). Because it's a lerp,
    the pad interior is flat even where a procedural-surface texture or brush
    stroke would otherwise bump it — the pad simply overrides whatever was
    there.

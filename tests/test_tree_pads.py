@@ -530,3 +530,58 @@ def test_boundary_loop_rejects_disjoint_loops():
     # Two fully separate triangles — a valid loop each, but not ONE loop.
     removed = [(0, 1, 2), (3, 4, 5)]
     assert tree_pads._boundary_loop(removed) is None
+
+
+# ---------------------------------------------------------------------------
+# 13. terrain_pads kwarg — same pipeline slot as flora_pads, merged into one
+# refine_and_flatten call, with an explicit "z" target instead of a sampled
+# one (see mesh_builder.build_hex_tile's terrain_pads docstring).
+
+def test_pad_z_override_flattens_to_explicit_height_not_sampled():
+    verts, faces, protected = _grid_mesh(6, 60.0)
+    target_z = 42.0
+    pads = [{"x": 30.0, "y": 30.0, "radius_mm": 5.0, "blend_mm": 0.0, "z": target_z}]
+    new_faces = tree_pads.refine_and_flatten(
+        verts, faces, protected, pads, diameter_mm=1000.0, base_thickness_mm=-1e9)
+    inside = [v for v in verts
+              if math.hypot(v[0] - 30.0, v[1] - 30.0) <= 5.0 - 1e-6]
+    assert len(inside) >= 1
+    for v in inside:
+        assert v[2] == pytest.approx(target_z, abs=1e-9)
+
+
+def test_terrain_pads_kwarg_produces_manifold_tile():
+    pad = {"x": 0.0, "y": 0.0, "radius_mm": 10.0, "blend_mm": 5.0, "z": 25.0}
+    verts, faces = _sloped_tile(terrain_pads=[pad])
+    assert_two_manifold(verts, faces)
+    inside = [v for v in verts
+              if math.hypot(v[0], v[1]) <= pad["radius_mm"] - 1e-6
+              and v[2] >= 10.0 - 1e-6]
+    assert len(inside) >= 3
+    for v in inside:
+        assert v[2] == pytest.approx(25.0, abs=1e-6)
+
+
+def test_flora_and_terrain_pads_merge_into_one_refinement_pass():
+    flora_pad = {"x": -20.0, "y": 0.0, "radius_mm": 6.0, "blend_mm": 3.0}
+    terrain_pad = {"x": 20.0, "y": 0.0, "radius_mm": 6.0, "blend_mm": 3.0, "z": 30.0}
+    verts_both, faces_both = _sloped_tile(
+        flora_pads=[flora_pad], terrain_pads=[terrain_pad])
+    verts_flora_only, _ = _sloped_tile(flora_pads=[flora_pad])
+    verts_terrain_only, _ = _sloped_tile(terrain_pads=[terrain_pad])
+    verts_plain, _ = _sloped_tile()
+
+    assert_two_manifold(verts_both, faces_both)
+    extra_both = len(verts_both) - len(verts_plain)
+    extra_flora = len(verts_flora_only) - len(verts_plain)
+    extra_terrain = len(verts_terrain_only) - len(verts_plain)
+    # Two well-separated pads refine independently, so combined growth should
+    # match the sum of each pad refining alone.
+    assert extra_both == extra_flora + extra_terrain
+
+    terrain_inside = [v for v in verts_both
+                       if math.hypot(v[0] - 20.0, v[1]) <= terrain_pad["radius_mm"] - 1e-6
+                       and v[2] >= 10.0 - 1e-6]
+    assert len(terrain_inside) >= 1
+    for v in terrain_inside:
+        assert v[2] == pytest.approx(30.0, abs=1e-6)

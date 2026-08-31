@@ -7,16 +7,16 @@ A planted tree keeps a flat base cut but stays perfectly world-vertical
 (`flora.py`), so on sloped terrain the base only touches the hex top surface
 along one edge. Rather than tilting the tree, `refine_and_flatten` tessellates
 a small flat "pad" into the top surface under each tree's footprint and
-blends it smoothly back into the surrounding terrain — the same
-footprint-flatten-and-blend idea as `operators._compute_snap_gap`, just
-against a disc footprint instead of a raycast one.
+blends it smoothly back into the surrounding terrain. The same function also
+flattens terrain objects to their footprint (`operators.terrain_pad_specs`),
+via a pad list built from a raycast-classified grid instead of a single disc.
 
 Called from `mesh_builder.build_hex_tile` on the remapped top-surface
 vertices/faces only, strictly after brush/procedural-surface displacement has
 already been applied and strictly before any bottom/side/tab geometry is
 registered — new vertices this module appends therefore land after the
-`0 .. num_top-1` prefix that the brush and snap displacement layers are keyed
-to, so planting/unplanting a tree never touches those layers.
+`0 .. num_top-1` prefix that the brush displacement layer is keyed to, so
+planting/unplanting a tree never touches it.
 """
 
 import math
@@ -409,13 +409,22 @@ def refine_and_flatten(verts, faces, protected_edges, pads, diameter_mm, base_th
     `pads` is a list of `{"x", "y", "radius_mm", "blend_mm"}` dicts in the
     same local mm frame as `verts`. `protected_edges` is a set of
     `(min_idx, max_idx)` pairs (e.g. the hex rim) that must never be split.
+
+    A pad may optionally carry a `"z"` key — an explicit target height,
+    used instead of sampling the pre-flatten surface. Flora pads omit it
+    (a tree just needs a locally flat spot wherever the surface already is);
+    terrain-object pads set it to the model's own target height, since their
+    whole point is moving the surface to an externally-dictated height.
     """
     if not pads:
         return list(faces)
 
     # Sample every pad's target height up front, from the pre-flatten
     # surface, so two nearby pads can't influence each other's target.
-    pad_z = [sample_surface_z(verts, faces, p["x"], p["y"]) for p in pads]
+    pad_z = [
+        p["z"] if "z" in p else sample_surface_z(verts, faces, p["x"], p["y"])
+        for p in pads
+    ]
 
     faces = _iteratively_refine(verts, faces, protected_edges, pads, MAX_LEVELS)
 
@@ -435,8 +444,8 @@ def refine_and_flatten(verts, faces, protected_edges, pads, diameter_mm, base_th
                 continue
             if r_blend > 1e-9:
                 # Fade the pad out near the hex rim so it can never desync a
-                # seam with the neighbouring tile (mirrors the snap-to-model
-                # skirt fade in operators._compute_snap_gap).
+                # seam with the neighbouring tile — every pad, flora or
+                # terrain, uses this same rim fade shape.
                 rim = rim_edge_distance(x, y, diameter_mm)
                 w *= 0.0 if rim < 0.0 else (1.0 if rim > r_blend else rim / r_blend)
             if w <= 0.0:

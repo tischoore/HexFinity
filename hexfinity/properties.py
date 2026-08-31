@@ -576,17 +576,18 @@ class HexFinityProperties(bpy.types.PropertyGroup):
 
 
 # ---------------------------------------------------------------------------
-# Per-Object (loaded terrain model) — the snap-to-model slider. Lives on the
-# imported mesh, not the tile; changing it reshapes whichever hex the model
-# sits over (see operators.apply_terrain_snap).
+# Per-Object (loaded terrain model) — the terrain-plateau gate/blend sliders.
+# Lives on the imported mesh, not the tile; changing it rebuilds whichever
+# hex the model is parented to (see operators.on_terrain_snap_changed /
+# operators.terrain_pad_specs).
 
 def _on_terrain_snap_update(self, context):
     owner = self.id_data
     if not isinstance(owner, bpy.types.Object):
         return
-    from .operators import apply_terrain_snap
+    from .operators import on_terrain_snap_changed
     try:
-        apply_terrain_snap(owner, self.snap_mm)
+        on_terrain_snap_changed(owner)
     except Exception:
         pass
 
@@ -594,10 +595,12 @@ def _on_terrain_snap_update(self, context):
 class HexFinityTerrainProperties(bpy.types.PropertyGroup):
     snap_mm: bpy.props.IntProperty(
         name="Terrain snap to model",
-        description="Move the hex top surface under the model's flat base toward "
-                    "the base by this many millimetres, both up and down. "
-                    "0 = no snapping; verts stop once they reach the base "
-                    "(0.2 mm overlap). Arch openings and overhangs are left alone.",
+        description="Enable a locally-refined flat plateau under this model's "
+                    "flat base (0 = off, no plateau). The hex top surface is "
+                    "flattened exactly to the base's height (plus a 0.2 mm "
+                    "overlap) wherever an up-raycast finds a flat area; arch "
+                    "openings and overhangs are left alone. The exact value "
+                    "above 0 doesn't otherwise change the result.",
         default=0,
         min=0,
         soft_max=50,
@@ -607,20 +610,14 @@ class HexFinityTerrainProperties(bpy.types.PropertyGroup):
     )
     snap_damp_mm: bpy.props.FloatProperty(
         name="Snap damping (mm)",
-        description="Blend the snap into the surrounding terrain over this width "
-                    "in millimetres: the terrain around the model ramps smoothly "
-                    "up/down to the base (organic skirt) instead of a hard cliff "
-                    "at the footprint edge. 0 = no skirt. Faded near the hex rim "
-                    "so tile seams stay aligned.",
+        description="Blend the plateau into the surrounding terrain over this "
+                    "width in millimetres: the terrain around the model ramps "
+                    "smoothly up/down to the base (organic skirt) instead of a "
+                    "hard cliff at the footprint edge. 0 = no blend. Faded near "
+                    "the hex rim so tile seams stay aligned.",
         default=0.0,
         min=0.0,
         soft_max=100.0,
         subtype='NONE',
         update=_on_terrain_snap_update,
-    )
-    # Remembers which tile this model last snapped, so moving it to another hex
-    # clears the stale offset from the old one (operators.apply_terrain_snap).
-    snap_tile: bpy.props.PointerProperty(
-        type=bpy.types.Object,
-        options={'HIDDEN'},
     )

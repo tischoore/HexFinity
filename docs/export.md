@@ -41,8 +41,8 @@ identical. The dedup key is a SHA-256 content hash computed in the bpy-free
   happen to be parented in does not affect the hash.
 
 Hashing the *result* rather than the dozens of parameters that feed the builder means
-corner heights, dome shape, brush displacement (`hf_brush_disp`), snap displacement
-(`hf_snap_disp`), and procedural surface regions are **all** captured automatically.
+corner heights, dome shape, brush displacement (`hf_brush_disp`), terrain-object
+plateau pads, and procedural surface regions are **all** captured automatically.
 Surface-region patterns are seeded from `(q, r)`, so two region tiles at different
 coordinates produce different geometry and correctly do **not** dedup.
 
@@ -54,7 +54,7 @@ coordinates produce different geometry and correctly do **not** dedup.
 | Custom | `hex_q{q:02d}_r{r:02d}_{hash8}.stl` | `hex_q03_r05_1a2b3c4d.stl` |
 
 A tile counts as **custom** if it has any of: parented terrain objects, terrain-brush
-displacement, snap displacement, or one or more procedural surface regions
+displacement, a terrain-object plateau, or one or more procedural surface regions
 (`tile_export.is_custom_tile`). The 8-char suffix is the first 8 hex characters of the
 geometry hash, so differing custom tiles never collide and byte-identical custom tiles
 share one file.

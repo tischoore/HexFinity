@@ -100,6 +100,13 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
                              text="Re-drop onto hex", icon='IMPORT')
                 box.prop(obj.hexfinity_terrain, "snap_mm", slider=True)
                 box.prop(obj.hexfinity_terrain, "snap_damp_mm", slider=True)
+                row = box.row()
+                row.enabled = obj.hexfinity_terrain.snap_mm > 0
+                row.operator("hexfinity.generate_terrain_plateau",
+                             text="Regenerate Plateau", icon='FILE_REFRESH')
+                if obj.hexfinity_terrain.snap_mm <= 0:
+                    box.label(text="Raise Terrain snap to model above 0 first.",
+                             icon='INFO')
             else:
                 layout.label(text="Select a HexTile to edit its corners.")
             return
@@ -147,8 +154,13 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         col.prop(tile, "dome_damping", slider=True)
         col.prop(tile, "local_subdiv")
 
-        box.operator("hexfinity.import_terrain_object",
-                     text="Terrain Objects", icon='IMPORT')
+        terrain_box = box.box()
+        terrain_box.label(text="Terrain Objects", icon='IMPORT')
+        terrain_box.operator("hexfinity.import_terrain_object",
+                             text="Import STL", icon='IMPORT')
+        if operators._terrain_objects(obj):
+            terrain_box.operator("hexfinity.generate_terrain_plateau",
+                                 text="Regenerate Plateau", icon='FILE_REFRESH')
 
         # ---- Flora ----------------------------------------------------------
         flora_box = layout.box()
