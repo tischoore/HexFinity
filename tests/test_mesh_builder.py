@@ -868,3 +868,87 @@ def test_rim_edge_distance_symmetric():
         rx = x * math.cos(a) - y * math.sin(a)
         ry = x * math.sin(a) + y * math.cos(a)
         assert rim_edge_distance(rx, ry, diameter) == pytest.approx(base, abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Bake support: bake_capture / baked_extra (hexfinity.bake_tile).
+
+def test_bake_capture_and_baked_extra_round_trip():
+    # A pad flattens some vertices *inside* the original top-vertex range too
+    # (not just the ones tree_pads.refine_and_flatten appends) — exactly what
+    # bake_capture's prefix_overrides exists to freeze. Sloped corner levels
+    # (a flat tile has nothing for a pad to flatten — the sampled target
+    # height already matches every vertex) so the flatten actually changes
+    # some original-range vertices. Replaying the capture via baked_extra
+    # must reproduce the live-built mesh bit-for-bit.
+    pads = [{"x": 5.0, "y": 5.0, "radius_mm": 15.0, "blend_mm": 8.0}]
+    capture = {}
+    verts_live, faces_live = build_hex_tile(
+        diameter_mm=100.0, level_height_mm=5.0, base_thickness_mm=10.0,
+        corner_levels=(0, 1, 2, 1, 0, 0), center_level=None, smoothness_passes=2,
+        flora_pads=pads, bake_capture=capture,
+    )
+    assert_two_manifold(verts_live, faces_live)
+    assert capture["prefix_overrides"], \
+        "pad flatten should have touched some original top verts"
+
+    baked_extra = (capture["extra_verts"], capture["extra_faces"],
+                   capture["prefix_overrides"])
+    verts_baked, faces_baked = build_hex_tile(
+        diameter_mm=100.0, level_height_mm=5.0, base_thickness_mm=10.0,
+        corner_levels=(0, 1, 2, 1, 0, 0), center_level=None, smoothness_passes=2,
+        baked_extra=baked_extra,
+    )
+    assert_two_manifold(verts_baked, faces_baked)
+    assert verts_baked == verts_live
+    assert faces_baked == faces_live
+
+
+def test_baked_extra_ignores_live_pad_kwargs():
+    # Once baked_extra is given, flora_pads/terrain_pads/flora_notches/
+    # path_features must be ignored entirely — ONLY the frozen blob is used,
+    # since the whole point of baking is skipping that recompute.
+    pads = [{"x": 0.0, "y": 0.0, "radius_mm": 10.0, "blend_mm": 5.0}]
+    capture = {}
+    verts_live, faces_live = build_hex_tile(
+        diameter_mm=100.0, level_height_mm=5.0, base_thickness_mm=10.0,
+        corner_levels=(0,) * 6, center_level=None, smoothness_passes=2,
+        flora_pads=pads, bake_capture=capture,
+    )
+    baked_extra = (capture["extra_verts"], capture["extra_faces"],
+                   capture["prefix_overrides"])
+    verts_baked, faces_baked = build_hex_tile(
+        diameter_mm=100.0, level_height_mm=5.0, base_thickness_mm=10.0,
+        corner_levels=(0,) * 6, center_level=None, smoothness_passes=2,
+        flora_pads=[{"x": 0.0, "y": 0.0, "radius_mm": 40.0, "blend_mm": 5.0}],
+        baked_extra=baked_extra,
+    )
+    assert verts_baked == verts_live
+    assert faces_baked == faces_live
+
+
+def test_baked_extra_preserves_live_top_displacement():
+    # top_displacement (the terrain brush) must keep applying live on top of
+    # a baked_extra replay — baking only ever freezes the pad/terrain/notch/
+    # path-feature portion, never the brush/region layers.
+    capture = {}
+    build_hex_tile(
+        diameter_mm=100.0, level_height_mm=5.0, base_thickness_mm=10.0,
+        corner_levels=(0,) * 6, center_level=None, smoothness_passes=2,
+        bake_capture=capture,
+    )
+    num_top = capture["num_top"]
+    assert capture["extra_verts"] == []
+    assert capture["prefix_overrides"] == {}
+
+    baked_extra = (capture["extra_verts"], capture["extra_faces"],
+                   capture["prefix_overrides"])
+    disp = [0.0] * num_top
+    disp[0] = 3.0
+    verts, faces = build_hex_tile(
+        diameter_mm=100.0, level_height_mm=5.0, base_thickness_mm=10.0,
+        corner_levels=(0,) * 6, center_level=None, smoothness_passes=2,
+        top_displacement=disp, baked_extra=baked_extra,
+    )
+    assert_two_manifold(verts, faces)
+    assert verts[0][2] == pytest.approx(10.0 + 3.0)

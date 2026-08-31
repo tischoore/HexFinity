@@ -213,6 +213,8 @@ def build_hex_tile(
     flora_notch_heights=None,
     terrain_pads=None,
     path_features=None,
+    baked_extra=None,
+    bake_capture=None,
 ):
     """Build a single HexFinity tile.
 
@@ -289,6 +291,25 @@ def build_hex_tile(
     already produced (the topmost layer in the user-facing Water/Land/Draw
     Area/Path Feature stack). New vertices are appended after the existing
     prefix, same contract as `flora_pads`/`terrain_pads`.
+
+    `baked_extra`, when given, is a `(extra_verts, extra_faces,
+    prefix_overrides)` tuple captured by a previous call's `bake_capture`
+    (see `HEXFINITY_OT_bake_tile` / `operators.rebuild_tile`) — a frozen
+    snapshot of exactly what `flora_pads`/`terrain_pads`/`path_features`/
+    `flora_notches` produced at bake time. When given, none of those four
+    kwargs are consulted (no `tree_pads` call at all — this is the whole
+    point, skipping the expensive recompute): `prefix_overrides` (a dict of
+    `{top_vertex_index: z}`) is applied to the freshly-generated top-vertex
+    prefix first, then `extra_verts`/`extra_faces` are appended/used
+    verbatim, exactly where the live pad/notch/path pipeline would have left
+    them. `top_displacement` (brush) and `surface_regions` are unaffected —
+    they still apply live, above, before this runs.
+
+    `bake_capture`, when given, is an output-only dict this call fills in
+    (only in the branch where `baked_extra` is *not* given, i.e. a live
+    build) with `num_top`, `extra_verts`, `extra_faces`, and
+    `prefix_overrides` — everything a caller needs to freeze this build's
+    pad/notch/path result into a `baked_extra` tuple for a later call.
     """
     if diameter_mm <= 0:
         raise ValueError(f"diameter_mm must be positive, got {diameter_mm}")
@@ -473,33 +494,58 @@ def build_hex_tile(
                         x, y, regions, surface_origin_xy, surface_seed)
             verts_mm[i] = (x, y, max(z + dz, base_thickness_mm))
 
+    # `bake_capture` records the pre-pad prefix Z here (before any of the
+    # pad/notch/path work below runs) so a live build used to *create* a bake
+    # can diff against it afterward. Harmless no-op cost when unused.
+    if bake_capture is not None:
+        bake_capture["num_top"] = num_top
+        bake_capture["prefix_z_pre_pads"] = [verts_mm[i][2] for i in range(num_top)]
+
     top_faces = [tuple(top_remap[v] for v in f) for f in sub_faces]
-    combined_pads = list(flora_pads or ()) + list(terrain_pads or ())
-    if combined_pads:
-        try:
-            from . import tree_pads
-        except ImportError:
-            import tree_pads
-        top_faces = tree_pads.refine_and_flatten(
-            verts_mm, top_faces, protected_edges, combined_pads,
-            diameter_mm, base_thickness_mm)
-    if path_features:
-        try:
-            from . import tree_pads
-        except ImportError:
-            import tree_pads
-        top_faces = tree_pads.refine_and_displace_along_path(
-            verts_mm, top_faces, protected_edges, path_features,
-            diameter_mm, base_thickness_mm)
-    if flora_notches:
-        try:
-            from . import tree_pads
-        except ImportError:
-            import tree_pads
-        top_faces = tree_pads.cut_notches(
-            verts_mm, top_faces, protected_edges, flora_notches,
-            warnings=flora_notch_warnings, ok_indices=flora_notch_ok_indices,
-            resolved_heights=flora_notch_heights)
+    if baked_extra is not None:
+        # Frozen replay: splice in a previously-captured pad/notch/path
+        # result instead of recomputing it — see the docstring above.
+        extra_verts, extra_faces, prefix_overrides = baked_extra
+        for idx, z in prefix_overrides.items():
+            x, y, _old_z = verts_mm[idx]
+            verts_mm[idx] = (x, y, z)
+        verts_mm.extend(tuple(v) for v in extra_verts)
+        top_faces = [tuple(f) for f in extra_faces]
+    else:
+        combined_pads = list(flora_pads or ()) + list(terrain_pads or ())
+        if combined_pads:
+            try:
+                from . import tree_pads
+            except ImportError:
+                import tree_pads
+            top_faces = tree_pads.refine_and_flatten(
+                verts_mm, top_faces, protected_edges, combined_pads,
+                diameter_mm, base_thickness_mm)
+        if path_features:
+            try:
+                from . import tree_pads
+            except ImportError:
+                import tree_pads
+            top_faces = tree_pads.refine_and_displace_along_path(
+                verts_mm, top_faces, protected_edges, path_features,
+                diameter_mm, base_thickness_mm)
+        if flora_notches:
+            try:
+                from . import tree_pads
+            except ImportError:
+                import tree_pads
+            top_faces = tree_pads.cut_notches(
+                verts_mm, top_faces, protected_edges, flora_notches,
+                warnings=flora_notch_warnings, ok_indices=flora_notch_ok_indices,
+                resolved_heights=flora_notch_heights)
+        if bake_capture is not None:
+            prefix_before = bake_capture["prefix_z_pre_pads"]
+            bake_capture["extra_verts"] = [tuple(v) for v in verts_mm[num_top:]]
+            bake_capture["extra_faces"] = [tuple(f) for f in top_faces]
+            bake_capture["prefix_overrides"] = {
+                i: verts_mm[i][2] for i in range(num_top)
+                if abs(verts_mm[i][2] - prefix_before[i]) > 1e-9
+            }
     faces.extend(top_faces)
 
     # Bottom of the tile carries inter-tile tab/hole interlocks (see module

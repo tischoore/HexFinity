@@ -635,6 +635,15 @@ class HexFinityProperties(bpy.types.PropertyGroup):
         default=False,
         options={'HIDDEN'},
     )
+    is_baked: bpy.props.BoolProperty(
+        name="Is Baked",
+        description="Flora/terrain pads, notches, path features, and the terrain "
+                    "brush are frozen into the mesh (see hexfinity.bake_tile) "
+                    "instead of being recomputed every rebuild. Displacement "
+                    "regions (Draw Area / Surface Texture) stay live either way.",
+        default=False,
+        options={'HIDDEN'},
+    )
     coord_q: bpy.props.IntProperty(
         name="Coord Q",
         default=0,

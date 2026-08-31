@@ -219,6 +219,23 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         box.operator("hexfinity.paint_brush", text="Paint", icon='BRUSH_DATA')
         box.label(text="Bump smoothness/resample clears paint.", icon='INFO')
 
+        # ---- Bake -----------------------------------------------------
+        box = layout.box()
+        box.label(text="Bake", icon='NODETREE')
+        if tile.is_baked:
+            box.operator("hexfinity.unbake_tile", text="Un-bake Tile",
+                         icon='LOOP_BACK')
+            box.label(text="Pad/terrain/notch/path/brush layers are frozen "
+                            "into the mesh.", icon='INFO')
+        else:
+            box.operator("hexfinity.bake_tile", text="Bake Tile",
+                         icon='NODETREE')
+        box.label(text="Displacement regions (Draw Area / Surface Texture) "
+                        "stay live either way.", icon='INFO')
+        box.label(text="A corner/dome/global edit auto-reverts the frozen "
+                        "pad/terrain/notch/path layer (not the brush).",
+                  icon='INFO')
+
     @staticmethod
     def _draw_surface_regions(context, layout, map_props, obj, tile):
         box = layout.box()

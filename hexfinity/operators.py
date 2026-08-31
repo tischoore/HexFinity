@@ -103,7 +103,101 @@ def _effective_resample(tile, map_props):
                               tile.hexfinity_tile.local_subdiv)
 
 
-def rebuild_tile(obj, finalize_flora=False):
+def _bake_signature(tile):
+    """Staleness key (a string, for id-prop storage) for `tile`'s frozen
+    pad/terrain/notch/path-feature bake (`hf_baked_extra_*`) — covers
+    everything that shapes that geometry: the top surface it's fit against
+    (corner/center/dome levels, global mesh params) plus every source of
+    pad/notch/path geometry (flora placements + flora pad settings,
+    terrain-object children, path-feature points/params). Mirrors
+    `_terrain_pads_signature`'s shape/purpose for the smaller terrain-only
+    cache."""
+    map_props = bpy.context.scene.hexfinity_map
+    tp = tile.hexfinity_tile
+    resample = _effective_resample(tile, map_props)
+    parts = [
+        _corner_levels(tile), tp.override_center, tp.center_level,
+        round(tp.dome_area, 6), round(tp.dome_damping, 6),
+        round(map_props.diameter_mm, 4), round(map_props.level_height_mm, 4),
+        round(map_props.base_thickness_mm, 4), map_props.smoothness_passes,
+        resample,
+    ]
+    flora_props = bpy.context.scene.hexfinity_flora
+    parts.append((
+        flora_props.flatten_base, round(flora_props.pad_blend_mm, 4),
+        round(flora_props.penetration_mm, 4),
+    ))
+    for p in tp.flora_placements:
+        parts.append((
+            p.species_file, p.tree_type, round(p.local_x_mm, 4),
+            round(p.local_y_mm, 4), round(p.rotation_rad, 4),
+            round(p.scale_factor, 4),
+        ))
+    for o in _terrain_objects(tile):
+        mw = tuple(round(c, 4) for row in o.matrix_world for c in row)
+        parts.append((
+            o.name, mw, round(o.hexfinity_terrain.snap_mm, 4),
+            round(o.hexfinity_terrain.snap_damp_mm, 4),
+            len(o.data.vertices) if o.data else 0,
+        ))
+    for f in tp.path_features:
+        parts.append((
+            f.name, f.feature_type, round(f.width_mm, 4),
+            round(f.depth_mm, 4), round(f.repeat_mm, 4), f.texture,
+            tuple((round(pt.x, 4), round(pt.y, 4)) for pt in f.points),
+        ))
+    return repr(parts)
+
+
+def _pack_baked_extra(extra_verts, extra_faces, prefix_overrides):
+    """Flatten a `build_hex_tile` `bake_capture`'s geometry into flat number
+    lists for id-prop storage — same convention as `_pack_terrain_pads`.
+    Faces are variable-length (triangles from refinement/notch floors, quads
+    from a notch's socket wall), so each is stored as its own vertex count
+    followed by that many indices."""
+    verts_flat = []
+    for v in extra_verts:
+        verts_flat.extend(v)
+    faces_flat = []
+    for f in extra_faces:
+        faces_flat.append(len(f))
+        faces_flat.extend(f)
+    overrides_flat = []
+    for idx, z in prefix_overrides.items():
+        overrides_flat.extend((idx, z))
+    return verts_flat, faces_flat, overrides_flat
+
+
+def _unpack_baked_extra(verts_flat, faces_flat, overrides_flat):
+    extra_verts = [tuple(verts_flat[i:i + 3]) for i in range(0, len(verts_flat), 3)]
+    extra_faces = []
+    i = 0
+    while i < len(faces_flat):
+        n = int(faces_flat[i])
+        extra_faces.append(tuple(int(v) for v in faces_flat[i + 1:i + 1 + n]))
+        i += 1 + n
+    prefix_overrides = {
+        int(overrides_flat[i]): overrides_flat[i + 1]
+        for i in range(0, len(overrides_flat), 2)
+    }
+    return extra_verts, extra_faces, prefix_overrides
+
+
+def _pack_baked_notches(ok_indices, notch_heights):
+    heights_flat = [c for idx in notch_heights for c in (idx, notch_heights[idx])]
+    return list(ok_indices), heights_flat
+
+
+def _unpack_baked_notches(ok_indices_flat, heights_flat):
+    ok_indices = [int(i) for i in ok_indices_flat]
+    notch_heights = {
+        int(heights_flat[i]): heights_flat[i + 1]
+        for i in range(0, len(heights_flat), 2)
+    }
+    return ok_indices, notch_heights
+
+
+def rebuild_tile(obj, finalize_flora=False, bake_capture=None):
     """Rebuild the mesh data of `obj` from its tile props + scene map props.
 
     Reads `obj.hexfinity_tile` for per-tile inputs (corner levels, centre
@@ -122,6 +216,16 @@ def rebuild_tile(obj, finalize_flora=False):
     terrain snap) — it only runs when explicitly finalizing (leaving the
     flora-placement tool, or the manual Finalize Flora button). Every other
     call site passes the default `False`.
+
+    `bake_capture`, when given (a dict), forces a full live pad/terrain/
+    notch/path-feature recompute regardless of `obj.hexfinity_tile.is_baked`
+    (implies `finalize_flora=True` semantics for notches — see
+    `HEXFINITY_OT_bake_tile`), and is filled in with everything needed to
+    freeze that result: `num_top`/`extra_verts`/`extra_faces`/
+    `prefix_overrides` (from `mesh_builder.build_hex_tile`'s own
+    `bake_capture` output) plus `notch_ok_indices`/`notch_heights` (this
+    call's own locals, since a baked rebuild skips notch computation
+    entirely and must replay these instead of recomputing them).
     """
     global _REBUILDING
     if _REBUILDING:
@@ -159,7 +263,23 @@ def rebuild_tile(obj, finalize_flora=False):
             del obj["hf_brush_disp"]
             brush = None
         obj["hf_brush_ntop"] = num_top
-        combined = list(brush) if brush is not None else None
+
+        # `hf_baked_top_offset` is the terrain brush's contribution frozen by
+        # a previous `hexfinity.bake_tile` (see that operator) — same index
+        # contract and same staleness rule as `hf_brush_disp` above (dropped
+        # on a `num_top` mismatch). Any *new* strokes painted since baking
+        # live in `hf_brush_disp` and stack on top of the frozen baseline.
+        baked_top_offset = obj.get("hf_baked_top_offset")
+        if baked_top_offset is not None and len(baked_top_offset) != num_top:
+            del obj["hf_baked_top_offset"]
+            baked_top_offset = None
+
+        if baked_top_offset is not None and brush is not None:
+            combined = [a + b for a, b in zip(baked_top_offset, brush)]
+        elif baked_top_offset is not None:
+            combined = list(baked_top_offset)
+        else:
+            combined = list(brush) if brush is not None else None
 
         # Procedural surface regions: closed polygons (tile-local mm) + params.
         # Marshalled into plain dicts the bpy-free builder understands. Sampled
@@ -208,15 +328,61 @@ def rebuild_tile(obj, finalize_flora=False):
                 reg, f"Area {idx + 1}", surface_seed ^ (idx * 2654435761)))
 
         from . import flora
-        flora_pads = flora.pad_specs(obj)
-        flora_notches = flora.notch_specs(obj) if finalize_flora else None
-        notch_warnings = [] if finalize_flora else None
-        notch_ok_indices = [] if finalize_flora else None
-        notch_heights = {} if finalize_flora else None
-        terrain_pads = terrain_pad_specs(obj)
 
-        from . import path_features
-        path_feature_specs = path_features.path_specs(obj)
+        # Flora/terrain pads, flora notches, and path-feature carving are all
+        # topology-changing (they append new mesh verts/faces) and, once
+        # frozen by `hexfinity.bake_tile`, are replayed from that frozen
+        # snapshot instead of recomputed here — see `mesh_builder.build_hex_tile`'s
+        # `baked_extra` kwarg. `bake_capture` overrides this and forces a
+        # live recompute (used by the bake operator itself to produce a
+        # fresh snapshot). A stale snapshot (something the frozen geometry
+        # was fit against has since changed — see `_bake_signature`) also
+        # falls back to live and clears itself; the baked *brush* offset
+        # above is unaffected by this, by design.
+        baked_extra = None
+        baked_notch_ok_indices = None
+        baked_notch_heights = None
+        bake_sig = obj.get("hf_bake_sig")
+        if bake_capture is None and bake_sig is not None and bake_sig == _bake_signature(obj) \
+                and obj.get("hf_baked_extra_verts") is not None:
+            extra_verts, extra_faces, prefix_overrides = _unpack_baked_extra(
+                obj.get("hf_baked_extra_verts", []),
+                obj.get("hf_baked_extra_faces", []),
+                obj.get("hf_baked_extra_overrides", []),
+            )
+            baked_extra = (extra_verts, extra_faces, prefix_overrides)
+            baked_notch_ok_indices, baked_notch_heights = _unpack_baked_notches(
+                obj.get("hf_baked_notch_indices", []),
+                obj.get("hf_baked_notch_heights", []),
+            )
+            flora_pads = None
+            flora_notches = None
+            notch_warnings = None
+            notch_ok_indices = None
+            notch_heights = None
+            terrain_pads = None
+            path_feature_specs = None
+        else:
+            if bake_capture is None and bake_sig is not None:
+                for key in ("hf_bake_sig", "hf_baked_extra_verts", "hf_baked_extra_faces",
+                            "hf_baked_extra_overrides", "hf_baked_notch_indices",
+                            "hf_baked_notch_heights"):
+                    if key in obj.keys():
+                        del obj[key]
+                print(f"HexFinity bake [{obj.name}]: a corner/dome/global edit or a "
+                      "flora/terrain/path-feature change invalidated the frozen "
+                      "pad/terrain/notch/path layer — reverted to live recompute. "
+                      "Re-bake to freeze the new shape.")
+            do_finalize = finalize_flora or bake_capture is not None
+            flora_pads = flora.pad_specs(obj)
+            flora_notches = flora.notch_specs(obj) if do_finalize else None
+            notch_warnings = [] if do_finalize else None
+            notch_ok_indices = [] if do_finalize else None
+            notch_heights = {} if do_finalize else None
+            terrain_pads = terrain_pad_specs(obj)
+
+            from . import path_features
+            path_feature_specs = path_features.path_specs(obj)
 
         verts, faces = build_hex_tile(
             diameter_mm=map_props.diameter_mm,
@@ -240,10 +406,18 @@ def rebuild_tile(obj, finalize_flora=False):
             flora_notch_heights=notch_heights,
             terrain_pads=terrain_pads,
             path_features=path_feature_specs,
+            baked_extra=baked_extra,
+            bake_capture=bake_capture,
         )
         assert_two_manifold(verts, faces)
         if notch_warnings:
             print(f"HexFinity flora [{obj.name}]: " + "; ".join(notch_warnings))
+        if bake_capture is not None:
+            # Notch computation (unlike the mesh geometry) isn't something
+            # `build_hex_tile` can hand back via `bake_capture` — it's this
+            # function's own locals — so stash it here for the bake operator.
+            bake_capture["notch_ok_indices"] = list(notch_ok_indices or ())
+            bake_capture["notch_heights"] = dict(notch_heights or {})
 
         new_mesh = bpy.data.meshes.new(obj.name)
         new_mesh.from_pydata(verts, [], faces)
@@ -279,14 +453,20 @@ def rebuild_tile(obj, finalize_flora=False):
         # tree (and therefore its pin) on every rebuild, and `sync_flora`
         # only reattaches a pin for a placement whose socket actually got
         # cut this pass (`notch_ok_indices`, empty unless `finalize_flora`).
+        # A baked rebuild skipped notch computation entirely, so it replays
+        # the pin set frozen at bake time instead.
         flora_placements = tile_props.flora_placements
         has_flora = any(c.get(flora.FLORA_OF) for c in obj.children)
         if len(flora_placements) > 0 or has_flora:
             flora.purge_flora(obj)
             if len(flora_placements) > 0:
                 bpy.context.view_layer.update()
-                flora.sync_flora(obj, ok_indices=notch_ok_indices,
-                                 notch_heights=notch_heights)
+                if baked_extra is not None:
+                    sync_ok_indices, sync_notch_heights = baked_notch_ok_indices, baked_notch_heights
+                else:
+                    sync_ok_indices, sync_notch_heights = notch_ok_indices, notch_heights
+                flora.sync_flora(obj, ok_indices=sync_ok_indices,
+                                 notch_heights=sync_notch_heights)
     finally:
         _REBUILDING = False
 
@@ -1172,6 +1352,109 @@ class HEXFINITY_OT_generate_terrain_plateau(bpy.types.Operator):
         else:
             self.report({'INFO'},
                         f"Regenerated {count} plateau pad(s) on {tile.name}.")
+        return {'FINISHED'}
+
+
+# ---------------------------------------------------------------------------
+# Bake — freeze flora/terrain pads, flora notches, path-feature carving, and
+# the terrain brush into the tile mesh, so an unrelated rebuild (e.g. tuning
+# a Draw Area region) replays the frozen result instead of recomputing it.
+# Displacement regions (Draw Area / Surface Texture) are explicitly excluded
+# and always stay live — see `rebuild_tile`'s baked-pad/notch/path branch and
+# its brush-combining block for the actual mechanics.
+
+class HEXFINITY_OT_bake_tile(bpy.types.Operator):
+    bl_idname = "hexfinity.bake_tile"
+    bl_label = "Bake Tile"
+    bl_description = (
+        "Freeze this tile's flora/terrain pads, notches, path-feature "
+        "carving, and terrain-brush strokes into the mesh, so an unrelated "
+        "rebuild replays them instead of recomputing. Displacement regions "
+        "(Draw Area / Surface Texture) stay live either way. A later "
+        "corner/dome/global edit, or a changed flora/terrain/path-feature "
+        "source, auto-reverts just the pad/terrain/notch/path portion (not "
+        "the frozen brush) and warns — re-bake to freeze the new shape"
+    )
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return (context.scene.hexfinity_map.is_generated
+                and obj is not None and obj.hexfinity_tile.is_generated)
+
+    def execute(self, context):
+        obj = context.active_object
+        capture = {}
+        rebuild_tile(obj, finalize_flora=True, bake_capture=capture)
+
+        num_top = capture["num_top"]
+        old_baked = obj.get("hf_baked_top_offset")
+        live_brush = obj.get("hf_brush_disp")
+        new_offset = None
+        if old_baked is not None and len(old_baked) == num_top \
+                and live_brush is not None and len(live_brush) == num_top:
+            new_offset = [a + b for a, b in zip(old_baked, live_brush)]
+        elif live_brush is not None and len(live_brush) == num_top:
+            new_offset = list(live_brush)
+        elif old_baked is not None and len(old_baked) == num_top:
+            new_offset = list(old_baked)
+        if new_offset is not None:
+            obj["hf_baked_top_offset"] = new_offset
+        if "hf_brush_disp" in obj.keys():
+            del obj["hf_brush_disp"]
+
+        verts_flat, faces_flat, overrides_flat = _pack_baked_extra(
+            capture["extra_verts"], capture["extra_faces"], capture["prefix_overrides"])
+        obj["hf_baked_extra_verts"] = verts_flat
+        obj["hf_baked_extra_faces"] = faces_flat
+        obj["hf_baked_extra_overrides"] = overrides_flat
+        ok_flat, heights_flat = _pack_baked_notches(
+            capture["notch_ok_indices"], capture["notch_heights"])
+        obj["hf_baked_notch_indices"] = ok_flat
+        obj["hf_baked_notch_heights"] = heights_flat
+        obj["hf_bake_sig"] = _bake_signature(obj)
+        obj.hexfinity_tile.is_baked = True
+
+        self.report({'INFO'}, f"Baked {obj.name}.")
+        return {'FINISHED'}
+
+
+class HEXFINITY_OT_unbake_tile(bpy.types.Operator):
+    bl_idname = "hexfinity.unbake_tile"
+    bl_label = "Un-bake Tile"
+    bl_description = (
+        "Clear this tile's baked pad/terrain/notch/path/brush layer and "
+        "restore live parametric recompute. Flora placements, terrain "
+        "objects, and path-feature points are never deleted by baking, so "
+        "this is fully reversible"
+    )
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return (context.scene.hexfinity_map.is_generated
+                and obj is not None and obj.hexfinity_tile.is_generated
+                and obj.hexfinity_tile.is_baked)
+
+    def execute(self, context):
+        obj = context.active_object
+        baked_top_offset = obj.get("hf_baked_top_offset")
+        live_brush = obj.get("hf_brush_disp")
+        if baked_top_offset is not None:
+            if live_brush is not None and len(live_brush) == len(baked_top_offset):
+                obj["hf_brush_disp"] = [a + b for a, b in zip(baked_top_offset, live_brush)]
+            else:
+                obj["hf_brush_disp"] = list(baked_top_offset)
+        for key in ("hf_baked_top_offset", "hf_bake_sig", "hf_baked_extra_verts",
+                    "hf_baked_extra_faces", "hf_baked_extra_overrides",
+                    "hf_baked_notch_indices", "hf_baked_notch_heights"):
+            if key in obj.keys():
+                del obj[key]
+        obj.hexfinity_tile.is_baked = False
+        rebuild_tile(obj)
+        self.report({'INFO'}, f"Un-baked {obj.name}.")
         return {'FINISHED'}
 
 
