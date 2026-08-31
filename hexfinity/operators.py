@@ -156,8 +156,8 @@ def rebuild_tile(obj, finalize_flora=False):
         # a per-tile-but-reproducible seed varies the pattern between tiles.
         from . import procedural_surfaces as ps
         surface_seed = (tile_props.coord_q * 73856093) ^ (tile_props.coord_r * 19349663)
-        surface_regions = []
-        for idx, reg in enumerate(tile_props.surface_regions):
+
+        def _marshal_region(reg, name_fallback, seed):
             # Marshal the registry's extra (surface-specific) params from the
             # generic param0..param3 slots into a named dict the bpy-free /
             # scatter code understands.
@@ -165,10 +165,10 @@ def rebuild_tile(obj, finalize_flora=False):
             extras = {spec.key: slots[i]
                       for i, spec in enumerate(ps.extra_param_specs(reg.surface_type))
                       if i < len(slots)}
-            surface_regions.append({
+            return {
                 "surface_type": reg.surface_type,
                 "kind": ps.surface_kind(reg.surface_type),
-                "name": reg.name or f"Area {idx + 1}",
+                "name": reg.name or name_fallback,
                 "feature_mm": reg.feature_mm,
                 "depth_mm": reg.depth_mm,
                 "regularity": reg.regularity,
@@ -179,8 +179,22 @@ def rebuild_tile(obj, finalize_flora=False):
                 "scatter_merge": reg.scatter_merge,
                 # Per-region seed so distinct regions scatter differently while
                 # staying reproducible across rebuilds.
-                "seed": surface_seed ^ (idx * 2654435761),
-            })
+                "seed": seed,
+            }
+
+        surface_regions = []
+        # Whole-tile "Surface Texture" base layer — the same marshalling as a
+        # drawn region, but always the whole tile (no points), and applied
+        # first so it reads as the base layer under Draw Area / Path Feature
+        # (the sum in _surface_offset_for_regions is order-independent, so
+        # this ordering is purely for readability).
+        if tile_props.surface_texture.surface_type != 'NONE':
+            surface_regions.append(_marshal_region(
+                tile_props.surface_texture, "Surface Texture",
+                surface_seed ^ 0xA17EA000))
+        for idx, reg in enumerate(tile_props.surface_regions):
+            surface_regions.append(_marshal_region(
+                reg, f"Area {idx + 1}", surface_seed ^ (idx * 2654435761)))
 
         from . import flora
         flora_pads = flora.pad_specs(obj)

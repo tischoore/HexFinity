@@ -1,10 +1,17 @@
 # Procedural surface textures
 
-Geometric micro-surfaces — cobblestone, gravel, plough & furrow — baked onto the
-top of a hex tile as real geometry (not a render-time material), so they print.
-They are applied through **regions**: closed loops you draw on the tile, each with
-its own surface type, scale, and direction. Multiple regions per tile are
-supported (a cobblestone road *and* a furrowed field on the same hex).
+Geometric micro-surfaces — cobblestone, gravel, plough & furrow, rolling plains —
+baked onto the top of a hex tile as real geometry (not a render-time material), so
+they print. They are applied two ways:
+
+- **Draw Area regions** — closed loops you draw on the tile, each with its own
+  surface type, scale, and direction. Multiple regions per tile are supported (a
+  cobblestone road *and* a furrowed field on the same hex).
+- **Surface Texture** — a single whole-tile layer, no drawing required, meant as
+  the *base* ground under everything else (Draw Area regions and Path Feature
+  lines both apply on top of it). It's the same region mechanism with no points,
+  exposed in its own panel box instead of the Draw Area list. This is the natural
+  home for **Uncultivated Plains** — gentle rolling noise across the whole tile.
 
 This page covers the workflow and the model. The geometry baseline (Coons-free
 Loop-subdivided top, manifold guarantee, interlocks) is in the main
@@ -49,6 +56,7 @@ feature_mm = reference_mm · man_height_mm / 1800     (1800 mm ≈ a real human)
 | Cobblestone  | 120 mm               | ~1.9 mm        |
 | Gravel       | 30 mm                | ~0.5 mm        |
 | Plough/furrow| 700 mm (pitch)       | ~10.9 mm       |
+| Uncultivated Plains | 900 mm (dominant wavelength) | ~14.0 mm |
 
 The auto-filled value is just a starting point — every region's **Feature Size**,
 **Depth**, **Regularity**, **Direction**, and **Edge Blend** stay editable.
@@ -93,6 +101,13 @@ means fine detail on a large map is expensive, so subdivide per-tile where neede
 6. Add more regions with **Draw Region** again, or the **＋** button for a
    whole-tile region (no outline). **－** removes the active region.
 
+For a *tile-wide base layer* instead of a drawn loop, use the **Surface
+Texture** box above Procedural Surface — no drawing needed, just pick a
+**Surface** type (e.g. **Uncultivated Plains** for gentle rolling ground) and
+tweak its Feature Size/Depth/Regularity. It's always the whole tile and always
+applies first, so Draw Area regions and Path Feature lines carve/flatten on top
+of it.
+
 ## Extending: adding a new surface type
 
 The surface set is a registry in `hexfinity/procedural_surfaces.py` (the single
@@ -106,6 +121,9 @@ derive from it). Adding one is a single localized change:
 
 No edits to `mesh_builder`, `operators`, `properties`, `panel`, or the tests are
 needed — they all read the registry, and the registry-parametrised test suite in
-`tests/test_procedural_surfaces.py` covers the new surface automatically. Planned
-additions: **Tiles** (regular Voronoi, sharp edges) and **Cracked** (irregular
-Voronoi edges carved as valleys).
+`tests/test_procedural_surfaces.py` covers the new surface automatically. A new
+entry is usable both as a Draw Area region type and — since Surface Texture is
+just the same registry through the whole-tile-region mechanism — as a Surface
+Texture base layer, with no extra wiring either way. Planned additions: **Tiles**
+(regular Voronoi, sharp edges) and **Cracked** (irregular Voronoi edges carved as
+valleys); a future **Water** base layer would likely live in Surface Texture too.

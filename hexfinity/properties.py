@@ -89,14 +89,14 @@ class HexFinityMapProperties(bpy.types.PropertyGroup):
     grid_x: bpy.props.IntProperty(
         name="X (columns)",
         description="Number of tile columns; 0 means generate a single tile at (0, 0)",
-        default=5,
+        default=2,
         min=0,
         soft_max=64,
     )
     grid_y: bpy.props.IntProperty(
         name="Y (rows)",
         description="Number of tile rows; 0 means generate a single tile at (0, 0)",
-        default=5,
+        default=2,
         min=0,
         soft_max=64,
     )
@@ -348,6 +348,8 @@ def _default_region_name(region):
     for i, r in enumerate(tile.surface_regions):
         if r.as_pointer() == region.as_pointer():
             return f"Area {i + 1}"
+    if tile.surface_texture.as_pointer() == region.as_pointer():
+        return "Surface Texture"
     return f"Area {len(tile.surface_regions)}"
 
 
@@ -708,7 +710,7 @@ class HexFinityProperties(bpy.types.PropertyGroup):
                     "cobblestone, ~4 for sharp tiles/cracks; beyond that a single "
                     "tile reaches hundreds of thousands of verts. Changing it clears "
                     "any painted/snapped displacement on this tile.",
-        default=0,
+        default=1,
         min=0,
         soft_max=6,
         update=_on_tile_local_update,
@@ -719,6 +721,11 @@ class HexFinityProperties(bpy.types.PropertyGroup):
         default=0,
         options={'HIDDEN'},
     )
+    # Whole-tile base layer ("Surface Texture" in the panel) — the same
+    # HexFinitySurfaceRegion type as surface_regions, but a singleton with no
+    # drawn points, so it's always treated as the whole tile (see
+    # _surface_offset_for_regions in mesh_builder.py). NONE = off.
+    surface_texture: bpy.props.PointerProperty(type=HexFinitySurfaceRegion)
     flora_placements: bpy.props.CollectionProperty(type=HexFinityFloraPlacement)
     path_features: bpy.props.CollectionProperty(type=HexFinityPathFeature)
     active_path_feature_index: bpy.props.IntProperty(

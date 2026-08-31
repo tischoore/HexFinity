@@ -125,6 +125,55 @@ def _gravel(x, y, *, feature_mm, depth_mm, regularity, seed, direction_rad=0.0, 
     return (radius * height - 0.5) * depth_mm
 
 
+def _lattice_value(ix, iy, seed):
+    """Deterministic pseudo-random float in [-1, 1] for lattice point (ix, iy)."""
+    return _hash01(ix, iy, seed) * 2.0 - 1.0
+
+
+def _value_noise(x, y, pitch, seed):
+    """Smooth value noise at wavelength `pitch`: bilinear (smoothstep-eased)
+    interpolation of `_lattice_value` between the 4 lattice points
+    surrounding (x, y). Continuous and in [-1, 1] everywhere (interpolation of
+    values already in that range can't overshoot it)."""
+    fx, fy = x / pitch, y / pitch
+    ix0, iy0 = int(math.floor(fx)), int(math.floor(fy))
+    tx, ty = _smoothstep(fx - ix0), _smoothstep(fy - iy0)
+    v00 = _lattice_value(ix0, iy0, seed)
+    v10 = _lattice_value(ix0 + 1, iy0, seed)
+    v01 = _lattice_value(ix0, iy0 + 1, seed)
+    v11 = _lattice_value(ix0 + 1, iy0 + 1, seed)
+    a = v00 + (v10 - v00) * tx
+    b = v01 + (v11 - v01) * tx
+    return a + (b - a) * ty
+
+
+def _plains(x, y, *, feature_mm, depth_mm, regularity, seed, direction_rad=0.0, **_):
+    """Gentle rolling fractal (fBm) value-noise terrain, approximating
+    uncultivated grassland/plains. A cheap, dependency-free stand-in for
+    Perlin noise, built from the same deterministic hash lattice as the other
+    surfaces rather than a gradient-noise library. `feature_mm` is the
+    dominant (largest-octave) undulation wavelength; 4 octaves are summed at
+    doubling frequency, each weighted by `persistence` raised to its octave
+    index and re-normalised so the sum stays in [-1, 1] (bounded by
+    `depth_mm`). `regularity` (0..1) sets that persistence
+    (`0.65 - 0.45*regularity`): low regularity -> more high-frequency energy
+    -> busier, rougher ground; high regularity -> smoother, broader rolling
+    hills. Isotropic — ignores `direction_rad`."""
+    pitch = max(feature_mm, 1e-6)
+    persistence = 0.65 - 0.45 * max(0.0, min(regularity, 1.0))
+    amp = 1.0
+    freq = 1.0
+    total = 0.0
+    norm = 0.0
+    for octave in range(4):
+        total += amp * _value_noise(x * freq, y * freq, pitch,
+                                    seed ^ (octave * 0x1000193))
+        norm += amp
+        amp *= persistence
+        freq *= 2.0
+    return (total / norm) * depth_mm
+
+
 # ---------------------------------------------------------------------------
 # Scatter surfaces — a SECOND fundamental kind of parametric surface. Where a
 # `displace` surface returns a per-point Z offset (above), a `scatter` surface
@@ -430,6 +479,10 @@ SURFACES = {
                 reference_mm=700.0, generator=_furrow,
                 default_depth_mm=3.0, default_regularity=0.6,
                 uses_direction=True),
+        Surface("PLAINS", "Uncultivated Plains",
+                "Gentle rolling fractal noise for natural grassland/plains ground",
+                reference_mm=900.0, generator=_plains,
+                default_depth_mm=2.0, default_regularity=0.4),
         Surface("BOULDERS", "Boulder Field",
                 "Scattered boulder objects across a range of sizes "
                 "(does not change the tile surface)",

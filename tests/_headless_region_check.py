@@ -44,8 +44,8 @@ tile.is_generated = True
 
 # man-height-derived default check.
 from hexfinity import procedural_surfaces as ps
-exp = ps.feature_mm_default("COBBLESTONE", 28.0)
-print("feature_mm_default(COBBLESTONE,28) =", exp)
+exp = ps.feature_mm_default("COBBLESTONE", mp.man_height_mm)
+print(f"feature_mm_default(COBBLESTONE,{mp.man_height_mm}) =", exp)
 
 # Add a region with a drawn loop near the centre, then a whole-tile furrow.
 region = tile.surface_regions.add()
@@ -71,6 +71,34 @@ print("after 2 regions: verts =", nverts, "faces =", nfaces)
 # Toggle man-height and confirm the global rebuild path runs.
 mp.man_height_mm = 56.0
 print("man_height change OK; verts =", len(obj.data.vertices))
+
+# ---- Surface Texture (whole-tile base layer, no drawing) check ------------
+baseline_verts = [tuple(v.co) for v in obj.data.vertices]
+
+tile.surface_texture.surface_type = "PLAINS"   # fires auto-fill + rebuild
+operators.rebuild_tile(obj)
+textured_verts = [tuple(v.co) for v in obj.data.vertices]
+assert len(textured_verts) == len(baseline_verts)
+assert any(a != b for a, b in zip(baseline_verts, textured_verts)), \
+    "Surface Texture PLAINS should move top vertices"
+print("surface_texture PLAINS: verts =", len(obj.data.vertices),
+      "faces =", len(obj.data.polygons))
+
+# Rim corners must stay flat despite the whole-tile texture (mesh_builder's
+# rim-fade damps every region -- including this singleton -- to zero at the
+# hex boundary).
+import math as _math
+R = mp.diameter_mm * 0.5
+for a, b in zip(baseline_verts, textured_verts):
+    if abs(_math.hypot(a[0], a[1]) - R) < 1e-3:
+        assert abs(a[2] - b[2]) < 1e-6, (a, b)
+print("surface_texture PLAINS: rim stays flat")
+
+tile.surface_texture.surface_type = "NONE"
+operators.rebuild_tile(obj)
+reverted_verts = [tuple(v.co) for v in obj.data.vertices]
+assert reverted_verts == baseline_verts, "toggling back to NONE must be a no-op"
+print("surface_texture toggle-off reverts exactly")
 
 hexfinity.unregister()
 print("unregister() OK")

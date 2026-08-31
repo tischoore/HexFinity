@@ -193,6 +193,9 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
             text="Pins/notches only exist right after Finalize — any later "
                 "edit strips them again.", icon='INFO')
 
+        # ---- Surface Texture (whole-tile base layer) -----------------------
+        self._draw_surface_texture(context, layout, map_props, tile)
+
         # ---- Procedural Surface regions -----------------------------------
         self._draw_surface_regions(context, layout, map_props, obj, tile)
 
@@ -248,8 +251,15 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
             HEXFINITY_PT_panel._draw_scatter_params(box, reg, surf, map_props)
             return
 
+        HEXFINITY_PT_panel._draw_displacement_params(
+            box, sub, reg, surf, map_props, tile, show_mask_falloff=True)
+
+    @staticmethod
+    def _draw_displacement_params(box, sub, reg, surf, map_props, tile,
+                                  show_mask_falloff):
         # ---- Displacement surface params ----------------------------------
-        sub.prop(reg, "mask_falloff_mm")
+        if show_mask_falloff:
+            sub.prop(reg, "mask_falloff_mm")
         if surf.uses_feature:
             sub.prop(reg, "feature_mm")
         sub.prop(reg, "depth_mm")
@@ -273,6 +283,25 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
                 icon='ERROR')
         else:
             box.label(text=f"Vert spacing ~{spacing:.1f}mm", icon='INFO')
+
+    @staticmethod
+    def _draw_surface_texture(context, layout, map_props, tile):
+        box = layout.box()
+        box.label(text="Surface Texture", icon='MOD_NOISE')
+        reg = tile.surface_texture
+        box.prop(reg, "surface_type", text="")
+        if reg.surface_type == 'NONE':
+            return
+        from . import procedural_surfaces as ps
+        surf = ps.SURFACES.get(reg.surface_type)
+        if surf is None:
+            return
+        sub = box.column(align=True)
+        if surf.kind == 'scatter':
+            HEXFINITY_PT_panel._draw_scatter_params(box, reg, surf, map_props)
+            return
+        HEXFINITY_PT_panel._draw_displacement_params(
+            box, sub, reg, surf, map_props, tile, show_mask_falloff=False)
 
     @staticmethod
     def _draw_path_features(context, layout, scene, tile):

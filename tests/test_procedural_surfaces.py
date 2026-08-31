@@ -152,6 +152,22 @@ def test_isotropic_surfaces_ignore_direction():
 
 
 # ---------------------------------------------------------------------------
+# Plains-specific: regularity trades high-frequency roughness for smoothness
+# ---------------------------------------------------------------------------
+def test_plains_regularity_smooths_the_result():
+    # Point-to-point variation along a scan line is a cheap roughness proxy;
+    # regularity=1 (high persistence decay) should be noticeably smoother
+    # than regularity=0 (more high-frequency octave energy).
+    def roughness(regularity):
+        kw = dict(feature_mm=20.0, depth_mm=2.0, regularity=regularity, seed=9)
+        vals = [ps.surface_offset(x * 0.5, 0.0, surface_type="PLAINS", **kw)
+                for x in range(200)]
+        return sum(abs(vals[i] - vals[i - 1]) for i in range(1, len(vals)))
+
+    assert roughness(0.0) > roughness(1.0)
+
+
+# ---------------------------------------------------------------------------
 # Region masking — point-in-polygon + soft boundary falloff
 # ---------------------------------------------------------------------------
 SQUARE = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
