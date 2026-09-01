@@ -20,6 +20,8 @@ from gpu_extras.batch import batch_for_shader
 from bpy_extras import view3d_utils
 from mathutils import Vector
 
+from . import face_select
+
 
 _DEFAULT_SURFACE = "COBBLESTONE"
 
@@ -173,6 +175,174 @@ class HEXFINITY_OT_draw_region(bpy.types.Operator):
             batch_for_shader(shader, 'POINTS', {"pos": pts2d}).draw(shader)
 
         gpu.state.line_width_set(1.0)
+        gpu.state.blend_set('NONE')
+
+
+class HEXFINITY_OT_flood_fill_region(bpy.types.Operator):
+    """Magic-wand-style region authoring: hover the tile top to preview a
+    connected patch of similarly-oriented faces (grown by `face_select`
+    from the hovered seed face, angle-thresholded against
+    `scene.hexfinity_flood_fill.angle_threshold_deg`), click to commit it.
+
+    Flood fill is only ever an *input method* here — the committed result
+    is the patch's boundary loop converted to a tile-local-XY polygon and
+    handed to the same `_commit_region()` every hand-drawn region uses, so
+    once committed a flood-filled region is indistinguishable from one
+    drawn point-by-point (see `face_select.py`'s module docstring for why
+    mesh face indices themselves are never stored)."""
+
+    bl_idname = "hexfinity.flood_fill_region"
+    bl_label = "Flood Fill Region"
+    bl_description = ("Hover the active tile to preview a connected patch of "
+                      "similarly-angled faces, LMB to commit it as a region. "
+                      "Esc/RMB cancels.")
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return (context.scene.hexfinity_map.is_generated
+                and obj is not None and obj.hexfinity_tile.is_generated)
+
+    def invoke(self, context, event):
+        if context.area is None or context.area.type != 'VIEW_3D':
+            self.report({'WARNING'}, "Flood Fill must be started in the 3D viewport")
+            return {'CANCELLED'}
+        self._tile = context.active_object
+        self._mesh_cache_obj = None
+        self._mesh_verts = None
+        self._mesh_faces = None
+        self._last_seed_index = None
+        self._hover_selected = None   # set of face indices, or None if not hovering the tile
+        self._hover_tris_world = []   # flattened world-space triangle verts for the preview
+        self._draw_handle = bpy.types.SpaceView3D.draw_handler_add(
+            self._draw_preview, (context,), 'WINDOW', 'POST_PIXEL')
+        context.window_manager.modal_handler_add(self)
+        context.workspace.status_text_set(
+            "Flood Fill:  hover to preview    LMB = commit    Esc = cancel")
+        if context.area is not None:
+            context.area.tag_redraw()
+        return {'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        if event.type in {'MIDDLEMOUSE', 'WHEELUPMOUSE', 'WHEELDOWNMOUSE'}:
+            return {'PASS_THROUGH'}
+
+        if event.type == 'MOUSEMOVE':
+            self._update_hover(context, event)
+            if context.area is not None:
+                context.area.tag_redraw()
+            return {'RUNNING_MODAL'}
+
+        if event.type == 'LEFTMOUSE' and event.value == 'PRESS':
+            if context.region is None or context.region.type != 'WINDOW':
+                return {'PASS_THROUGH'}
+            if self._commit(context):
+                return {'FINISHED'}
+            if context.area is not None:
+                context.area.tag_redraw()
+            return {'RUNNING_MODAL'}
+
+        if event.type in {'RIGHTMOUSE', 'ESC'} and event.value == 'PRESS':
+            self._finish(context)
+            return {'CANCELLED'}
+
+        return {'RUNNING_MODAL'}
+
+    def _update_hover(self, context, event):
+        region = context.region
+        rv3d = context.region_data
+        if region is None or region.type != 'WINDOW' or rv3d is None:
+            return
+        coord = (event.mouse_region_x, event.mouse_region_y)
+        origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
+        direction = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
+        depsgraph = context.evaluated_depsgraph_get()
+        hit, _loc, _n, index, hit_obj, _m = context.scene.ray_cast(
+            depsgraph, origin, direction)
+        if not hit or hit_obj is None or hit_obj.original != self._tile:
+            self._hover_selected = None
+            self._hover_tris_world = []
+            self._last_seed_index = None
+            return
+
+        # Re-extract the mesh only when we start/resume hovering this tile —
+        # not on every pixel of mouse motion.
+        if self._mesh_cache_obj != hit_obj.original:
+            mesh = hit_obj.data
+            self._mesh_verts = [tuple(v.co) for v in mesh.vertices]
+            self._mesh_faces = [tuple(p.vertices) for p in mesh.polygons]
+            self._mesh_cache_obj = hit_obj.original
+            self._last_seed_index = None
+
+        if index == self._last_seed_index and self._hover_selected is not None:
+            return
+        self._last_seed_index = index
+
+        angle_deg = context.scene.hexfinity_flood_fill.angle_threshold_deg
+        self._hover_selected = face_select.flood_fill_faces(
+            self._mesh_verts, self._mesh_faces, index, angle_deg)
+        self._hover_tris_world = self._build_preview_tris()
+
+    def _build_preview_tris(self):
+        if not self._hover_selected:
+            return []
+        mw = self._tile.matrix_world
+        tris = []
+        for i in self._hover_selected:
+            face = self._mesh_faces[i]
+            n = len(face)
+            v0 = self._mesh_verts[face[0]]
+            for k in range(1, n - 1):
+                v1 = self._mesh_verts[face[k]]
+                v2 = self._mesh_verts[face[k + 1]]
+                tris.append(mw @ Vector(v0))
+                tris.append(mw @ Vector(v1))
+                tris.append(mw @ Vector(v2))
+        return tris
+
+    def _commit(self, context):
+        """Returns True (and finishes the operator) on a successful commit;
+        False to stay in the modal so the user can retry immediately."""
+        if not self._hover_selected:
+            self.report({'INFO'}, "Hover the active tile's surface before clicking")
+            return False
+        loop = face_select.boundary_loop(self._mesh_faces, self._hover_selected)
+        if loop is None:
+            self.report({'WARNING'}, "Selection isn't a single simple region — "
+                                     "try a smaller angle or a different face")
+            return False
+        pts_local = face_select.loop_to_xy(self._mesh_verts, loop)
+        _commit_region(self._tile, pts_local)
+        bpy.ops.ed.undo_push(message="HexFinity Flood Fill Region")
+        self._finish(context)
+        return True
+
+    def _finish(self, context):
+        if self._draw_handle is not None:
+            bpy.types.SpaceView3D.draw_handler_remove(self._draw_handle, 'WINDOW')
+            self._draw_handle = None
+        context.workspace.status_text_set(None)
+        if context.area is not None:
+            context.area.tag_redraw()
+
+    def _draw_preview(self, context):
+        region = context.region
+        rv3d = context.region_data
+        if region is None or rv3d is None or not self._hover_tris_world:
+            return
+        pts2d = []
+        for w in self._hover_tris_world:
+            p = view3d_utils.location_3d_to_region_2d(region, rv3d, w)
+            if p is None:
+                return  # a vertex is behind the view this frame — skip drawing
+            pts2d.append((p.x, p.y))
+
+        shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+        gpu.state.blend_set('ALPHA')
+        shader.bind()
+        shader.uniform_float("color", (1.0, 0.8, 0.2, 0.35))
+        batch_for_shader(shader, 'TRIS', {"pos": pts2d}).draw(shader)
         gpu.state.blend_set('NONE')
 
 

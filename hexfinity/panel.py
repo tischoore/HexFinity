@@ -241,6 +241,8 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         box = layout.box()
         box.label(text="Procedural Surface", icon='TEXTURE')
         box.operator("hexfinity.draw_region", text="Draw Region", icon='GREASEPENCIL')
+        box.operator("hexfinity.flood_fill_region", text="Flood Fill", icon='UV_SYNC_SELECT')
+        box.prop(context.scene.hexfinity_flood_fill, "angle_threshold_deg", text="Angle Tolerance")
 
         row = box.row()
         row.template_list(

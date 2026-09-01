@@ -262,6 +262,28 @@ class HexFinityPathFeatureProperties(bpy.types.PropertyGroup):
 
 
 # ---------------------------------------------------------------------------
+# Scene-level — Draw Area's Flood Fill tool. `angle_threshold_deg` is read
+# fresh by the modal operator on every hover (see `regions.py`'s
+# `HEXFINITY_OT_flood_fill_region`); no update callback, same rationale as
+# `edge_snap` above — it only affects a *new* selection, nothing already
+# committed needs a rebuild.
+
+class HexFinityFloodFillProperties(bpy.types.PropertyGroup):
+    # Plain degrees (not a bpy ANGLE/ROTATION subtype), matching this
+    # codebase's existing convention for angle fields — see
+    # `HexFinitySurfaceRegion.direction_deg` below.
+    angle_threshold_deg: bpy.props.FloatProperty(
+        name="Angle Tolerance (deg)",
+        description="Max angle between a face's normal and the clicked "
+                    "face's normal for it to be included in the flood-fill "
+                    "selection",
+        default=10.0,
+        min=0.0,
+        max=89.0,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Per-Object (tile) — corner levels, optional centre override, and the
 # (q, r) coordinate the tile lives at within the map.
 

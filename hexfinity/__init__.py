@@ -21,6 +21,7 @@ def _classes():
         properties.HexFinityFloraProperties,
         properties.HexFinityTerrainProperties,
         properties.HexFinityPathFeatureProperties,
+        properties.HexFinityFloodFillProperties,
         operators.HEXFINITY_OT_generate_map,
         operators.HEXFINITY_OT_clear_map,
         operators.HEXFINITY_OT_import_terrain_object,
@@ -36,6 +37,7 @@ def _classes():
         flora.HEXFINITY_OT_flora_marker,
         flora.HEXFINITY_OT_finalize_flora,
         regions.HEXFINITY_OT_draw_region,
+        regions.HEXFINITY_OT_flood_fill_region,
         regions.HEXFINITY_OT_add_region,
         regions.HEXFINITY_OT_remove_region,
         regions.HEXFINITY_UL_surface_regions,
@@ -66,6 +68,9 @@ def register():
     bpy.types.Scene.hexfinity_path_features = bpy.props.PointerProperty(
         type=properties.HexFinityPathFeatureProperties
     )
+    bpy.types.Scene.hexfinity_flood_fill = bpy.props.PointerProperty(
+        type=properties.HexFinityFloodFillProperties
+    )
     bpy.types.Object.hexfinity_tile = bpy.props.PointerProperty(
         type=properties.HexFinityProperties
     )
@@ -83,6 +88,8 @@ def unregister():
         del bpy.types.Object.hexfinity_terrain
     if hasattr(bpy.types.Object, "hexfinity_tile"):
         del bpy.types.Object.hexfinity_tile
+    if hasattr(bpy.types.Scene, "hexfinity_flood_fill"):
+        del bpy.types.Scene.hexfinity_flood_fill
     if hasattr(bpy.types.Scene, "hexfinity_path_features"):
         del bpy.types.Scene.hexfinity_path_features
     if hasattr(bpy.types.Scene, "hexfinity_flora"):

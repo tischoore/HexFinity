@@ -290,6 +290,19 @@ Both kinds share the same authoring UX (draw a region → pick a surface → tun
 params) and ride the same registry: adding a surface is one record plus its
 function(s), no UI/operator edits.
 
+Regions can be authored two ways: **Draw Region** (click a point-by-point
+polygon outline, Enter/RMB to close) or **Flood Fill** — a magic-wand-style
+tool below it: hover the tile top and every connected face within an
+**Angle Tolerance (deg)** of the hovered face's normal highlights live, click
+to commit it as a region. Flood Fill is purely an authoring shortcut — under
+the hood it grows a face selection by comparing normals (`face_select.py`,
+bpy-free), then converts that selection's outer boundary into the exact same
+tile-local-XY polygon a hand-drawn region would produce, so a flood-filled
+region behaves identically to a drawn one afterwards (same masking, same
+survives-subdivision guarantee). If the hovered patch wraps a hole or splits
+into disconnected islands, committing it is refused with a warning instead of
+silently picking one piece — lower the angle tolerance or click elsewhere.
+
 See **[docs/procedural_surfaces.md](docs/procedural_surfaces.md)** for the
 displacement workflow and **[docs/boulder-field.md](docs/boulder-field.md)** for the
 scatter kind (algorithm, scene tree, merge-for-print, and manual checklist).
@@ -419,7 +432,10 @@ HexFinity
 │  ├─ Surface Texture          (whole-tile base layer, no drawing needed — see below)
 │  │   ├─ Surface type (incl. Uncultivated Plains) + Feature / Depth / Regularity / (Direction)
 │  │   └─ [ Copy Settings ] [ Apply ]   (session clipboard; Apply fans out to the whole selection)
-│  ├─ Procedural Surface       (region list + Draw Region — see below)
+│  ├─ Procedural Surface       (region list + Draw Region / Flood Fill — see below)
+│  │   ├─ [ Draw Region ]      (click a polygon outline, Enter/RMB closes)
+│  │   ├─ [ Flood Fill ]       (hover to preview a connected same-angle patch, LMB commits)
+│  │   ├─ Angle Tolerance (deg)  (Flood Fill's normal-angle threshold)
 │  │   ├─ Area Name + Surface type
 │  │   ├─ displace: Feature / Depth / Regularity / (Direction) + resolution warning
 │  │   └─ scatter:  Min/Max Size / Density / Distribution + budget warning
@@ -469,7 +485,7 @@ C:\Work\Hexfinity\
 │   ├─ gizmo.py                # HEXFINITY_GGT_center (centre-XY drag gizmo)
 │   ├─ overlay.py              # floating P1..P6 labels + region loops/direction + terrain feature lines
 │   ├─ brush.py                # modal terrain paint brush
-│   ├─ regions.py              # modal draw-region operator + region list UI
+│   ├─ regions.py              # modal draw-region + flood-fill-region operators + region list UI
 │   ├─ path_features.py        # modal draw-feature (waypoint line) operator + texture-carve pipeline + feature list UI
 │   ├─ scatter.py              # bpy shell for scatter surfaces (boulder objects + merge)
 │   ├─ flora.py                # modal click-to-plant tree tool + mesh cache + overlap check + pin objects
@@ -482,6 +498,7 @@ C:\Work\Hexfinity\
 │   ├─ procedural_surfaces.py  # pure-Python surface registry + masks + scatter geometry + obb_overlap (no bpy)
 │   ├─ map.py                  # pure-Python grid math + SHARED_CORNERS table + edge snap points
 │   ├─ tile_export.py          # pure-Python export hashing + naming (no bpy)
+│   ├─ face_select.py          # pure-Python face-normal flood fill + boundary-loop extraction for the Flood Fill tool (no bpy)
 │   └─ manifold_check.py       # post-build 2-manifold verification
 └─ tests\
     ├─ conftest.py
@@ -490,13 +507,14 @@ C:\Work\Hexfinity\
     ├─ test_terrain_pads.py
     ├─ test_subdivision.py
     ├─ test_procedural_surfaces.py
+    ├─ test_face_select.py
     ├─ test_scatter.py
     ├─ test_map.py
     ├─ test_tile_export.py
     └─ test_manifold_check.py
 ```
 
-`mesh_builder.py`, `tree_pads.py`, `terrain_pads.py`, `subdivision.py`, `procedural_surfaces.py`, `map.py`, `tile_export.py`, and `manifold_check.py` deliberately contain no `bpy` imports so they can be unit-tested outside Blender (`__init__.py` defers its bpy imports into `register()` for the same reason).
+`mesh_builder.py`, `tree_pads.py`, `terrain_pads.py`, `subdivision.py`, `procedural_surfaces.py`, `map.py`, `tile_export.py`, `face_select.py`, and `manifold_check.py` deliberately contain no `bpy` imports so they can be unit-tested outside Blender (`__init__.py` defers its bpy imports into `register()` for the same reason).
 
 HexFinity is packaged as a **Blender extension** (see `blender_manifest.toml`), the format Blender 5.x ships with — there is no `bl_info` dict in `__init__.py`.
 
@@ -520,7 +538,7 @@ The script reads the version from `blender_manifest.toml`, strips `__pycache__`,
 
 ### Running the unit tests
 
-The bpy-free modules (`mesh_builder.py`, `tree_pads.py`, `terrain_pads.py`, `subdivision.py`, `procedural_surfaces.py`, `map.py`, `tile_export.py`, `manifold_check.py`) are unit-tested with `pytest`. You can run them against Blender's bundled Python (which contains no `bpy` dependency for these modules):
+The bpy-free modules (`mesh_builder.py`, `tree_pads.py`, `terrain_pads.py`, `subdivision.py`, `procedural_surfaces.py`, `map.py`, `tile_export.py`, `face_select.py`, `manifold_check.py`) are unit-tested with `pytest`. You can run them against Blender's bundled Python (which contains no `bpy` dependency for these modules):
 
 ```
 "C:\Program Files\Blender Foundation\Blender 5.1\5.1\python\bin\python.exe" -m pip install --user pytest
@@ -542,8 +560,9 @@ After generating a map:
 6. **Terrain brush check** — *Terrain Brush → Paint*, left-drag on a tile to raise a hill, then switch to *Lower* and dig. With *Preserve Edge* on the rim stays put; turn it off and a stroke flows across the seam onto the neighbour. Edit a corner level afterwards — the painted shape survives; bump *Smoothness Passes* and it clears.
 7. **Terrain object check** — select a tile, *Terrain Objects*, pick an `.stl`; it drops centred and flush on the surface. Select the dropped object and raise *Terrain snap to model* above 0 — the ground under its footprint should immediately show visibly denser, flatter geometry than the rest of the tile (the plateau), flush with the model's base, rather than just a few displaced coarse vertices; add *Snap damping* for a blended skirt. An irregular or concave `.stl` base (e.g. one with a hole) should not have that hole flattened over. Click **Regenerate Plateau** (in the object's panel, or the tile's *Terrain Objects* box) — it should report the pad count found, re-run without error, and leave the plateau visually unchanged (nothing moved, so there's nothing new to recompute); it should be greyed out while *Terrain snap to model* is 0. If the object's underside isn't actually flat anywhere, the button (and the slider) should report/produce zero pads rather than silently doing nothing.
 8. **Procedural surface check** — raise *Local Subdivision* on a tile, *Procedural Surface → Draw Region*, click a loop, close it (Enter). The interior gains cobblestone; the rim stays flat (still interlocks). Add a whole-tile *Furrow* region and rotate its **Direction** — the ridges follow the arrow. See [docs/procedural_surfaces.md](docs/procedural_surfaces.md). (A headless smoke test of the full register→region→rebuild path lives in `tests/_headless_region_check.py`: `blender --background --factory-startup --python tests/_headless_region_check.py`.)
-9. **Surface Texture check** — select a tile, *Surface Texture*, set the type to **Uncultivated Plains**. The whole top gently rolls (no drawing/loop required) while the rim stays flat and interlocking. Draw a *Procedural Surface* Cobblestone region and a *Path Feature* line on top — both still carve/flatten correctly over the noisy base. Set the type back to *None* — the tile returns exactly to its prior flat/dome shape. Select two tiles (different `surface_type`s), make the first active, **Copy Settings**, select both with the first active, **Apply** — both tiles' Surface Texture settings become identical to the first's, and **Apply** is greyed out on a fresh session/.blend until something has been copied.
-10. **Flora check** — select a tile, press *Flora*, then move the mouse across several tiles: a yellow circle-with-center-dot tracks the raycast hit point live. Left-click several spots — each plants a tree with a random species/rotation/scale, sunk in by *Penetration*. The Outliner shows the planted trees under a "Flora" sub-collection nested in the map collection, all pointing at a handful of shared mesh datablocks (multiple object users, not one mesh per tree). Orbit/pan/zoom (MMB/wheel) still work while it's active. Both `Esc` and right-click close it. Afterwards, edit that tile's corner heights or paint terrain — the trees re-seat onto the new surface instead of floating or burying. With *Avoid Overlap* on, clicking close enough to an existing tree is rejected with a warning instead of planting; turning it off allows it. See [docs/flora.md](docs/flora.md) for the full manual checklist.
-11. **Tree base pad check** — raise a corner so the tile is sloped, then plant a tree near the raised side with *Flatten Base* on: the terrain under the tree tessellates into a small flat pad that blends smoothly back into the slope, and the tree sits flush and level instead of poking through on one side. Toggle *Flatten Base* off and the pad disappears (old sunken-in look returns); drag *Pad Blend (mm)* or *Penetration (mm)* and both re-seat live. Plant a tree near a hex edge and confirm the seam with the neighbour tile stays aligned (the pad fades out near the rim rather than desyncing it). A headless smoke test of the full plant→pad→rebuild→property-update path lives in `tests/_headless_flora_pad_check.py`: `blender --background --python tests/_headless_flora_pad_check.py`.
-12. **Pin/notch check** — plant a tree and press `Esc`/right-click to leave the Flora tool: a socket is cut under the tree, the tree still sits flush on the surface (not sunk into the socket), and a `FloraPin_*` object appears **nested under its tree** in the Outliner. Paint a brush stroke elsewhere on the tile (or edit a corner height) — the pin disappears and the socket fills back in; press **Finalize Flora** and both return, tree still flush. Export the tile — a separate `flora_*.stl` is written alongside the tile's own STL, listed in `flora_manifest.csv`, with its lowest point (the pin's tip) sitting at z=0. Plant a tree, skip finalizing, and export — a warning appears and no `flora_*.stl` is written for it. A headless smoke test of the full plant→finalize→pin/socket→seating-correctness→un-finalize→re-finalize→export path lives in `tests/_headless_flora_pin_check.py`: `blender --background --python tests/_headless_flora_pin_check.py`.
-13. **Bake check** — paint a brush stroke, plant a tree with *Flatten Base* on, drop a terrain object with snap enabled, and draw a Path Feature line, all on the same tile. Press **Bake Tile** — the mesh stays visually identical, the tree's pin/socket is cut (same as Finalize), and the *Terrain Brush* box's *Paint* strokes are folded in. Edit an unrelated Draw Area region afterwards — the pads/notches/path carving/brush stay put (not recomputed) and the region change still shows up. Paint another brush stroke — it stacks visibly on top of the frozen shape. Now edit a corner height: the console prints a revert notice, the pad/terrain/notch/path layer falls back to live and reflects the new corner shape, but the frozen brush contribution from before the edit is untouched. Press **Un-bake Tile** — everything returns to live recompute with no visible change, and the *Bake Tile* button reappears. A headless smoke test of the full brush+pad+pin+path bake→live-edit-untouched→corner-edit-invalidates→un-bake path lives in `tests/_headless_bake_check.py`: `blender --background --python tests/_headless_bake_check.py`.
+9. **Flood Fill check** — raise one corner so the tile has a domed/sloped top, *Procedural Surface → Flood Fill*, hover near the flattest part: a translucent highlight should track the mouse, growing/shrinking as you raise/lower **Angle Tolerance (deg)**. Click to commit — a region appears in the list identical in behaviour to a hand-drawn one (assign it Cobblestone, confirm it displaces and fades to flat at its edge). Try hovering somewhere that would wrap a hole or split into two islands (e.g. a saddle shape with a generous tolerance) — clicking should refuse with a warning instead of committing a broken region. (A headless smoke test lives in `tests/_headless_flood_fill_check.py`: `blender --background --python tests/_headless_flood_fill_check.py`.)
+10. **Surface Texture check** — select a tile, *Surface Texture*, set the type to **Uncultivated Plains**. The whole top gently rolls (no drawing/loop required) while the rim stays flat and interlocking. Draw a *Procedural Surface* Cobblestone region and a *Path Feature* line on top — both still carve/flatten correctly over the noisy base. Set the type back to *None* — the tile returns exactly to its prior flat/dome shape. Select two tiles (different `surface_type`s), make the first active, **Copy Settings**, select both with the first active, **Apply** — both tiles' Surface Texture settings become identical to the first's, and **Apply** is greyed out on a fresh session/.blend until something has been copied.
+11. **Flora check** — select a tile, press *Flora*, then move the mouse across several tiles: a yellow circle-with-center-dot tracks the raycast hit point live. Left-click several spots — each plants a tree with a random species/rotation/scale, sunk in by *Penetration*. The Outliner shows the planted trees under a "Flora" sub-collection nested in the map collection, all pointing at a handful of shared mesh datablocks (multiple object users, not one mesh per tree). Orbit/pan/zoom (MMB/wheel) still work while it's active. Both `Esc` and right-click close it. Afterwards, edit that tile's corner heights or paint terrain — the trees re-seat onto the new surface instead of floating or burying. With *Avoid Overlap* on, clicking close enough to an existing tree is rejected with a warning instead of planting; turning it off allows it. See [docs/flora.md](docs/flora.md) for the full manual checklist.
+12. **Tree base pad check** — raise a corner so the tile is sloped, then plant a tree near the raised side with *Flatten Base* on: the terrain under the tree tessellates into a small flat pad that blends smoothly back into the slope, and the tree sits flush and level instead of poking through on one side. Toggle *Flatten Base* off and the pad disappears (old sunken-in look returns); drag *Pad Blend (mm)* or *Penetration (mm)* and both re-seat live. Plant a tree near a hex edge and confirm the seam with the neighbour tile stays aligned (the pad fades out near the rim rather than desyncing it). A headless smoke test of the full plant→pad→rebuild→property-update path lives in `tests/_headless_flora_pad_check.py`: `blender --background --python tests/_headless_flora_pad_check.py`.
+13. **Pin/notch check** — plant a tree and press `Esc`/right-click to leave the Flora tool: a socket is cut under the tree, the tree still sits flush on the surface (not sunk into the socket), and a `FloraPin_*` object appears **nested under its tree** in the Outliner. Paint a brush stroke elsewhere on the tile (or edit a corner height) — the pin disappears and the socket fills back in; press **Finalize Flora** and both return, tree still flush. Export the tile — a separate `flora_*.stl` is written alongside the tile's own STL, listed in `flora_manifest.csv`, with its lowest point (the pin's tip) sitting at z=0. Plant a tree, skip finalizing, and export — a warning appears and no `flora_*.stl` is written for it. A headless smoke test of the full plant→finalize→pin/socket→seating-correctness→un-finalize→re-finalize→export path lives in `tests/_headless_flora_pin_check.py`: `blender --background --python tests/_headless_flora_pin_check.py`.
+14. **Bake check** — paint a brush stroke, plant a tree with *Flatten Base* on, drop a terrain object with snap enabled, and draw a Path Feature line, all on the same tile. Press **Bake Tile** — the mesh stays visually identical, the tree's pin/socket is cut (same as Finalize), and the *Terrain Brush* box's *Paint* strokes are folded in. Edit an unrelated Draw Area region afterwards — the pads/notches/path carving/brush stay put (not recomputed) and the region change still shows up. Paint another brush stroke — it stacks visibly on top of the frozen shape. Now edit a corner height: the console prints a revert notice, the pad/terrain/notch/path layer falls back to live and reflects the new corner shape, but the frozen brush contribution from before the edit is untouched. Press **Un-bake Tile** — everything returns to live recompute with no visible change, and the *Bake Tile* button reappears. A headless smoke test of the full brush+pad+pin+path bake→live-edit-untouched→corner-edit-invalidates→un-bake path lives in `tests/_headless_bake_check.py`: `blender --background --python tests/_headless_bake_check.py`.
