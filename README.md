@@ -257,11 +257,11 @@ See **[docs/flora.md](docs/flora.md)** for the mesh caching, the overlap algorit
 
 ## Bake
 
-Every rebuild normally re-derives a tile's flora/terrain pads, flora pin/notch sockets, path-feature carving, and the terrain brush's painted offset from scratch. The **Bake** box (bottom of the tile panel, below Terrain Brush) freezes all four of those into the mesh instead, so an unrelated edit — tuning a Draw Area region, say — replays the frozen result rather than recomputing it. **Bake Tile** also implicitly finalizes flora (see Pin/notch interlock above): pins/notches are cut as part of baking and, unlike an ordinary Finalize, stay in place across later rebuilds instead of being stripped again.
+Every rebuild normally re-derives a tile's flora/terrain pads, flora pin/notch sockets, path-feature carving, any Draw Area region's own **Local Subdivision** geometry, and the terrain brush's painted offset from scratch. The **Bake** box (bottom of the tile panel, below Terrain Brush) freezes all of those into the mesh instead, so an unrelated edit — tuning a Surface Texture setting, say — replays the frozen result rather than recomputing it. **Bake Tile** also implicitly finalizes flora (see Pin/notch interlock above): pins/notches are cut as part of baking and, unlike an ordinary Finalize, stay in place across later rebuilds instead of being stripped again.
 
-Displacement regions (Draw Area / Surface Texture) are explicitly **not** part of the bake — they're cheap and index-stable, so they keep applying live on top of the frozen layer either way, letting you keep iterating on texture work quickly once everything else is locked down.
+Displacement region *values* (Draw Area / Surface Texture) are explicitly **not** part of the bake — they're cheap and index-stable, so they keep applying live on top of the frozen layer either way, letting you keep iterating on texture work quickly once everything else is locked down. A region's own **Local Subdivision** *geometry* is the exception: it's a topology-changing operation in the same cost class as a flora/terrain pad, so it freezes with the rest.
 
-A later edit that reshapes the tile's top surface (a corner height, dome settings, or a map-wide global) — or a changed flora placement, terrain object, or path feature — invalidates just the frozen pad/terrain/notch/path portion: the next rebuild silently reverts that portion to live recompute and prints a note in the console, rather than risking a mismatched or corrupt mesh. The frozen terrain-brush offset is unaffected by this — it only clears on a subdivision/resample change, the same rule the live brush layer already follows. **Un-bake Tile** clears everything and returns to fully live recompute; nothing about flora placements, terrain objects, or path features is ever deleted by baking, so it's fully reversible.
+A later edit that reshapes the tile's top surface (a corner height, dome settings, or a map-wide global) — or a changed flora placement, terrain object, path feature, or a Draw Area region with `local_subdiv > 0` — invalidates just the frozen pad/terrain/notch/path/region portion: the next rebuild silently reverts that portion to live recompute and prints a note in the console, rather than risking a mismatched or corrupt mesh. The frozen terrain-brush offset is unaffected by this — it only clears on a subdivision/resample change, the same rule the live brush layer already follows. **Un-bake Tile** clears everything and returns to fully live recompute; nothing about flora placements, terrain objects, or path features is ever deleted by baking, so it's fully reversible.
 
 ## Procedural surface textures
 
@@ -278,7 +278,14 @@ field), each with an editable **Area Name**. Scale is driven by a map-wide
   same directional convention as plough & furrow, with a **Direction (deg)** field
   and a direction arrow overlay. Because the surface is a heightfield, detail is
   bounded by the top-vertex spacing — the panel warns when a feature is too fine
-  for the current subdivision.
+  for the current subdivision. Each region also has its own **Local
+  Subdivision**, which locally densifies just that region's own polygon
+  (+ **Edge Blend** band) instead of the tile-wide *Local Subdivision* —
+  useful for one small area of fine cobblestone or gravel on an otherwise
+  coarse tile. Like the tile-wide version, each pass locally quadruples
+  triangles inside the region's footprint; unlike the always-live region
+  *value*, this extra geometry is treated like a flora/terrain pad and is
+  part of what [Bake](#bake) freezes.
 - **Scatter surfaces** — **Boulder Field** — place *distinct objects* across the
   region **without changing the tile surface**. Boulders are noise-deformed
   icospheres, joined into one mesh `Boulders_<Area Name>` parented under the tile and
@@ -437,7 +444,8 @@ HexFinity
 │  │   ├─ [ Flood Fill ]       (hover to preview a connected same-angle patch, LMB commits)
 │  │   ├─ Angle Tolerance (deg)  (Flood Fill's normal-angle threshold)
 │  │   ├─ Area Name + Surface type
-│  │   ├─ displace: Feature / Depth / Regularity / (Direction) + resolution warning
+│  │   ├─ displace: Edge Blend / Local Subdivision (region-only, not tile-wide)
+│  │   │            + Feature / Depth / Regularity / (Direction) + resolution warning
 │  │   └─ scatter:  Min/Max Size / Density / Distribution + budget warning
 │  │                + Merge into Tile / [ Merge Boulders into Tile ]
 │  ├─ Path Feature              (line list + Edge Snap + Draw Feature — see below)

@@ -501,6 +501,20 @@ class HexFinitySurfaceRegion(bpy.types.PropertyGroup):
         soft_max=50.0,
         update=_on_region_update,
     )
+    local_subdiv: bpy.props.IntProperty(
+        name="Local Subdivision",
+        description="Extra mesh density inside THIS region's polygon (+ Edge "
+                    "Blend band) only — unlike the tile-wide Local Subdivision, "
+                    "does not affect the rest of the tile. Each pass locally "
+                    "splits qualifying triangle edges within the region's "
+                    "footprint and resamples the region's own procedural-"
+                    "surface noise there, instead of raising the whole tile's "
+                    "density to resolve one small area. 0 = off",
+        default=0,
+        min=0,
+        soft_max=6,
+        update=_on_region_update,
+    )
     # Generic surface-specific knobs (see _EXTRA_PARAM_SLOTS). Seeded from the
     # registry on a type change; labelled per-surface by the panel.
     param0: bpy.props.FloatProperty(name="Param 0", default=0.0,

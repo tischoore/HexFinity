@@ -105,11 +105,12 @@ def _effective_resample(tile, map_props):
 
 def _bake_signature(tile):
     """Staleness key (a string, for id-prop storage) for `tile`'s frozen
-    pad/terrain/notch/path-feature bake (`hf_baked_extra_*`) — covers
-    everything that shapes that geometry: the top surface it's fit against
-    (corner/center/dome levels, global mesh params) plus every source of
-    pad/notch/path geometry (flora placements + flora pad settings,
-    terrain-object children, path-feature points/params). Mirrors
+    pad/terrain/notch/path-feature/region-local-subdiv bake (`hf_baked_extra_*`)
+    — covers everything that shapes that geometry: the top surface it's fit
+    against (corner/center/dome levels, global mesh params) plus every source
+    of pad/terrain/notch/path/region-refine geometry (flora placements +
+    flora pad settings, terrain-object children, path-feature points/params,
+    Draw Area regions with `local_subdiv > 0`). Mirrors
     `_terrain_pads_signature`'s shape/purpose for the smaller terrain-only
     cache."""
     map_props = bpy.context.scene.hexfinity_map
@@ -145,6 +146,15 @@ def _bake_signature(tile):
             f.name, f.feature_type, round(f.width_mm, 4),
             round(f.depth_mm, 4), round(f.repeat_mm, 4), f.texture,
             tuple((round(pt.x, 4), round(pt.y, 4)) for pt in f.points),
+        ))
+    for reg in tp.surface_regions:
+        if reg.local_subdiv <= 0 or len(reg.points) < 3:
+            continue
+        parts.append((
+            reg.surface_type, round(reg.feature_mm, 4), round(reg.depth_mm, 4),
+            round(reg.regularity, 4), round(reg.direction_deg, 4),
+            round(reg.mask_falloff_mm, 4), reg.local_subdiv,
+            tuple((round(p.x, 4), round(p.y, 4)) for p in reg.points),
         ))
     return repr(parts)
 
@@ -306,6 +316,7 @@ def rebuild_tile(obj, finalize_flora=False, bake_capture=None):
                 "direction_rad": math.radians(reg.direction_deg),
                 "polygon": [(p.x, p.y) for p in reg.points],
                 "mask_falloff_mm": reg.mask_falloff_mm,
+                "local_subdiv": reg.local_subdiv,
                 "extras": extras,
                 "scatter_merge": reg.scatter_merge,
                 # Per-region seed so distinct regions scatter differently while
@@ -1368,12 +1379,15 @@ class HEXFINITY_OT_bake_tile(bpy.types.Operator):
     bl_label = "Bake Tile"
     bl_description = (
         "Freeze this tile's flora/terrain pads, notches, path-feature "
-        "carving, and terrain-brush strokes into the mesh, so an unrelated "
-        "rebuild replays them instead of recomputing. Displacement regions "
-        "(Draw Area / Surface Texture) stay live either way. A later "
-        "corner/dome/global edit, or a changed flora/terrain/path-feature "
-        "source, auto-reverts just the pad/terrain/notch/path portion (not "
-        "the frozen brush) and warns — re-bake to freeze the new shape"
+        "carving, Draw Area local-subdivision geometry, and terrain-brush "
+        "strokes into the mesh, so an unrelated rebuild replays them instead "
+        "of recomputing. Displacement region VALUES (Draw Area / Surface "
+        "Texture) stay live either way — only a region's own Local "
+        "Subdivision geometry is part of the frozen layer. A later "
+        "corner/dome/global edit, or a changed flora/terrain/path-feature/"
+        "region source, auto-reverts just the pad/terrain/notch/path/region "
+        "portion (not the frozen brush) and warns — re-bake to freeze the "
+        "new shape"
     )
     bl_options = {'REGISTER', 'UNDO'}
 

@@ -13,6 +13,7 @@ from mesh_builder import (
 )
 from manifold_check import assert_two_manifold
 import tree_pads
+import procedural_surfaces as ps
 
 
 # ---------------------------------------------------------------------------
@@ -585,6 +586,165 @@ def test_flora_and_terrain_pads_merge_into_one_refinement_pass():
     assert len(terrain_inside) >= 1
     for v in terrain_inside:
         assert v[2] == pytest.approx(30.0, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# 14. refine_regions — per-Draw-Area-region local mesh subdivision.
+
+REGION_SQUARE = {
+    "surface_type": "COBBLESTONE", "feature_mm": 3.0, "depth_mm": 5.0,
+    "regularity": 0.3, "direction_rad": 0.0,
+    "polygon": [(20.0, 20.0), (40.0, 20.0), (40.0, 40.0), (20.0, 40.0)],
+    "mask_falloff_mm": 0.0,
+}
+
+
+def test_refine_regions_noop_when_local_subdiv_zero():
+    verts, faces, protected = _grid_mesh(6, 60.0)
+    n0 = len(verts)
+    region = dict(REGION_SQUARE, local_subdiv=0)
+    new_faces = tree_pads.refine_regions(
+        verts, faces, protected, [region], list(verts), faces,
+        (0.0, 0.0), 0, rim_falloff_mm=1000.0, diameter_mm=1000.0,
+        base_thickness_mm=-1e9)
+    assert new_faces == list(faces)
+    assert len(verts) == n0
+
+
+def test_refine_regions_omitted_local_subdiv_defaults_to_noop():
+    # A region dict with no "local_subdiv" key at all (e.g. a marshalled
+    # region predating this feature) must behave exactly like 0, not raise.
+    verts, faces, protected = _grid_mesh(6, 60.0)
+    n0 = len(verts)
+    region = {k: v for k, v in REGION_SQUARE.items()}
+    new_faces = tree_pads.refine_regions(
+        verts, faces, protected, [region], list(verts), faces,
+        (0.0, 0.0), 0, rim_falloff_mm=1000.0, diameter_mm=1000.0,
+        base_thickness_mm=-1e9)
+    assert new_faces == list(faces)
+    assert len(verts) == n0
+
+
+def test_refine_regions_appends_only_inside_footprint():
+    verts, faces, protected = _grid_mesh(12, 60.0)
+    n0 = len(verts)
+    base_verts = list(verts)
+    region = dict(REGION_SQUARE, local_subdiv=3)
+    new_faces = tree_pads.refine_regions(
+        verts, faces, protected, [region], base_verts, faces,
+        (0.0, 0.0), 0, rim_falloff_mm=1000.0, diameter_mm=1000.0,
+        base_thickness_mm=-1e9)
+    appended = verts[n0:]
+    assert len(appended) > 0, "expected new vertices inside the region"
+    poly = region["polygon"]
+    for (x, y, _z) in appended:
+        assert ps.point_in_polygon(x, y, poly), f"appended vertex ({x},{y}) outside region"
+    _assert_crack_free(new_faces, protected)
+
+
+def test_refine_regions_respects_protected_edges():
+    verts, faces, protected = _grid_mesh(6, 60.0)
+    # Region covering the whole grid, including its protected boundary.
+    region = dict(REGION_SQUARE, polygon=[(0.0, 0.0), (60.0, 0.0), (60.0, 60.0), (0.0, 60.0)],
+                  local_subdiv=2)
+    new_faces = tree_pads.refine_regions(
+        verts, faces, protected, [region], list(verts), faces,
+        (0.0, 0.0), 0, rim_falloff_mm=1000.0, diameter_mm=1000.0,
+        base_thickness_mm=-1e9)
+    _assert_crack_free(new_faces, protected)
+
+
+def test_refine_regions_per_region_pass_budgets_independent():
+    verts, faces, protected = _grid_mesh(24, 120.0)
+    n0 = len(verts)
+    base_verts = list(verts)
+    region_a = dict(REGION_SQUARE,
+                    polygon=[(10.0, 10.0), (30.0, 10.0), (30.0, 30.0), (10.0, 30.0)],
+                    local_subdiv=1)
+    region_b = dict(REGION_SQUARE,
+                    polygon=[(90.0, 90.0), (110.0, 90.0), (110.0, 110.0), (90.0, 110.0)],
+                    local_subdiv=3)
+    tree_pads.refine_regions(
+        verts, faces, protected, [region_a, region_b], base_verts, faces,
+        (0.0, 0.0), 0, rim_falloff_mm=1000.0, diameter_mm=1000.0,
+        base_thickness_mm=-1e9)
+    appended = verts[n0:]
+    in_a = sum(1 for (x, y, _z) in appended if ps.point_in_polygon(x, y, region_a["polygon"]))
+    in_b = sum(1 for (x, y, _z) in appended if ps.point_in_polygon(x, y, region_b["polygon"]))
+    assert in_a > 0 and in_b > 0
+    assert in_b > in_a, "region_b's higher local_subdiv should refine more densely"
+
+
+def test_refine_regions_new_verts_have_no_orphans_and_land_after_prefix():
+    verts, faces, protected = _grid_mesh(12, 60.0)
+    n0 = len(verts)
+    region = dict(REGION_SQUARE, local_subdiv=2)
+    new_faces = tree_pads.refine_regions(
+        verts, faces, protected, [region], list(verts), faces,
+        (0.0, 0.0), 0, rim_falloff_mm=1000.0, diameter_mm=1000.0,
+        base_thickness_mm=-1e9)
+    referenced = set()
+    for f in new_faces:
+        referenced.update(f)
+    assert referenced == set(range(len(verts))), "orphan vertex after region refinement"
+    assert len(verts) > n0
+
+
+def test_region_local_subdiv_zero_regions_still_contribute_value_to_new_verts():
+    # A local_subdiv=0 region must still add its own displacement value to a
+    # vertex appended by a DIFFERENT region's refinement pass nearby.
+    verts, faces, protected = _grid_mesh(12, 60.0)
+    base_verts = list(verts)
+    refiner = dict(REGION_SQUARE, local_subdiv=2)
+    passive = dict(REGION_SQUARE, surface_type="GRAVEL", feature_mm=4.0, depth_mm=3.0,
+                   polygon=[(0.0, 0.0), (60.0, 0.0), (60.0, 60.0), (0.0, 60.0)],
+                   mask_falloff_mm=0.0, local_subdiv=0)
+    verts_with_passive = list(verts)
+    tree_pads.refine_regions(
+        verts_with_passive, faces, protected, [refiner, passive], base_verts, faces,
+        (0.0, 0.0), 0, rim_falloff_mm=1000.0, diameter_mm=1000.0,
+        base_thickness_mm=-1e9)
+    verts_without_passive = list(verts)
+    tree_pads.refine_regions(
+        verts_without_passive, faces, protected, [refiner], base_verts, faces,
+        (0.0, 0.0), 0, rim_falloff_mm=1000.0, diameter_mm=1000.0,
+        base_thickness_mm=-1e9)
+    assert len(verts_with_passive) == len(verts_without_passive)
+    n0 = len(base_verts)
+    differs = any(
+        abs(verts_with_passive[i][2] - verts_without_passive[i][2]) > 1e-9
+        for i in range(n0, len(verts_with_passive))
+    )
+    assert differs, "passive (local_subdiv=0) region should still shape new verts' z"
+
+
+REGION_FOR_RESAMPLE = {
+    "surface_type": "COBBLESTONE", "feature_mm": 3.0, "depth_mm": 5.0,
+    "regularity": 0.3, "direction_rad": 0.0,
+    "polygon": [(-40.0, -40.0), (40.0, -40.0), (40.0, 40.0), (-40.0, 40.0)],
+    "mask_falloff_mm": 5.0,
+}
+
+
+def test_region_local_subdiv_resamples_finer_than_linear_interpolation():
+    # Proves new vertices come from a fresh field sample at their own XY, not
+    # a plain linear interpolation of the coarse (pre-refine) surface — the
+    # whole point of the feature (see tree_pads.refine_regions docstring).
+    num_top = top_vertex_count(3, 0)
+    coarse_region = dict(REGION_FOR_RESAMPLE, local_subdiv=0)
+    fine_region = dict(REGION_FOR_RESAMPLE, local_subdiv=3)
+    verts_coarse, faces_coarse = _tile(surface_regions=[coarse_region])
+    verts_fine, faces_fine = _tile(surface_regions=[fine_region])
+    assert len(verts_fine) > len(verts_coarse)
+
+    mismatch_found = False
+    for i in range(num_top, len(verts_fine)):
+        x, y, z = verts_fine[i]
+        interpolated = tree_pads.sample_surface_z(verts_coarse, faces_coarse, x, y)
+        if abs(z - interpolated) > 1e-3:
+            mismatch_found = True
+            break
+    assert mismatch_found, "expected at least one resampled vertex to diverge from linear interpolation"
 
 
 # ---------------------------------------------------------------------------

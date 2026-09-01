@@ -1,9 +1,11 @@
 """Headless smoke test: register the extension and exercise
 hexfinity.bake_tile / hexfinity.unbake_tile end to end — brush strokes,
-a planted tree (pad + pin/notch), and a path feature all frozen together,
-an unrelated live edit (Surface Texture) leaving the freeze untouched, a
-corner-height edit invalidating just the pad/terrain/notch/path portion
-(not the frozen brush), and un-baking restoring live recompute. Run with:
+a planted tree (pad + pin/notch), a path feature, and a Draw Area region with
+its own Local Subdivision all frozen together, an unrelated live edit
+(Surface Texture) leaving the freeze untouched, an edit to the region's own
+feature/polygon invalidating just the pad/terrain/notch/path/region portion,
+a corner-height edit doing the same, and un-baking restoring live recompute.
+Run with:
     blender --background --python tests/_headless_bake_check.py
 Exits non-zero on failure (raises) so it can gate CI / manual checks.
 """
@@ -76,6 +78,23 @@ feature.feature_type = 'FOOTPATH'
 assert len(feature.points) == 2
 print("path feature drawn OK")
 
+# ---- A Draw Area region with its own Local Subdivision — locally densifies
+# just this region's polygon, on top of whatever the tile-wide subdivision
+# already produced (see tree_pads.refine_regions). --------------------------
+verts_before_region = len(tile.data.vertices)
+region = tprops.surface_regions.add()
+for rx, ry in ((-30.0, -30.0), (30.0, -30.0), (30.0, 30.0), (-30.0, 30.0)):
+    rp = region.points.add()
+    rp.x, rp.y = rx, ry
+region.mask_falloff_mm = 5.0
+region.feature_mm = 3.0
+region.local_subdiv = 2
+region.surface_type = 'COBBLESTONE'
+operators.rebuild_tile(tile)
+assert len(tile.data.vertices) > verts_before_region, \
+    "region's own Local Subdivision should add local mesh density"
+print("Draw Area local subdivision OK")
+
 verts_before_bake = len(tile.data.vertices)
 print("verts before bake:", verts_before_bake)
 
@@ -109,6 +128,28 @@ assert tile.get("hf_bake_sig") is not None, \
 assert len(tile.data.vertices) == verts_after_bake, \
     "surface texture is a top-vertex-only live layer — vertex count must be unchanged"
 print("unrelated Surface Texture edit left the bake intact OK")
+
+# ---- An edit to the Draw Area region's OWN feature size invalidates just
+# the frozen pad/terrain/notch/path/region portion (the region's own params
+# are part of `_bake_signature` precisely because they shape the frozen
+# geometry's z values, not just its footprint). ------------------------------
+region.feature_mm = 6.0
+assert tile.get("hf_bake_sig") is None, \
+    "editing the region's own feature_mm must invalidate the bake"
+assert tile.get("hf_baked_extra_verts") is None
+assert tile.get("hf_baked_top_offset") is not None, \
+    "the frozen brush offset must survive a region edit"
+assert tprops.is_baked, "is_baked stays True — only the pad/terrain/notch/path/region portion reverted"
+print("region feature_mm edit correctly invalidated the region portion only OK")
+
+# Re-bake so the following corner-height check starts from a fresh frozen
+# state (mirrors a user re-baking after tuning the region).
+bpy.context.view_layer.objects.active = tile
+tile.select_set(True)
+res = bpy.ops.hexfinity.bake_tile()
+assert res == {'FINISHED'}, res
+assert tile.get("hf_bake_sig") is not None
+print("re-bake after region edit OK")
 
 # ---- A corner-height edit invalidates just the pad/terrain/notch/path
 # portion; the frozen brush offset must survive. -----------------------------

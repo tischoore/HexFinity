@@ -240,13 +240,24 @@ def build_hex_tile(
     `surface_regions`, when given, is a list of procedural-surface regions, each a
     dict: `surface_type`, `feature_mm`, `depth_mm`, `regularity`, `direction_rad`,
     optional `polygon` (list of (x, y) tile-local mm — omitted/empty = whole tile),
-    optional `mask_falloff_mm` (boundary blend band), and optional `seed`. Each
-    top vert's z gets `Σ region_mask · surface_offset` (see `procedural_surfaces`)
-    added, scaled by a rim fade so the texture vanishes within
-    `surface_rim_falloff_mm` of the rim (seams stay flat for interlock). Sampled in
-    GLOBAL coords (`surface_origin_xy` = tile world XY) so patterns flow across
-    seams. Like `top_displacement` this is z-only and clamped to `base_thickness_mm`,
-    so the manifold guarantee holds.
+    optional `mask_falloff_mm` (boundary blend band), optional `local_subdiv`
+    (see below), and optional `seed`. Each top vert's z gets `Σ region_mask ·
+    surface_offset` (see `procedural_surfaces`) added, scaled by a rim fade so
+    the texture vanishes within `surface_rim_falloff_mm` of the rim (seams
+    stay flat for interlock). Sampled in GLOBAL coords (`surface_origin_xy` =
+    tile world XY) so patterns flow across seams. Like `top_displacement`
+    this is z-only and clamped to `base_thickness_mm`, so the manifold
+    guarantee holds. This *value* contribution always applies live to the
+    fixed `0 .. num_top-1` prefix, baked or not (see `baked_extra` below).
+
+    A region's optional `local_subdiv` (int, default 0) instead drives *extra
+    geometry*: `tree_pads.refine_regions` locally densifies just that
+    region's own polygon (+ `mask_falloff_mm` band) so fine `feature_mm`
+    detail isn't capped by the tile's overall vertex spacing. Unlike the
+    always-live value contribution above, this appended geometry is treated
+    exactly like `flora_pads`/`terrain_pads`/`path_features` below — skipped
+    entirely when `baked_extra` is given (replayed from the frozen snapshot
+    instead).
 
     `flora_pads`, when given, is a list of `{"x", "y", "radius_mm", "blend_mm"}`
     dicts (tile-local mm) — one per planted tree. Each pad locally refines and
@@ -296,14 +307,16 @@ def build_hex_tile(
     prefix_overrides)` tuple captured by a previous call's `bake_capture`
     (see `HEXFINITY_OT_bake_tile` / `operators.rebuild_tile`) — a frozen
     snapshot of exactly what `flora_pads`/`terrain_pads`/`path_features`/
-    `flora_notches` produced at bake time. When given, none of those four
-    kwargs are consulted (no `tree_pads` call at all — this is the whole
-    point, skipping the expensive recompute): `prefix_overrides` (a dict of
-    `{top_vertex_index: z}`) is applied to the freshly-generated top-vertex
-    prefix first, then `extra_verts`/`extra_faces` are appended/used
-    verbatim, exactly where the live pad/notch/path pipeline would have left
-    them. `top_displacement` (brush) and `surface_regions` are unaffected —
-    they still apply live, above, before this runs.
+    `flora_notches`/region `local_subdiv` refinement produced at bake time.
+    When given, none of those kwargs are consulted (no `tree_pads` call at
+    all — this is the whole point, skipping the expensive recompute):
+    `prefix_overrides` (a dict of `{top_vertex_index: z}`) is applied to the
+    freshly-generated top-vertex prefix first, then `extra_verts`/
+    `extra_faces` are appended/used verbatim, exactly where the live
+    pad/notch/path/region-refine pipeline would have left them.
+    `top_displacement` (brush) and `surface_regions`' prefix *value*
+    contribution are unaffected — they still apply live, above, before this
+    runs.
 
     `bake_capture`, when given, is an output-only dict this call fills in
     (only in the branch where `baked_extra` is *not* given, i.e. a live
@@ -479,6 +492,12 @@ def build_hex_tile(
     # any bottom/side/tab geometry. The brush's painted displacement is keyed to
     # exactly this index range; apply it here (z-only, clamped to the base).
     num_top = len(verts_mm)
+    top_faces = [tuple(top_remap[v] for v in f) for f in sub_faces]
+    # Snapshot of the undisplaced prefix, taken before brush/region value
+    # displacement is applied below — used by `tree_pads.refine_regions` to
+    # interpolate a new vertex's underlying shape z separately from the
+    # freshly-resampled region noise added on top of it (see its docstring).
+    base_prefix_verts = list(verts_mm)
     have_disp = top_displacement is not None and len(top_displacement) == num_top
     regions = surface_regions or ()
     falloff = max(surface_rim_falloff_mm, 1e-6)
@@ -501,7 +520,6 @@ def build_hex_tile(
         bake_capture["num_top"] = num_top
         bake_capture["prefix_z_pre_pads"] = [verts_mm[i][2] for i in range(num_top)]
 
-    top_faces = [tuple(top_remap[v] for v in f) for f in sub_faces]
     if baked_extra is not None:
         # Frozen replay: splice in a previously-captured pad/notch/path
         # result instead of recomputing it — see the docstring above.
@@ -512,6 +530,17 @@ def build_hex_tile(
         verts_mm.extend(tuple(v) for v in extra_verts)
         top_faces = [tuple(f) for f in extra_faces]
     else:
+        if regions and any(reg.get("polygon") and int(reg.get("local_subdiv", 0)) > 0
+                            for reg in regions):
+            try:
+                from . import tree_pads
+            except ImportError:
+                import tree_pads
+            top_faces = tree_pads.refine_regions(
+                verts_mm, top_faces, protected_edges, regions,
+                base_prefix_verts, top_faces,
+                surface_origin_xy, surface_seed, falloff,
+                diameter_mm, base_thickness_mm)
         combined_pads = list(flora_pads or ()) + list(terrain_pads or ())
         if combined_pads:
             try:

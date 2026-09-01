@@ -22,9 +22,13 @@ planting/unplanting a tree never touches it.
 import math
 
 try:
-    from .mesh_builder import rim_edge_distance, FLORA_NOTCH_MIN_FLOOR_MM
+    from .mesh_builder import (rim_edge_distance, FLORA_NOTCH_MIN_FLOOR_MM,
+                               _surface_offset_for_regions)
+    from . import procedural_surfaces
 except ImportError:
-    from mesh_builder import rim_edge_distance, FLORA_NOTCH_MIN_FLOOR_MM
+    from mesh_builder import (rim_edge_distance, FLORA_NOTCH_MIN_FLOOR_MM,
+                              _surface_offset_for_regions)
+    import procedural_surfaces
 
 
 # Refinement passes are per-edge and stop as soon as no edge qualifies, so
@@ -452,6 +456,92 @@ def refine_and_flatten(verts, faces, protected_edges, pads, diameter_mm, base_th
                 continue
             z = z + w * (pz - z)
         verts[i] = (x, y, max(z, base_thickness_mm))
+
+    return faces
+
+
+def refine_regions(verts, faces, protected_edges, regions, base_verts, base_faces,
+                    origin_xy, seed, rim_falloff_mm, diameter_mm, base_thickness_mm):
+    """Append-only local refinement inside each Draw Area region's own
+    polygon (+ `mask_falloff_mm` band), driven by that region's own
+    `"local_subdiv"` pass count — independent per region, not a single
+    self-terminating radius gate like `refine_and_flatten`'s pads use, since
+    a polygon has no natural radius to gate against.
+
+    `verts`/`faces` are the current top surface, already carrying the brush +
+    base per-vertex region displacement `mesh_builder.build_hex_tile` applies
+    to its `0 .. num_top-1` prefix. A plain 3D-linear-midpoint of two
+    already-displaced parent vertices (`_iteratively_refine`'s usual
+    approach) would add no real detail here, so instead every vertex this
+    function appends is placed by: interpolating the *undisplaced* surface
+    shape at the new (x, y) from `base_verts`/`base_faces` (a snapshot of the
+    prefix taken before displacement was applied) via `sample_surface_z`,
+    then adding a freshly evaluated, rim-faded `_surface_offset_for_regions`
+    at that exact (x, y) — a real resample of the region's noise field at the
+    new, finer position, not stale interpolation of coarse parent samples.
+
+    `regions` is the full (unfiltered) marshalled region list — used both to
+    pick which regions drive *topology* (those with a polygon and
+    `local_subdiv > 0`) and, unfiltered, to evaluate the summed displacement
+    field at each new vertex, so a `local_subdiv == 0` region still
+    correctly contributes its own value to a vertex a different region's
+    refinement inserted nearby.
+    """
+    active = [
+        (reg["polygon"], reg.get("mask_falloff_mm", 0.0), int(reg.get("local_subdiv", 0)))
+        for reg in regions if reg.get("polygon") and len(reg["polygon"]) >= 3
+    ]
+    active = [(poly, band, levels) for (poly, band, levels) in active if levels > 0]
+    if not active:
+        return list(faces)
+
+    faces = list(faces)
+    max_levels = max(levels for (_poly, _band, levels) in active)
+    falloff_norm = max(rim_falloff_mm, 1e-6)
+
+    def _qualifies(mx, my):
+        for poly, band in specs:
+            if procedural_surfaces.point_in_polygon(mx, my, poly):
+                return True
+            if band > 0.0 and procedural_surfaces.polygon_edge_distance(mx, my, poly) <= band:
+                return True
+        return False
+
+    for level in range(max_levels):
+        specs = [(poly, band) for (poly, band, levels) in active if levels > level]
+        if not specs:
+            break
+
+        marked = set()
+        for face in faces:
+            a, b, c = face
+            for (u, v) in ((a, b), (b, c), (c, a)):
+                key = _edge_key(u, v)
+                if key in protected_edges or key in marked:
+                    continue
+                mx = (verts[u][0] + verts[v][0]) / 2.0
+                my = (verts[u][1] + verts[v][1]) / 2.0
+                if _qualifies(mx, my):
+                    marked.add(key)
+        if not marked:
+            break
+
+        mid_idx = {}
+        for key in marked:
+            u, v = key
+            mx = (verts[u][0] + verts[v][0]) / 2.0
+            my = (verts[u][1] + verts[v][1]) / 2.0
+            base_z = sample_surface_z(base_verts, base_faces, mx, my)
+            fade = rim_edge_distance(mx, my, diameter_mm) / falloff_norm
+            fade = 0.0 if fade < 0.0 else (1.0 if fade > 1.0 else fade)
+            dz = fade * _surface_offset_for_regions(mx, my, regions, origin_xy, seed) if fade > 0.0 else 0.0
+            mid_idx[key] = len(verts)
+            verts.append((mx, my, max(base_z + dz, base_thickness_mm)))
+
+        new_faces = []
+        for face in faces:
+            new_faces.extend(_retriangulate(face, marked, mid_idx, verts))
+        faces = new_faces
 
     return faces
 

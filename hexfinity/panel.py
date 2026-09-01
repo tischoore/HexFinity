@@ -225,16 +225,17 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         if tile.is_baked:
             box.operator("hexfinity.unbake_tile", text="Un-bake Tile",
                          icon='LOOP_BACK')
-            box.label(text="Pad/terrain/notch/path/brush layers are frozen "
-                            "into the mesh.", icon='INFO')
+            box.label(text="Pad/terrain/notch/path/region-subdiv/brush "
+                            "layers are frozen into the mesh.", icon='INFO')
         else:
             box.operator("hexfinity.bake_tile", text="Bake Tile",
                          icon='NODETREE')
-        box.label(text="Displacement regions (Draw Area / Surface Texture) "
-                        "stay live either way.", icon='INFO')
+        box.label(text="Draw Area/Surface Texture VALUES stay live either "
+                        "way; a region's own Local Subdivision geometry "
+                        "freezes with the rest.", icon='INFO')
         box.label(text="A corner/dome/global edit auto-reverts the frozen "
-                        "pad/terrain/notch/path layer (not the brush).",
-                  icon='INFO')
+                        "pad/terrain/notch/path/region layer (not the "
+                        "brush).", icon='INFO')
 
     @staticmethod
     def _draw_surface_regions(context, layout, map_props, obj, tile):
@@ -281,6 +282,7 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         # ---- Displacement surface params ----------------------------------
         if show_mask_falloff:
             sub.prop(reg, "mask_falloff_mm")
+            sub.prop(reg, "local_subdiv")
         if surf.uses_feature:
             sub.prop(reg, "feature_mm")
         sub.prop(reg, "depth_mm")
@@ -289,7 +291,9 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
             sub.prop(reg, "direction_deg")
 
         # Resolution guidance: warn when the feature is finer than the mesh can
-        # resolve (heightfield detail is bounded by the top-vertex spacing).
+        # resolve (heightfield detail is bounded by the top-vertex spacing). A
+        # Draw Area's own Local Subdivision (show_mask_falloff=True) locally
+        # halves that spacing per pass, same as `refine_regions`' pass shape.
         if not surf.uses_feature:
             return
         resample = effective_resample(map_props.resample_density, tile.local_subdiv)
@@ -297,10 +301,15 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         R = map_props.diameter_mm * 0.5
         hex_area = (3.0 * math.sqrt(3.0) / 2.0) * R * R
         spacing = math.sqrt(hex_area / max(nverts, 1))
+        if show_mask_falloff:
+            spacing = spacing / (2 ** max(0, reg.local_subdiv))
+            hint = "raise this region's own Local Subdivision"
+        else:
+            hint = "raise tile-wide Local Subdivision"
         if reg.feature_mm < 2.0 * spacing:
             box.label(
                 text=f"Feature {reg.feature_mm:.1f}mm < 2x vert spacing "
-                     f"({spacing:.1f}mm) — raise Local Subdivision",
+                     f"({spacing:.1f}mm) — {hint}",
                 icon='ERROR')
         else:
             box.label(text=f"Vert spacing ~{spacing:.1f}mm", icon='INFO')

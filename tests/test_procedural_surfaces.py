@@ -282,6 +282,52 @@ def test_region_clamps_to_base_thickness():
         assert verts[i][2] >= 10.0 - 1e-9   # base_thickness_mm
 
 
+def test_region_local_subdiv_zero_matches_omitted_key():
+    # A region with local_subdiv=0 must behave identically to a region dict
+    # that never carried the key at all (e.g. a marshalled region predating
+    # this feature) — both take the same no-refine-geometry path.
+    explicit_zero, faces_zero = _flat_tile(
+        surface_regions=[dict(CENTER_REGION[0], local_subdiv=0)])
+    omitted, faces_omitted = _flat_tile(surface_regions=CENTER_REGION)
+    assert explicit_zero == pytest.approx(list(omitted), abs=1e-12)
+    assert faces_zero == faces_omitted
+
+
+def test_region_local_subdiv_prefix_unaffected():
+    num_top = top_vertex_count(2, 0)
+    plain, _ = _flat_tile(surface_regions=[dict(CENTER_REGION[0], local_subdiv=0)])
+    fine, _ = _flat_tile(surface_regions=[dict(CENTER_REGION[0], local_subdiv=3)])
+    for i in range(num_top):
+        assert fine[i] == pytest.approx(plain[i], abs=1e-9)
+
+
+def test_region_local_subdiv_is_manifold():
+    verts, faces = _flat_tile(surface_regions=[dict(CENTER_REGION[0], local_subdiv=3)])
+    assert_two_manifold(verts, faces)
+
+
+def test_region_local_subdiv_grows_vertex_count():
+    plain, _ = _flat_tile(surface_regions=[dict(CENTER_REGION[0], local_subdiv=0)])
+    fine, _ = _flat_tile(surface_regions=[dict(CENTER_REGION[0], local_subdiv=2)])
+    assert len(fine) > len(plain)
+
+
+def test_brush_displacement_survives_region_local_subdiv():
+    num_top = top_vertex_count(2, 0)
+    top_disp = [2.0] * num_top
+    plain, _ = _flat_tile(
+        top_displacement=top_disp,
+        surface_regions=[dict(CENTER_REGION[0], local_subdiv=0)])
+    fine, _ = _flat_tile(
+        top_displacement=top_disp,
+        surface_regions=[dict(CENTER_REGION[0], local_subdiv=3)])
+    for i in range(num_top):
+        assert fine[i] == pytest.approx(plain[i], abs=1e-9)
+    no_brush, _ = _flat_tile(surface_regions=[dict(CENTER_REGION[0], local_subdiv=0)])
+    assert any(abs(fine[i][2] - no_brush[i][2]) > 1e-6 for i in range(num_top)), \
+        "brush offset should still be visible in the prefix"
+
+
 def test_region_fades_to_flat_at_rim():
     # A whole-tile region (no polygon) must still leave the rim corners exact.
     flat, _ = _flat_tile()
