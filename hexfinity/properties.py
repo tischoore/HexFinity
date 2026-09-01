@@ -68,7 +68,7 @@ class HexFinityMapProperties(bpy.types.PropertyGroup):
     )
     base_level: bpy.props.IntProperty(
         name="Base Level",
-        default=0,
+        default=1,
         min=0,
         soft_max=20,
         description="Starting corner level for every tile when the map is generated. "
