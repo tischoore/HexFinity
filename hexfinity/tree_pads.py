@@ -473,12 +473,16 @@ def refine_regions(verts, faces, protected_edges, regions, base_verts, base_face
     to its `0 .. num_top-1` prefix. A plain 3D-linear-midpoint of two
     already-displaced parent vertices (`_iteratively_refine`'s usual
     approach) would add no real detail here, so instead every vertex this
-    function appends is placed by: interpolating the *undisplaced* surface
-    shape at the new (x, y) from `base_verts`/`base_faces` (a snapshot of the
-    prefix taken before displacement was applied) via `sample_surface_z`,
-    then adding a freshly evaluated, rim-faded `_surface_offset_for_regions`
-    at that exact (x, y) — a real resample of the region's noise field at the
-    new, finer position, not stale interpolation of coarse parent samples.
+    function appends is placed by: interpolating the surface shape at the new
+    (x, y) from `base_verts`/`base_faces` — a snapshot of the prefix taken
+    *after* the brush was applied but *before* the region value was added
+    (see `build_hex_tile`) — via `sample_surface_z`, then adding a freshly
+    evaluated, rim-faded `_surface_offset_for_regions` at that exact (x, y) —
+    a real resample of the region's noise field at the new, finer position,
+    not stale interpolation of coarse parent samples. The snapshot must
+    include the brush: a new vertex whose shape ignored hand-painted strokes
+    would visibly jump to the pre-paint height wherever a region gets locally
+    subdivided.
 
     `regions` is the full (unfiltered) marshalled region list — used both to
     pick which regions drive *topology* (those with a polygon and

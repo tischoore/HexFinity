@@ -328,6 +328,40 @@ def test_brush_displacement_survives_region_local_subdiv():
         "brush offset should still be visible in the prefix"
 
 
+def test_brush_displacement_survives_region_local_subdiv_in_appended_verts():
+    # Regression test: appended (locally-refined) vertices must also respect
+    # a painted brush stroke, not just the 0..num_top-1 prefix — the exact
+    # gap that let a real bug ship (new geometry silently "jumped" back to
+    # the pre-paint height wherever a region got locally subdivided; see
+    # tree_pads.refine_regions and mesh_builder.build_hex_tile's
+    # base_prefix_verts snapshot). Corners are raised well above
+    # base_thickness_mm so the region's own depth (up to ~depth_mm/2) can
+    # never hit the floor clamp and desync the expected uniform shift —
+    # that clamp interaction is covered separately by
+    # test_region_clamps_to_base_thickness.
+    num_top = top_vertex_count(2, 0)
+    top_disp = [3.0] * num_top
+    region = dict(CENTER_REGION[0], local_subdiv=3)
+    raised = dict(corner_levels=(3, 3, 3, 3, 3, 3))
+    no_brush, _ = _flat_tile(surface_regions=[region], **raised)
+    with_brush, _ = _flat_tile(top_displacement=top_disp, surface_regions=[region], **raised)
+    assert len(with_brush) == len(no_brush)
+    assert len(with_brush) > num_top, "expected appended region-refine vertices"
+    # Everything beyond num_top also includes bottom/wall/tab geometry, which
+    # is unrelated to top-surface displacement. Top-surface appended verts
+    # are always clamped to >= base_thickness_mm (refine_regions' own floor
+    # clamp); bottom/tab/hole z tops out below TAB_HEIGHT_MM (< base
+    # thickness here) — same separating threshold used elsewhere in this
+    # suite (e.g. test_pad_interior_is_flat in test_tree_pads.py).
+    base_thickness = 10.0
+    top_appended = [i for i in range(num_top, len(no_brush))
+                    if no_brush[i][2] >= base_thickness - 1e-6]
+    assert len(top_appended) > 0, "expected appended region-refine vertices on the top surface"
+    for i in top_appended:
+        assert with_brush[i][2] == pytest.approx(no_brush[i][2] + 3.0, abs=1e-6), \
+            "appended vertex should shift by the uniform brush offset too"
+
+
 def test_region_fades_to_flat_at_rim():
     # A whole-tile region (no polygon) must still leave the rim corners exact.
     flat, _ = _flat_tile()

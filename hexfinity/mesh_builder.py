@@ -493,25 +493,29 @@ def build_hex_tile(
     # exactly this index range; apply it here (z-only, clamped to the base).
     num_top = len(verts_mm)
     top_faces = [tuple(top_remap[v] for v in f) for f in sub_faces]
-    # Snapshot of the undisplaced prefix, taken before brush/region value
-    # displacement is applied below — used by `tree_pads.refine_regions` to
-    # interpolate a new vertex's underlying shape z separately from the
-    # freshly-resampled region noise added on top of it (see its docstring).
-    base_prefix_verts = list(verts_mm)
     have_disp = top_displacement is not None and len(top_displacement) == num_top
     regions = surface_regions or ()
     falloff = max(surface_rim_falloff_mm, 1e-6)
+    # Snapshot taken AFTER the brush but BEFORE the region value is added —
+    # used by `tree_pads.refine_regions` to interpolate a new vertex's
+    # brush-painted shape separately from the freshly-resampled region noise
+    # added on top of it (see its docstring). Must include the brush: a new
+    # vertex whose "shape" ignored hand-painted strokes would visibly jump to
+    # the pre-paint height wherever a region got locally subdivided.
+    base_prefix_verts = list(verts_mm)
     if have_disp or regions:
         for i in range(num_top):
             x, y, z = verts_mm[i]
-            dz = top_displacement[i] if have_disp else 0.0
+            dz1 = top_displacement[i] if have_disp else 0.0
+            base_prefix_verts[i] = (x, y, z + dz1)
+            dz2 = 0.0
             if regions:
                 fade = rim_edge_distance(x, y, diameter_mm) / falloff
                 fade = 0.0 if fade < 0.0 else (1.0 if fade > 1.0 else fade)
                 if fade > 0.0:
-                    dz += fade * _surface_offset_for_regions(
+                    dz2 = fade * _surface_offset_for_regions(
                         x, y, regions, surface_origin_xy, surface_seed)
-            verts_mm[i] = (x, y, max(z + dz, base_thickness_mm))
+            verts_mm[i] = (x, y, max(z + dz1 + dz2, base_thickness_mm))
 
     # `bake_capture` records the pre-pad prefix Z here (before any of the
     # pad/notch/path work below runs) so a live build used to *create* a bake
