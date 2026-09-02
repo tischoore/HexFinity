@@ -20,7 +20,7 @@
        Scale: 6 SVG units per millimetre. At the default diameter (100 mm) side
        length is 50 mm = 300 SVG units; the constants TAB_WIDTH_MM=10,
        TAB_DEPTH_MM=10, TAB_OFFSET_FROM_CORNER_MM=10 all become 60 SVG units.
-       The hole's extra TAB_HOLE_TOLERANCE_MM=0.2 is invisible at this scale.
+       The hole's extra TAB_HOLE_TOLERANCE_MM=0.5 is invisible at this scale.
        Inward (tile interior) = -y (up). Outward = +y (down). -->
 
   <text x="240" y="62" text-anchor="middle" font-family="sans-serif" font-size="12" font-style="italic" fill="#666">tile interior (inward)</text>

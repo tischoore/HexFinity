@@ -35,7 +35,7 @@ except ImportError:
 # this is a ceiling on local density near a tree, not a fixed cost.
 MAX_LEVELS = 4
 
-# A notch's radius (~1.1mm, see mesh_builder.FLORA_NOTCH_RADIUS_MM) is far
+# A notch's radius (~1.2mm, see mesh_builder.FLORA_NOTCH_RADIUS_MM) is far
 # smaller than a typical pad radius, so cutting one needs much finer local
 # edges than a pad's own flatten pass already produces — hence a separate,
 # deeper refinement ceiling and a small forced-refinement blend margin.

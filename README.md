@@ -107,7 +107,7 @@ Tab and hole dimensions are module-level constants in `mesh_builder.py` and are 
 | `TAB_HEIGHT_MM` | 8 | vertical (Z) |
 | `TAB_DEPTH_MM` | 10 | radially outward |
 | `TAB_OFFSET_FROM_CORNER_MM` | 10 | tab/hole inset from a corner |
-| `TAB_HOLE_TOLERANCE_MM` | 0.2 | slack so tiles slide together |
+| `TAB_HOLE_TOLERANCE_MM` | 0.5 | slack so tiles slide together |
 | `TAB_FILLET_MM` | 4 | rounding on the tab's two outer vertical edges |
 | `TAB_FILLET_SEGMENTS` | 3 | arc tessellation per rounded corner |
 
@@ -123,8 +123,8 @@ the tab never extends past `TAB_DEPTH_MM`.
 
 The interlock imposes two input constraints that `build_hex_tile` enforces with `ValueError`:
 
-- **`base_thickness_mm ≥ 8.2 mm`** (`TAB_HEIGHT_MM + TAB_HOLE_TOLERANCE_MM`) — the base has to be thick enough to host the hole.
-- **`diameter_mm` large enough** that a side leaves at least 0.1 mm of solid material between hole and tab. The side length is `diameter_mm / 2`, so the constraint is `diameter_mm / 2 − 2·offset − 2·width − tolerance / 2 ≥ 0.1 mm`. With the defaults above that is **`diameter_mm ≥ 80.4 mm`**.
+- **`base_thickness_mm ≥ 8.5 mm`** (`TAB_HEIGHT_MM + TAB_HOLE_TOLERANCE_MM`) — the base has to be thick enough to host the hole.
+- **`diameter_mm` large enough** that a side leaves at least 0.1 mm of solid material between hole and tab. The side length is `diameter_mm / 2`, so the constraint is `diameter_mm / 2 − 2·offset − 2·width − tolerance / 2 ≥ 0.1 mm`. With the defaults above that is **`diameter_mm ≥ 80.7 mm`**.
 
 ---
 
@@ -243,9 +243,9 @@ A planted tree and its tile can be printed as **two separate parts** and assembl
 | Constant | Value | Meaning |
 |---|---|---|
 | `FLORA_PIN_DIAMETER_MM` | 2.0 mm | Pin diameter — always exactly this |
-| `FLORA_PIN_HOLE_TOLERANCE_MM` | 0.2 mm | Socket grows by this over the pin, mirroring `TAB_HOLE_TOLERANCE_MM` |
+| `FLORA_PIN_HOLE_TOLERANCE_MM` | 0.4 mm | Socket grows by this over the pin, mirroring `TAB_HOLE_TOLERANCE_MM` |
 | `FLORA_NOTCH_DEPTH_MM` | 10.0 mm | Socket depth |
-| `FLORA_PIN_LENGTH_MM` | 9.8 mm | Pin length — slightly shorter than the socket so it never bottoms out |
+| `FLORA_PIN_LENGTH_MM` | 9.6 mm | Pin length — slightly shorter than the socket so it never bottoms out |
 
 Cutting a real socket is too expensive to do on every interactive rebuild, so it's deferred: leaving the Flora tool (Esc/RMB) or pressing the **Finalize Flora** button cuts the socket and creates the pin for every planted tree; any other rebuild trigger (brush stroke, corner-height edit, terrain snap, or a flora pad-setting change) strips them again until Finalize Flora runs once more — the panel notes this next to the button.
 

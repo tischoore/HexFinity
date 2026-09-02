@@ -298,9 +298,10 @@ def sync_flora(tile_obj, ok_indices=None, notch_heights=None):
             # `min_z`) so the pin's top lands exactly at `surface_z` — the
             # known socket-mouth height — regardless of `penetration_mm`.
             # Without that correction the pin would start `penetration_mm`
-            # below the socket's actual mouth, which at the default
-            # penetration (0.3mm) versus FLORA_PIN_HOLE_TOLERANCE_MM (0.2mm)
-            # would already poke the pin's tip past the socket floor.
+            # below the socket's actual mouth, which pokes the pin's tip past
+            # the socket floor as soon as `penetration_mm` exceeds
+            # `FLORA_PIN_HOLE_TOLERANCE_MM` — a real risk since either value
+            # can be changed independently.
             pin.location = (0.0, 0.0, min_z + penetration_mm / total_scale)
             pin[FLORA_PIN_OF] = True
             pin[FLORA_PLACEMENT_INDEX] = i

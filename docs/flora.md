@@ -180,10 +180,10 @@ per-placement scale and the scene's `man_height_mm` print-scale slider:
 | Constant | Value | Meaning |
 |---|---|---|
 | `FLORA_PIN_DIAMETER_MM` | 2.0 | Pin diameter — always exactly this, regardless of tree scale |
-| `FLORA_PIN_HOLE_TOLERANCE_MM` | 0.2 | Socket grows by this over the pin, mirroring `TAB_HOLE_TOLERANCE_MM` |
-| `FLORA_NOTCH_RADIUS_MM` | ~1.1 | Socket radius = pin radius + half the tolerance |
+| `FLORA_PIN_HOLE_TOLERANCE_MM` | 0.4 | Socket grows by this over the pin, mirroring `TAB_HOLE_TOLERANCE_MM` |
+| `FLORA_NOTCH_RADIUS_MM` | ~1.2 | Socket radius = pin radius + half the tolerance |
 | `FLORA_NOTCH_DEPTH_MM` | 10.0 | Socket depth |
-| `FLORA_PIN_LENGTH_MM` | 9.8 | Pin length = socket depth − tolerance, so the tip never bottoms out before the tree's base seats flush |
+| `FLORA_PIN_LENGTH_MM` | 9.6 | Pin length = socket depth − tolerance, so the tip never bottoms out before the tree's base seats flush |
 
 **Cost control — cut only on finalize.** Unlike the flatten pad (recomputed
 on every `rebuild_tile`), drilling a real socket is expensive enough that it
@@ -203,7 +203,7 @@ button.
 **The socket cut (`tree_pads.cut_notches`, bpy-free)** runs strictly after
 the pad flatten, so it always cuts into a surface already known to be flat.
 It forces its own deeper local refinement (`NOTCH_MAX_LEVELS = 8` — the
-~1.1 mm notch radius is far smaller than a typical pad, needing much finer
+~1.2 mm notch radius is far smaller than a typical pad, needing much finer
 edges than the pad's own flatten pass produces), then removes every triangle
 fully inside the notch radius, walks the resulting hole's boundary into an
 ordered loop, snaps that loop onto an exact circle (so a real printed pin
@@ -233,8 +233,8 @@ not just `(0, 0, min_z)` — so the pin's top always lands exactly at the
 resolved surface height *regardless of `penetration_mm`*: anchoring it at
 the tree's own (already-sunk) local origin instead would let the pin's tip
 poke past the socket floor once `penetration_mm` exceeds
-`FLORA_PIN_HOLE_TOLERANCE_MM` (already true at the defaults, 0.3mm vs
-0.2mm). `sync_flora` only attaches a pin for a placement index that
+`FLORA_PIN_HOLE_TOLERANCE_MM` — a real risk since either value can be changed
+independently. `sync_flora` only attaches a pin for a placement index that
 `cut_notches` actually succeeded on (`ok_indices`), so a partial failure —
 one tree's socket skipped, others fine — can never leave a pin floating over
 an undrilled spot; `purge_flora` removes a tree's pin before the tree itself
@@ -242,7 +242,7 @@ so nothing is orphaned.
 
 **Seating uses the known pad height, not a raycast into the hole.**
 Once a socket is cut, a straight-down raycast at the placement's exact
-`(x, y)` — the notch's own centre — would pass through the ~1.1mm-wide
+`(x, y)` — the notch's own centre — would pass through the ~1.2mm-wide
 opening and hit the socket floor, ~`FLORA_NOTCH_DEPTH_MM` below the real
 surface, instead of the surrounding pad. `tree_pads.cut_notches` already
 knows the pad's exact pre-drill flat height (`pad_z`) for every notch it

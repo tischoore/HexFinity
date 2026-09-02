@@ -5,6 +5,8 @@ from mesh_builder import (
     build_hex_tile,
     top_vertex_count,
     TAB_FILLET_SEGMENTS,
+    TAB_HEIGHT_MM,
+    TAB_HOLE_TOLERANCE_MM,
     FLORA_PIN_RADIUS_MM,
     FLORA_NOTCH_RADIUS_MM,
     FLORA_NOTCH_DEPTH_MM,
@@ -464,7 +466,8 @@ def test_notch_skipped_gracefully_on_a_thin_full_tile():
     # so build_hex_tile must still produce a valid manifold mesh, just
     # without that socket cut, rather than raising or corrupting geometry.
     verts, faces = build_hex_tile(
-        diameter_mm=220.0, level_height_mm=10.0, base_thickness_mm=8.2,
+        diameter_mm=220.0, level_height_mm=10.0,
+        base_thickness_mm=TAB_HEIGHT_MM + TAB_HOLE_TOLERANCE_MM,
         corner_levels=(0, 0, 0, 0, 0, 0), center_level=None,
         smoothness_passes=3,
         flora_pads=[{"x": 0.0, "y": 0.0, "radius_mm": 8.0, "blend_mm": 5.0}],
