@@ -121,79 +121,82 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         from . import operators
         operators.seed_corner_snapshot_if_changed(obj)
 
-        box = layout.box()
-        box.label(
+        header, box = layout.panel("hexfinity_editing", default_closed=False)
+        header.label(
             text=f"Editing: {obj.name}   (q={tile.coord_q}, r={tile.coord_r})"
         )
+        if box:
+            sub = box.box()
+            sub.label(text="Corner Levels (clockwise from upper-right)")
+            selected_tiles = sum(
+                1 for o in context.selected_objects if o.hexfinity_tile.is_generated
+            )
+            if selected_tiles > 1:
+                sub.label(text=f"{selected_tiles} tiles selected — edits apply to all",
+                          icon='INFO')
+            col = sub.column(align=True)
+            col.prop(tile, "p1")
+            col.prop(tile, "p2")
+            col.prop(tile, "p3")
+            col.prop(tile, "p4")
+            col.prop(tile, "p5")
+            col.prop(tile, "p6")
 
-        sub = box.box()
-        sub.label(text="Corner Levels (clockwise from upper-right)")
-        selected_tiles = sum(
-            1 for o in context.selected_objects if o.hexfinity_tile.is_generated
-        )
-        if selected_tiles > 1:
-            sub.label(text=f"{selected_tiles} tiles selected — edits apply to all",
-                      icon='INFO')
-        col = sub.column(align=True)
-        col.prop(tile, "p1")
-        col.prop(tile, "p2")
-        col.prop(tile, "p3")
-        col.prop(tile, "p4")
-        col.prop(tile, "p5")
-        col.prop(tile, "p6")
+            sub = box.box()
+            sub.label(text="Center")
+            sub.prop(tile, "override_center")
+            row = sub.row()
+            row.enabled = tile.override_center
+            row.prop(tile, "center_level")
+            col = sub.column(align=True)
+            col.prop(tile, "center_x_mm")
+            col.prop(tile, "center_y_mm")
+            col = sub.column(align=True)
+            col.prop(tile, "dome_area", slider=True)
+            col.prop(tile, "dome_damping", slider=True)
+            col.prop(tile, "local_subdiv")
 
-        sub = box.box()
-        sub.label(text="Center")
-        sub.prop(tile, "override_center")
-        row = sub.row()
-        row.enabled = tile.override_center
-        row.prop(tile, "center_level")
-        col = sub.column(align=True)
-        col.prop(tile, "center_x_mm")
-        col.prop(tile, "center_y_mm")
-        col = sub.column(align=True)
-        col.prop(tile, "dome_area", slider=True)
-        col.prop(tile, "dome_damping", slider=True)
-        col.prop(tile, "local_subdiv")
-
-        terrain_box = box.box()
-        terrain_box.label(text="Terrain Objects", icon='IMPORT')
-        terrain_box.operator("hexfinity.import_terrain_object",
-                             text="Import STL", icon='IMPORT')
-        if operators._terrain_objects(obj):
-            terrain_box.operator("hexfinity.generate_terrain_plateau",
-                                 text="Regenerate Plateau", icon='FILE_REFRESH')
+        # ---- Terrain Objects --------------------------------------------------
+        header, terrain_box = layout.panel("hexfinity_terrain_objects", default_closed=True)
+        header.label(text="Terrain Objects", icon='IMPORT')
+        if terrain_box:
+            terrain_box.operator("hexfinity.import_terrain_object",
+                                 text="Import STL", icon='IMPORT')
+            if operators._terrain_objects(obj):
+                terrain_box.operator("hexfinity.generate_terrain_plateau",
+                                     text="Regenerate Plateau", icon='FILE_REFRESH')
 
         # ---- Flora ----------------------------------------------------------
-        flora_box = layout.box()
-        flora_box.label(text="Flora", icon='OUTLINER_OB_POINTCLOUD')
-        flora_box.prop(scene.hexfinity_flora, "tree_type")
-        flora_box.prop(scene.hexfinity_flora, "scale_variation_pct")
-        flora_box.prop(scene.hexfinity_flora, "flatten_base")
-        row = flora_box.row()
-        row.enabled = scene.hexfinity_flora.flatten_base
-        row.prop(scene.hexfinity_flora, "pad_blend_mm")
-        if scene.hexfinity_flora.flatten_base:
-            flora_box.label(
-                text="Flatten adds a few extra verts near each tree.",
-                icon='INFO')
-        flora_box.prop(scene.hexfinity_flora, "penetration_mm")
-        flora_box.prop(scene.hexfinity_flora, "avoid_overlap")
-        row = flora_box.row()
-        row.enabled = scene.hexfinity_flora.avoid_overlap
-        row.prop(scene.hexfinity_flora, "min_spacing_mm")
-        if flora.is_active():
+        header, flora_box = layout.panel("hexfinity_flora", default_closed=True)
+        header.label(text="Flora", icon='OUTLINER_OB_POINTCLOUD')
+        if flora_box:
+            flora_box.prop(scene.hexfinity_flora, "tree_type")
+            flora_box.prop(scene.hexfinity_flora, "scale_variation_pct")
+            flora_box.prop(scene.hexfinity_flora, "flatten_base")
             row = flora_box.row()
-            row.alert = True
-            row.label(text="Flora active — Esc / RMB to close", icon='INFO')
-        else:
-            flora_box.operator("hexfinity.flora_marker", text="Flora",
-                               icon='OUTLINER_OB_POINTCLOUD')
-        flora_box.operator("hexfinity.finalize_flora", text="Finalize Flora",
-                           icon='MOD_SCREW')
-        flora_box.label(
-            text="Pins/notches only exist right after Finalize — any later "
-                "edit strips them again.", icon='INFO')
+            row.enabled = scene.hexfinity_flora.flatten_base
+            row.prop(scene.hexfinity_flora, "pad_blend_mm")
+            if scene.hexfinity_flora.flatten_base:
+                flora_box.label(
+                    text="Flatten adds a few extra verts near each tree.",
+                    icon='INFO')
+            flora_box.prop(scene.hexfinity_flora, "penetration_mm")
+            flora_box.prop(scene.hexfinity_flora, "avoid_overlap")
+            row = flora_box.row()
+            row.enabled = scene.hexfinity_flora.avoid_overlap
+            row.prop(scene.hexfinity_flora, "min_spacing_mm")
+            if flora.is_active():
+                row = flora_box.row()
+                row.alert = True
+                row.label(text="Flora active — Esc / RMB to close", icon='INFO')
+            else:
+                flora_box.operator("hexfinity.flora_marker", text="Flora",
+                                   icon='OUTLINER_OB_POINTCLOUD')
+            flora_box.operator("hexfinity.finalize_flora", text="Finalize Flora",
+                               icon='MOD_SCREW')
+            flora_box.label(
+                text="Pins/notches only exist right after Finalize — any later "
+                    "edit strips them again.", icon='INFO')
 
         # ---- Surface Texture (whole-tile base layer) -----------------------
         self._draw_surface_texture(context, layout, map_props, tile)
@@ -206,41 +209,45 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
 
         # ---- Terrain Brush ------------------------------------------------
         brush = scene.hexfinity_brush
-        box = layout.box()
-        box.label(text="Terrain Brush", icon='BRUSH_DATA')
-        box.prop(brush, "direction", expand=True)
-        col = box.column(align=True)
-        col.prop(brush, "radius_mm")
-        col.prop(brush, "strength_mm")
-        box.prop(brush, "preserve_edge")
-        row = box.row()
-        row.enabled = brush.preserve_edge
-        row.prop(brush, "edge_falloff_mm")
-        box.operator("hexfinity.paint_brush", text="Paint", icon='BRUSH_DATA')
-        box.label(text="Bump smoothness/resample clears paint.", icon='INFO')
+        header, box = layout.panel("hexfinity_terrain_brush", default_closed=True)
+        header.label(text="Terrain Brush", icon='BRUSH_DATA')
+        if box:
+            box.prop(brush, "direction", expand=True)
+            col = box.column(align=True)
+            col.prop(brush, "radius_mm")
+            col.prop(brush, "strength_mm")
+            box.prop(brush, "preserve_edge")
+            row = box.row()
+            row.enabled = brush.preserve_edge
+            row.prop(brush, "edge_falloff_mm")
+            box.operator("hexfinity.paint_brush", text="Paint", icon='BRUSH_DATA')
+            box.label(text="Bump smoothness/resample clears paint.", icon='INFO')
 
         # ---- Bake -----------------------------------------------------
-        box = layout.box()
-        box.label(text="Bake", icon='NODETREE')
-        if tile.is_baked:
-            box.operator("hexfinity.unbake_tile", text="Un-bake Tile",
-                         icon='LOOP_BACK')
-            box.label(text="Pad/terrain/notch/path/region-subdiv/brush "
-                            "layers are frozen into the mesh.", icon='INFO')
-        else:
-            box.operator("hexfinity.bake_tile", text="Bake Tile",
-                         icon='NODETREE')
-        box.label(text="Draw Area/Surface Texture VALUES stay live either "
-                        "way; a region's own Local Subdivision geometry "
-                        "freezes with the rest.", icon='INFO')
-        box.label(text="A corner/dome/global edit auto-reverts the frozen "
-                        "pad/terrain/notch/path/region layer (not the "
-                        "brush).", icon='INFO')
+        header, box = layout.panel("hexfinity_bake", default_closed=True)
+        header.label(text="Bake", icon='NODETREE')
+        if box:
+            if tile.is_baked:
+                box.operator("hexfinity.unbake_tile", text="Un-bake Tile",
+                             icon='LOOP_BACK')
+                box.label(text="Pad/terrain/notch/path/region-subdiv/brush "
+                                "layers are frozen into the mesh.", icon='INFO')
+            else:
+                box.operator("hexfinity.bake_tile", text="Bake Tile",
+                             icon='NODETREE')
+            box.label(text="Draw Area/Surface Texture VALUES stay live either "
+                            "way; a region's own Local Subdivision geometry "
+                            "freezes with the rest.", icon='INFO')
+            box.label(text="A corner/dome/global edit auto-reverts the frozen "
+                            "pad/terrain/notch/path/region layer (not the "
+                            "brush).", icon='INFO')
 
     @staticmethod
     def _draw_surface_regions(context, layout, map_props, obj, tile):
-        box = layout.box()
-        box.label(text="Procedural Surface", icon='TEXTURE')
+        header, box = layout.panel("hexfinity_procedural_surface", default_closed=True)
+        header.label(text="Procedural Surface", icon='TEXTURE')
+        if not box:
+            return
         box.operator("hexfinity.draw_region", text="Draw Region", icon='GREASEPENCIL')
         box.operator("hexfinity.flood_fill_region", text="Flood Fill", icon='UV_SYNC_SELECT')
         box.prop(context.scene.hexfinity_flood_fill, "angle_threshold_deg", text="Angle Tolerance")
@@ -316,8 +323,10 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
 
     @staticmethod
     def _draw_surface_texture(context, layout, map_props, tile):
-        box = layout.box()
-        box.label(text="Surface Texture", icon='MOD_NOISE')
+        header, box = layout.panel("hexfinity_surface_texture", default_closed=True)
+        header.label(text="Surface Texture", icon='MOD_NOISE')
+        if not box:
+            return
         reg = tile.surface_texture
         box.prop(reg, "surface_type", text="")
         if reg.surface_type != 'NONE':
@@ -338,8 +347,10 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
     @staticmethod
     def _draw_path_features(context, layout, scene, tile):
         tool = scene.hexfinity_path_features
-        box = layout.box()
-        box.label(text="Path Feature", icon='MOD_CURVE')
+        header, box = layout.panel("hexfinity_path_feature", default_closed=True)
+        header.label(text="Path Feature", icon='MOD_CURVE')
+        if not box:
+            return
         box.prop(tool, "edge_snap")
         box.operator("hexfinity.draw_path_feature", text="Draw Feature",
                      icon='GREASEPENCIL')

@@ -409,6 +409,8 @@ HexFinity
 
 ### Branch B — once a map exists
 
+Every per-tile section below (Editing, Terrain Objects, Flora, Surface Texture, Procedural Surface, Path Feature, Terrain Brush, Bake) is an independently collapsible panel — click its header to fold it away without affecting the others. Collapsing one is a per-session UI preference, not saved tile data. Editing starts expanded (▾, since Corner Levels/Center are the core editing controls); the rest start collapsed (▸) to keep the sidebar short.
+
 ```
 HexFinity
 ├─ [ Clear Map ]                (invoke_confirm prompt; destructive delete)
@@ -417,29 +419,29 @@ HexFinity
 │   └─ Grid                     (X / Y / Base Level — only take effect on the next Generate)
 │
 ├─ If active object is a HexFinity tile:
-│  ├─ Editing: HexTile_qq_rr   (q=qq, r=rr)
-│  ├─ Corner Levels (clockwise from upper-right)
-│  │   ├─ "N tiles selected — edits apply to all"  (only when >1 selected)
-│  │   ├─ P1   [ int ≥ 0 ]   ← propagates to N.P3 + NE.P5
-│  │   ├─ P2   ...           ← propagates to NE.P4 + SE.P6
-│  │   ├─ P3                 ← propagates to SE.P5 + S.P1
-│  │   ├─ P4                 ← propagates to S.P6  + SW.P2
-│  │   ├─ P5                 ← propagates to SW.P1 + NW.P3
-│  │   └─ P6                 ← propagates to NW.P2 + N.P4
-│  ├─ Center
-│  │   ├─ Override center level (toggle)
-│  │   ├─ Center level (int, enabled when override is on)
-│  │   ├─ Center X / Center Y (mm)
-│  │   ├─ Dome Area / Dome Damping        (bump shaping; Copy to Selected)
-│  │   └─ Local Subdivision               (per-tile extra density)
-│  ├─ Terrain Objects
+│  ├─ ▾ Editing: HexTile_qq_rr (q=qq, r=rr)
+│  │   ├─ Corner Levels (clockwise from upper-right)
+│  │   │   ├─ "N tiles selected — edits apply to all"  (only when >1 selected)
+│  │   │   ├─ P1   [ int ≥ 0 ]   ← propagates to N.P3 + NE.P5
+│  │   │   ├─ P2   ...           ← propagates to NE.P4 + SE.P6
+│  │   │   ├─ P3                 ← propagates to SE.P5 + S.P1
+│  │   │   ├─ P4                 ← propagates to S.P6  + SW.P2
+│  │   │   ├─ P5                 ← propagates to SW.P1 + NW.P3
+│  │   │   └─ P6                 ← propagates to NW.P2 + N.P4
+│  │   └─ Center
+│  │       ├─ Override center level (toggle)
+│  │       ├─ Center level (int, enabled when override is on)
+│  │       ├─ Center X / Center Y (mm)
+│  │       ├─ Dome Area / Dome Damping        (bump shaping; Copy to Selected)
+│  │       └─ Local Subdivision               (per-tile extra density)
+│  ├─ ▸ Terrain Objects
 │  │   ├─ [ Import STL ]       (drop on tile, parent)
 │  │   └─ [ Regenerate Plateau ]  (shown only if the tile has terrain objects on it; force-recompute plateau for all of them)
-│  ├─ Flora                    (Tree Type / Scale Variation / Flatten Base / Pad Blend / Penetration / Avoid Overlap / Min Spacing → Flora, Finalize Flora)
-│  ├─ Surface Texture          (whole-tile base layer, no drawing needed — see below)
+│  ├─ ▸ Flora                  (Tree Type / Scale Variation / Flatten Base / Pad Blend / Penetration / Avoid Overlap / Min Spacing → Flora, Finalize Flora)
+│  ├─ ▸ Surface Texture        (whole-tile base layer, no drawing needed — see below)
 │  │   ├─ Surface type (incl. Uncultivated Plains) + Feature / Depth / Regularity / (Direction)
 │  │   └─ [ Copy Settings ] [ Apply ]   (session clipboard; Apply fans out to the whole selection)
-│  ├─ Procedural Surface       (region list + Draw Region / Flood Fill — see below)
+│  ├─ ▸ Procedural Surface     (region list + Draw Region / Flood Fill — see below)
 │  │   ├─ [ Draw Region ]      (click a polygon outline, Enter/RMB closes)
 │  │   ├─ [ Flood Fill ]       (hover to preview a connected same-angle patch, LMB commits)
 │  │   ├─ Angle Tolerance (deg)  (Flood Fill's normal-angle threshold)
@@ -448,7 +450,7 @@ HexFinity
 │  │   │            + Feature / Depth / Regularity / (Direction) + resolution warning
 │  │   └─ scatter:  Min/Max Size / Density / Distribution + budget warning
 │  │                + Merge into Tile / [ Merge Boulders into Tile ]
-│  ├─ Path Feature              (line list + Edge Snap + Draw Feature — see below)
+│  ├─ ▸ Path Feature            (line list + Edge Snap + Draw Feature — see below)
 │  │   ├─ Edge Snap (int ≥ 2)   (snap points per hex edge, incl. both corners)
 │  │   ├─ [ Draw Feature ]      (click waypoints above the tile; snapping to a
 │  │   │                         hex-edge point or another line's waypoint ends it)
@@ -457,8 +459,8 @@ HexFinity
 │  │                             sampled along the line — white raises, black
 │  │                             carves; auto-carves into the tile on every
 │  │                             edit, no manual step)
-│  ├─ Terrain Brush            (Raise/Lower, Radius, Strength, Preserve Edge → Paint)
-│  └─ Bake                     (freeze pads/notches/path carving/brush into the mesh)
+│  ├─ ▸ Terrain Brush          (Raise/Lower, Radius, Strength, Preserve Edge → Paint)
+│  └─ ▸ Bake                   (freeze pads/notches/path carving/brush into the mesh)
 │      ├─ [ Bake Tile ]         (shown when not yet baked)
 │      └─ [ Un-bake Tile ]      (shown once baked; fully reversible)
 │
