@@ -454,8 +454,9 @@ HexFinity
 │  │   ├─ Edge Snap (int ≥ 2)   (snap points per hex edge, incl. both corners)
 │  │   ├─ [ Draw Feature ]      (click waypoints above the tile; snapping to a
 │  │   │                         hex-edge point or another line's waypoint ends it)
-│  │   ├─ Name + Type (Footpath / Animal Track / Gravel Road / Country Road / Paved Road)
-│  │   └─ Texture + Width / Depth / Repeat  (grayscale displacement texture
+│  │   ├─ Name + Type (Simple / Gravel / Paved Road — each type carries its
+│  │   │                         own texture, no separate Texture dropdown)
+│  │   └─ Width / Depth / Repeat  (grayscale displacement texture
 │  │                             sampled along the line — white raises, black
 │  │                             carves; auto-carves into the tile on every
 │  │                             edit, no manual step)

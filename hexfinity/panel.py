@@ -371,7 +371,6 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
             sub = box.column(align=True)
             sub.prop(feature, "name")
             sub.prop(feature, "feature_type")
-            sub.prop(feature, "texture")
             sub.prop(feature, "width_mm")
             sub.prop(feature, "depth_mm")
             sub.prop(feature, "repeat_mm")

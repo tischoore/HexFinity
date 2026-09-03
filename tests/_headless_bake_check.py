@@ -74,7 +74,7 @@ print("tree planted OK")
 feature = tprops.path_features.add()
 p1 = feature.points.add(); p1.x, p1.y = -30.0, 0.0
 p2 = feature.points.add(); p2.x, p2.y = 30.0, 0.0
-feature.feature_type = 'FOOTPATH'
+feature.feature_type = 'SIMPLE'
 assert len(feature.points) == 2
 print("path feature drawn OK")
 

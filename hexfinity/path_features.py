@@ -27,7 +27,6 @@ from bpy_extras import view3d_utils
 from mathutils import Vector
 
 from .map import edge_snap_points, point_in_hex
-from . import procedural_surfaces
 
 
 SNAP_RADIUS_PX = 18.0
@@ -52,36 +51,33 @@ PATH_TEXTURES = {
     "BRICK_GRAVEL": {"label": "Brick Gravel", "file": "brick_gravel_disp_4k.png"},
 }
 
-# feature_type -> reference (real-world, mm) width/depth/repeat + default
-# texture. Scaled by man_height_mm / REAL_MAN_HEIGHT_MM at fill time, same
-# convention procedural_surfaces.feature_mm_default already uses.
+# feature_type -> width factor (of man_height_mm) + literal depth/repeat
+# (mm, NOT scaled by man height) + default texture. Unlike width, depth_mm
+# and repeat_mm are fixed real-world sizes regardless of model scale.
 _TYPE_DEFAULTS = {
-    "FOOTPATH": {"width_mm": 600.0, "depth_mm": 30.0, "repeat_mm": 1000.0,
-                 "texture": "BRICK_GRAVEL"},
-    "ANIMAL_TRACK": {"width_mm": 400.0, "depth_mm": 25.0, "repeat_mm": 800.0,
-                     "texture": "BRICK_GRAVEL"},
-    "GRAVEL_ROAD": {"width_mm": 2500.0, "depth_mm": 40.0, "repeat_mm": 1500.0,
-                    "texture": "BRICK_GRAVEL"},
-    "COUNTRY_ROAD": {"width_mm": 4000.0, "depth_mm": 20.0, "repeat_mm": 2000.0,
-                     "texture": "STONE_ROAD"},
-    "PAVED_ROAD": {"width_mm": 5000.0, "depth_mm": 15.0, "repeat_mm": 2000.0,
+    "SIMPLE": {"width_factor": 1.0, "depth_mm": 0.5, "repeat_mm": 10.0,
+               "texture": "NONE"},
+    "GRAVEL": {"width_factor": 0.8, "depth_mm": 0.5, "repeat_mm": 10.0,
+               "texture": "BRICK_GRAVEL"},
+    "PAVED_ROAD": {"width_factor": 1.0, "depth_mm": 1.0, "repeat_mm": 10.0,
                    "texture": "STONE_ROAD"},
 }
 
 
 def apply_type_defaults(feature, man_height_mm):
     """Fill `feature`'s width_mm/depth_mm/repeat_mm/texture from
-    `_TYPE_DEFAULTS[feature.feature_type]`, scaled to model scale. Called
-    directly (not just via the `feature_type` update callback) so a freshly
-    drawn line is correctly sized even when its type equals the property's
-    own default and no update fires."""
+    `_TYPE_DEFAULTS[feature.feature_type]`. width_mm is a direct factor of
+    man_height_mm (model-scale-aware); depth_mm/repeat_mm are fixed literal
+    mm, not scaled by man height. Called directly (not just via the
+    `feature_type` update callback) so a freshly drawn line is correctly
+    sized even when its type equals the property's own default and no
+    update fires."""
     d = _TYPE_DEFAULTS.get(feature.feature_type)
     if d is None:
         return
-    scale = man_height_mm / procedural_surfaces.REAL_MAN_HEIGHT_MM
-    feature.width_mm = d["width_mm"] * scale
-    feature.depth_mm = d["depth_mm"] * scale
-    feature.repeat_mm = d["repeat_mm"] * scale
+    feature.width_mm = d["width_factor"] * man_height_mm
+    feature.depth_mm = d["depth_mm"]
+    feature.repeat_mm = d["repeat_mm"]
     feature.texture = d["texture"]
 
 
@@ -197,7 +193,7 @@ def _snap_targets_world(obj, map_props, edge_snap):
     return pts
 
 
-def _commit_feature(context, obj, pts_local, feature_type='FOOTPATH'):
+def _commit_feature(context, obj, pts_local, feature_type='SIMPLE'):
     """Append a feature with `pts_local` (list of (x, y) tile-local mm) to
     `obj` and make it active. Setting feature_type fires the property
     callback that auto-fills width/depth/repeat/texture + a default name

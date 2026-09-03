@@ -615,13 +615,11 @@ class HexFinityPathFeature(bpy.types.PropertyGroup):
         name="Type",
         description="What kind of path feature this line represents",
         items=[
-            ('FOOTPATH', "Footpath", "A narrow foot-worn path"),
-            ('ANIMAL_TRACK', "Animal Track", "A rough trail worn by animals"),
-            ('GRAVEL_ROAD', "Gravel Road", "An unpaved gravel road"),
-            ('COUNTRY_ROAD', "Country Road", "A rural paved-or-packed road"),
-            ('PAVED_ROAD', "Paved Road", "A paved road"),
+            ('SIMPLE', "Simple", "A plain flat-carved line, no texture"),
+            ('GRAVEL', "Gravel", "A gravel-textured line"),
+            ('PAVED_ROAD', "Paved Road", "A stone-paved road"),
         ],
-        default='FOOTPATH',
+        default='SIMPLE',
         update=_on_path_feature_type_update,
     )
     width_mm: bpy.props.FloatProperty(

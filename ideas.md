@@ -1,4 +1,7 @@
 # Ideas
+## Path Feature: finer-grained type presets
+The original Path Feature `feature_type` had 5 entries, each with reference real-world width/depth/repeat (mm, all three scaled together by `man_height_mm / REAL_MAN_HEIGHT_MM`) plus a default texture: Footpath (width 600, depth 30, repeat 1000, Brick Gravel), Animal Track (width 400, depth 25, repeat 800, Brick Gravel), Gravel Road (width 2500, depth 40, repeat 1500, Brick Gravel), Country Road (width 4000, depth 20, repeat 2000, Stone Road), Paved Road (width 5000, depth 15, repeat 2000, Stone Road). Replaced by a simpler 3-type set (Simple/Gravel/Paved Road, width as a direct man-height factor, depth/repeat as fixed literal mm — see `path_features._TYPE_DEFAULTS`). If finer-grained types come back, this table plus the old scaled-together formula is the starting point.
+
 ## Tap and hole spacing 
 Space the hole and tap depending on point height to enforce tile match
 

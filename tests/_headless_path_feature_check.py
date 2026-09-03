@@ -68,15 +68,15 @@ assert verts_before > 0
 print("initial build OK, verts =", verts_before)
 
 # _commit_feature: a two-point line straight across the tile — auto-fills
-# width/depth/repeat/texture from FOOTPATH's defaults and rebuilds.
+# width/depth/repeat/texture from SIMPLE's defaults and rebuilds.
 _commit_feature(bpy.context, obj, [(-20.0, 0.0), (20.0, 0.0)])
 assert len(tile.path_features) == 1
 feat = tile.path_features[0]
 assert feat.name == "Path 1", feat.name
-assert feat.feature_type == 'FOOTPATH', feat.feature_type
+assert feat.feature_type == 'SIMPLE', feat.feature_type
 assert len(feat.points) == 2
 assert feat.width_mm > 0.0, feat.width_mm
-assert feat.texture == 'BRICK_GRAVEL', feat.texture
+assert feat.texture == 'NONE', feat.texture
 print("commit OK:", feat.name, feat.feature_type, feat.width_mm, feat.texture)
 
 verts_after_commit = len(obj.data.vertices)
@@ -85,8 +85,8 @@ print("auto-carve changed the mesh OK, verts =", verts_after_commit)
 
 # Change type via the enum, mirroring what the panel does — re-fills
 # width/depth/repeat/texture for the new type and rebuilds again.
-feat.feature_type = 'GRAVEL_ROAD'
-assert feat.feature_type == 'GRAVEL_ROAD'
+feat.feature_type = 'GRAVEL'
+assert feat.feature_type == 'GRAVEL'
 assert feat.texture == 'BRICK_GRAVEL', feat.texture
 print("type change + refill OK")
 
