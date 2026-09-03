@@ -52,26 +52,29 @@ PATH_TEXTURES = {
 }
 
 # feature_type -> width factor (of man_height_mm) + literal depth/repeat
-# (mm, NOT scaled by man height) + default texture. Unlike width, depth_mm
-# and repeat_mm are fixed real-world sizes regardless of model scale.
+# (mm, NOT scaled by man height) + default texture + default local corridor
+# subdivision level (see tree_pads.refine_and_displace_along_path — a
+# textured feature needs denser mesh to resolve its texture, a plain SIMPLE
+# carve doesn't). Unlike width, depth_mm/repeat_mm/local_subdiv are fixed
+# values regardless of model scale.
 _TYPE_DEFAULTS = {
     "SIMPLE": {"width_factor": 1.0, "depth_mm": 0.5, "repeat_mm": 10.0,
-               "texture": "NONE"},
+               "texture": "NONE", "local_subdiv": 0},
     "GRAVEL": {"width_factor": 0.8, "depth_mm": 0.5, "repeat_mm": 10.0,
-               "texture": "BRICK_GRAVEL"},
+               "texture": "BRICK_GRAVEL", "local_subdiv": 2},
     "PAVED_ROAD": {"width_factor": 1.0, "depth_mm": 1.0, "repeat_mm": 10.0,
-                   "texture": "STONE_ROAD"},
+                   "texture": "STONE_ROAD", "local_subdiv": 2},
 }
 
 
 def apply_type_defaults(feature, man_height_mm):
-    """Fill `feature`'s width_mm/depth_mm/repeat_mm/texture from
-    `_TYPE_DEFAULTS[feature.feature_type]`. width_mm is a direct factor of
-    man_height_mm (model-scale-aware); depth_mm/repeat_mm are fixed literal
-    mm, not scaled by man height. Called directly (not just via the
-    `feature_type` update callback) so a freshly drawn line is correctly
-    sized even when its type equals the property's own default and no
-    update fires."""
+    """Fill `feature`'s width_mm/depth_mm/repeat_mm/texture/local_subdiv
+    from `_TYPE_DEFAULTS[feature.feature_type]`. width_mm is a direct factor
+    of man_height_mm (model-scale-aware); depth_mm/repeat_mm/local_subdiv
+    are fixed literal values, not scaled by man height. Called directly (not
+    just via the `feature_type` update callback) so a freshly drawn line is
+    correctly sized even when its type equals the property's own default and
+    no update fires."""
     d = _TYPE_DEFAULTS.get(feature.feature_type)
     if d is None:
         return
@@ -79,6 +82,7 @@ def apply_type_defaults(feature, man_height_mm):
     feature.depth_mm = d["depth_mm"]
     feature.repeat_mm = d["repeat_mm"]
     feature.texture = d["texture"]
+    feature.local_subdiv = d["local_subdiv"]
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +144,7 @@ def path_specs(tile_obj):
             "pixels": pixels,
             "tex_width": tex_width,
             "tex_height": tex_height,
+            "local_subdiv": feature.local_subdiv,
         })
     return specs
 

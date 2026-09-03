@@ -634,8 +634,15 @@ def refine_and_displace_along_path(verts, faces, protected_edges, paths,
 
     `paths` is a list of
     `{"points": [(x,y),...], "width_mm", "depth_mm", "blend_mm",
-      "repeat_mm", "pixels", "tex_width", "tex_height"}` dicts in the same
-    local mm frame as `verts`. `pixels` may be `None`.
+      "repeat_mm", "pixels", "tex_width", "tex_height", "local_subdiv"}`
+    dicts in the same local mm frame as `verts`. `pixels` may be `None`.
+
+    `local_subdiv` (0 = off) caps how many local corridor-refinement passes
+    that path's own circles contribute — independently of every other path
+    on the same tile, the same "each entity's own pass count, not a shared
+    ceiling" shape `refine_regions` uses for Draw Area regions, so a
+    `local_subdiv=0` path sitting next to a `local_subdiv=2` path never
+    "borrows" the denser path's extra refinement.
 
     Heightmap convention: white = +depth_mm (raised), mid-gray = no
     change, black = -depth_mm (carved). `pixels=None` samples as a
@@ -653,14 +660,17 @@ def refine_and_displace_along_path(verts, faces, protected_edges, paths,
         return list(faces)
 
     # Refinement pad-chain per path: small circular specs stepped along the
-    # polyline (overlapping, so _iteratively_refine marks a continuous
-    # corridor rather than a dashed one) — same {x,y,radius_mm,blend_mm}
-    # shape _iteratively_refine already consumes for radial pads.
+    # polyline (overlapping, so refinement marks a continuous corridor
+    # rather than a dashed one) — same {x,y,radius_mm,blend_mm} shape
+    # _iteratively_refine consumes for radial pads, plus a "_levels" tag
+    # (that path's own local_subdiv) so each path's circles only qualify
+    # for as many passes as that specific path was given.
     refine_specs = []
     for p in paths:
         pts = p["points"]
         half = p["width_mm"] / 2.0
         blend = p.get("blend_mm", 0.0)
+        levels = int(p.get("local_subdiv", 0))
         step = max(half, 1.0)
         for i in range(len(pts) - 1):
             ax, ay = pts[i]
@@ -672,9 +682,44 @@ def refine_and_displace_along_path(verts, faces, protected_edges, paths,
                 refine_specs.append({
                     "x": ax + (bx - ax) * t, "y": ay + (by - ay) * t,
                     "radius_mm": half, "blend_mm": blend,
+                    "_levels": levels,
                 })
 
-    faces = _iteratively_refine(verts, faces, protected_edges, refine_specs, MAX_LEVELS)
+    # Per-path independent level gating, mirroring refine_regions's
+    # max(levels)-bounded loop with a per-pass "still active" filter —
+    # unlike refine_regions, a plain 3D-linear midpoint is fine here (no
+    # procedural value field to resample), so this reuses
+    # _edge_qualifies/_retriangulate exactly as _iteratively_refine does.
+    faces = list(faces)
+    max_levels = max((s["_levels"] for s in refine_specs), default=0)
+    for level in range(max_levels):
+        active = [s for s in refine_specs if s["_levels"] > level]
+        if not active:
+            break
+        marked = set()
+        for face in faces:
+            a, b, c = face
+            for (u, v) in ((a, b), (b, c), (c, a)):
+                key = _edge_key(u, v)
+                if key in protected_edges or key in marked:
+                    continue
+                if _edge_qualifies(verts, u, v, active):
+                    marked.add(key)
+        if not marked:
+            break
+
+        mid_idx = {}
+        for key in marked:
+            u, v = key
+            ux, uy, uz = verts[u]
+            vx, vy, vz = verts[v]
+            mid_idx[key] = len(verts)
+            verts.append(((ux + vx) / 2.0, (uy + vy) / 2.0, (uz + vz) / 2.0))
+
+        new_faces = []
+        for face in faces:
+            new_faces.extend(_retriangulate(face, marked, mid_idx, verts))
+        faces = new_faces
 
     for i in range(len(verts)):
         x, y, z = verts[i]

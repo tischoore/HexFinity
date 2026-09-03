@@ -257,7 +257,7 @@ See **[docs/flora.md](docs/flora.md)** for the mesh caching, the overlap algorit
 
 ## Bake
 
-Every rebuild normally re-derives a tile's flora/terrain pads, flora pin/notch sockets, path-feature carving, any Draw Area region's own **Local Subdivision** geometry, and the terrain brush's painted offset from scratch. The **Bake** box (bottom of the tile panel, below Terrain Brush) freezes all of those into the mesh instead, so an unrelated edit — tuning a Surface Texture setting, say — replays the frozen result rather than recomputing it. **Bake Tile** also implicitly finalizes flora (see Pin/notch interlock above): pins/notches are cut as part of baking and, unlike an ordinary Finalize, stay in place across later rebuilds instead of being stripped again.
+Every rebuild normally re-derives a tile's flora/terrain pads, flora pin/notch sockets, path-feature carving (including each Path Feature's own **Local Subdivision** corridor density), any Draw Area region's own **Local Subdivision** geometry, and the terrain brush's painted offset from scratch. The **Bake** box (bottom of the tile panel, below Terrain Brush) freezes all of those into the mesh instead, so an unrelated edit — tuning a Surface Texture setting, say — replays the frozen result rather than recomputing it. **Bake Tile** also implicitly finalizes flora (see Pin/notch interlock above): pins/notches are cut as part of baking and, unlike an ordinary Finalize, stay in place across later rebuilds instead of being stripped again.
 
 Displacement region *values* (Draw Area / Surface Texture) are explicitly **not** part of the bake — they're cheap and index-stable, so they keep applying live on top of the frozen layer either way, letting you keep iterating on texture work quickly once everything else is locked down. A region's own **Local Subdivision** *geometry* is the exception: it's a topology-changing operation in the same cost class as a flora/terrain pad, so it freezes with the rest.
 
@@ -456,10 +456,14 @@ HexFinity
 │  │   │                         hex-edge point or another line's waypoint ends it)
 │  │   ├─ Name + Type (Simple / Gravel / Paved Road — each type carries its
 │  │   │                         own texture, no separate Texture dropdown)
-│  │   └─ Width / Depth / Repeat  (grayscale displacement texture
-│  │                             sampled along the line — white raises, black
-│  │                             carves; auto-carves into the tile on every
-│  │                             edit, no manual step)
+│  │   └─ Width / Depth / Repeat / Local Subdivision  (grayscale displacement
+│  │                             texture sampled along the line — white raises,
+│  │                             black carves; auto-carves into the tile on
+│  │                             every edit, no manual step. Local Subdivision
+│  │                             is per-line, like a region's own Local
+│  │                             Subdivision — extra mesh density inside just
+│  │                             that line's own corridor, auto-filled from
+│  │                             Type: 0 for Simple, 2 for Gravel/Paved Road)
 │  ├─ ▸ Terrain Brush          (Raise/Lower, Radius, Strength, Preserve Edge → Paint)
 │  └─ ▸ Bake                   (freeze pads/notches/path carving/brush into the mesh)
 │      ├─ [ Bake Tile ]         (shown when not yet baked)

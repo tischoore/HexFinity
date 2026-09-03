@@ -295,13 +295,17 @@ def build_hex_tile(
 
     `path_features`, when given, is a list of `{"points", "width_mm",
     "depth_mm", "blend_mm", "repeat_mm", "pixels", "tex_width",
-    "tex_height"}` dicts (tile-local mm) — one per drawn path feature line.
-    Applied via `tree_pads.refine_and_displace_along_path`, strictly after
-    the merged `flora_pads`/`terrain_pads` flatten pass and before
-    `flora_notches`, so a path carves into whatever landform/pad flattening
-    already produced (the topmost layer in the user-facing Water/Land/Draw
-    Area/Path Feature stack). New vertices are appended after the existing
-    prefix, same contract as `flora_pads`/`terrain_pads`.
+    "tex_height", "local_subdiv"}` dicts (tile-local mm) — one per drawn
+    path feature line. Applied via `tree_pads.refine_and_displace_along_path`,
+    strictly after the merged `flora_pads`/`terrain_pads` flatten pass and
+    before `flora_notches`, so a path carves into whatever landform/pad
+    flattening already produced (the topmost layer in the user-facing
+    Water/Land/Draw Area/Path Feature stack). New vertices are appended
+    after the existing prefix, same contract as `flora_pads`/`terrain_pads`.
+    `local_subdiv` gates how many local corridor-refinement passes that
+    path's own circles contribute, independently of every other path on the
+    same tile (0 = no extra local density for that path) — mirrors a Draw
+    Area region's own `local_subdiv`.
 
     `baked_extra`, when given, is a `(extra_verts, extra_faces,
     prefix_overrides)` tuple captured by a previous call's `bake_capture`

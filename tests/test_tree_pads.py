@@ -818,6 +818,7 @@ CENTER_PATH = [{
     "points": [(-30.0, 0.0), (30.0, 0.0)],
     "width_mm": 10.0, "depth_mm": 2.0, "blend_mm": 5.0,
     "repeat_mm": 20.0, "pixels": None, "tex_width": 0, "tex_height": 0,
+    "local_subdiv": 4,
 }]
 
 
@@ -832,6 +833,7 @@ def test_refine_and_displace_along_path_grid_is_crack_free_and_protects_boundary
         "points": [(10.0, 30.0), (50.0, 30.0)],
         "width_mm": 10.0, "depth_mm": 2.0, "blend_mm": 3.0,
         "repeat_mm": 20.0, "pixels": None, "tex_width": 0, "tex_height": 0,
+        "local_subdiv": 4,
     }]
     new_faces = tree_pads.refine_and_displace_along_path(
         verts, faces, protected, paths, diameter_mm=1000.0, base_thickness_mm=-1e9)
@@ -885,6 +887,7 @@ def test_path_feature_no_texture_fallback_is_full_depth_groove():
         "points": [(-30.0, 0.0), (30.0, 0.0)],
         "width_mm": half * 2.0, "depth_mm": depth, "blend_mm": 3.0,
         "repeat_mm": 20.0, "pixels": None, "tex_width": 0, "tex_height": 0,
+        "local_subdiv": 4,
     }
     verts, _ = _tile(
         corner_levels=(3, 3, 3, 3, 3, 3), center_level=None,
@@ -908,7 +911,7 @@ def test_path_feature_white_texture_raises():
         "points": [(-30.0, 0.0), (30.0, 0.0)],
         "width_mm": half * 2.0, "depth_mm": depth, "blend_mm": 3.0,
         "repeat_mm": 20.0, "pixels": [1.0, 1.0, 1.0, 1.0],
-        "tex_width": 2, "tex_height": 2,
+        "tex_width": 2, "tex_height": 2, "local_subdiv": 4,
     }
     verts, _ = _tile(
         corner_levels=(3, 3, 3, 3, 3, 3), center_level=None,
@@ -933,6 +936,7 @@ def test_path_feature_near_rim_leaves_rim_corners_at_analytic_height():
         "points": [(R - 20.0, 0.0), (R - 6.0, 0.0)],
         "width_mm": 6.0, "depth_mm": 3.0, "blend_mm": 5.0,
         "repeat_mm": 20.0, "pixels": None, "tex_width": 0, "tex_height": 0,
+        "local_subdiv": 4,
     }
     verts, faces = build_hex_tile(
         diameter_mm=diameter, level_height_mm=lh, base_thickness_mm=base,
@@ -948,3 +952,93 @@ def test_path_feature_near_rim_leaves_rim_corners_at_analytic_height():
                  if abs(v[0] - cx) < 1e-6 and abs(v[1] - cy) < 1e-6]
         assert match, f"corner {i} vertex missing"
         assert match[0][2] == pytest.approx(corner_z[i], abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Path Feature — per-path "local_subdiv" corridor refinement level.
+
+def test_path_local_subdiv_zero_adds_no_vertices():
+    verts, faces, protected = _grid_mesh(6, 60.0)
+    n_before = len(verts)
+    path = {
+        "points": [(10.0, 30.0), (50.0, 30.0)],
+        "width_mm": 10.0, "depth_mm": 2.0, "blend_mm": 3.0,
+        "repeat_mm": 20.0, "pixels": None, "tex_width": 0, "tex_height": 0,
+        "local_subdiv": 0,
+    }
+    new_faces = tree_pads.refine_and_displace_along_path(
+        verts, faces, protected, [path], diameter_mm=1000.0, base_thickness_mm=-1e9)
+    assert len(verts) == n_before, "local_subdiv=0 must not add any vertices"
+    _assert_crack_free(new_faces, protected)
+
+
+def test_path_local_subdiv_missing_key_defaults_to_zero():
+    verts, faces, protected = _grid_mesh(6, 60.0)
+    n_before = len(verts)
+    path = {
+        "points": [(10.0, 30.0), (50.0, 30.0)],
+        "width_mm": 10.0, "depth_mm": 2.0, "blend_mm": 3.0,
+        "repeat_mm": 20.0, "pixels": None, "tex_width": 0, "tex_height": 0,
+    }
+    tree_pads.refine_and_displace_along_path(
+        verts, faces, protected, [path], diameter_mm=1000.0, base_thickness_mm=-1e9)
+    assert len(verts) == n_before
+
+
+def test_path_local_subdiv_higher_level_adds_more_vertices():
+    def _count_added(level):
+        verts, faces, protected = _grid_mesh(6, 60.0)
+        n_before = len(verts)
+        path = {
+            "points": [(10.0, 30.0), (50.0, 30.0)],
+            "width_mm": 10.0, "depth_mm": 2.0, "blend_mm": 3.0,
+            "repeat_mm": 20.0, "pixels": None, "tex_width": 0, "tex_height": 0,
+            "local_subdiv": level,
+        }
+        tree_pads.refine_and_displace_along_path(
+            verts, faces, protected, [path], diameter_mm=1000.0, base_thickness_mm=-1e9)
+        return len(verts) - n_before
+
+    added_0 = _count_added(0)
+    added_2 = _count_added(2)
+    assert added_0 == 0
+    assert added_2 > added_0, "local_subdiv=2 should refine more than local_subdiv=0"
+
+
+def test_path_local_subdiv_per_path_independence():
+    # A level-0 path must contribute exactly zero extra refinement, even
+    # when it shares a tile with a busier path — its vertex count added
+    # alongside a local_subdiv=2 path must match that path refining alone.
+    quiet_path = {
+        "points": [(5.0, 5.0), (5.0, 15.0)],
+        "width_mm": 4.0, "depth_mm": 1.0, "blend_mm": 1.0,
+        "repeat_mm": 20.0, "pixels": None, "tex_width": 0, "tex_height": 0,
+        "local_subdiv": 0,
+    }
+    busy_path = {
+        "points": [(10.0, 45.0), (50.0, 45.0)],
+        "width_mm": 10.0, "depth_mm": 2.0, "blend_mm": 3.0,
+        "repeat_mm": 20.0, "pixels": None, "tex_width": 0, "tex_height": 0,
+        "local_subdiv": 2,
+    }
+
+    verts_busy_only, faces_busy_only, protected_a = _grid_mesh(6, 60.0)
+    n_before_a = len(verts_busy_only)
+    tree_pads.refine_and_displace_along_path(
+        verts_busy_only, faces_busy_only, protected_a, [busy_path],
+        diameter_mm=1000.0, base_thickness_mm=-1e9)
+    added_busy_only = len(verts_busy_only) - n_before_a
+    assert added_busy_only > 0, "expected the busy path alone to add vertices"
+
+    verts_both, faces_both, protected_b = _grid_mesh(6, 60.0)
+    n_before_b = len(verts_both)
+    new_faces = tree_pads.refine_and_displace_along_path(
+        verts_both, faces_both, protected_b, [quiet_path, busy_path],
+        diameter_mm=1000.0, base_thickness_mm=-1e9)
+    added_both = len(verts_both) - n_before_b
+
+    assert added_both == added_busy_only, \
+        "a local_subdiv=0 path must not add or influence refinement " \
+        "vertices, even alongside a busier path on the same tile"
+
+    _assert_crack_free(new_faces, protected_b)

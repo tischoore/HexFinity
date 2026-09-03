@@ -42,8 +42,12 @@ mp.root_collection = coll
 tile = obj.hexfinity_tile
 tile.coord_q = 0
 tile.coord_r = 0
+# Level 2, not 0: a flat-at-level-0 tile's top sits exactly at
+# base_thickness_mm, leaving a carve nothing to dig into (the builder clamps
+# z to never go below base_thickness_mm) — headroom is needed to actually
+# observe the SIMPLE carve moving vertices below.
 for n in ("p1", "p2", "p3", "p4", "p5", "p6"):
-    setattr(tile, n, 0)
+    setattr(tile, n, 2)
 tile.is_generated = True
 bpy.context.view_layer.objects.active = obj
 obj.select_set(True)
@@ -63,9 +67,9 @@ print("point_in_hex rejection OK")
 # operators.rebuild_tile must exist before build the tile once so the mesh
 # has a real shape to carve into (mirrors what generate_map does).
 operators.rebuild_tile(obj)
-verts_before = len(obj.data.vertices)
-assert verts_before > 0
-print("initial build OK, verts =", verts_before)
+verts_before = [tuple(v.co) for v in obj.data.vertices]
+assert len(verts_before) > 0
+print("initial build OK, verts =", len(verts_before))
 
 # _commit_feature: a two-point line straight across the tile — auto-fills
 # width/depth/repeat/texture from SIMPLE's defaults and rebuilds.
@@ -77,18 +81,35 @@ assert feat.feature_type == 'SIMPLE', feat.feature_type
 assert len(feat.points) == 2
 assert feat.width_mm > 0.0, feat.width_mm
 assert feat.texture == 'NONE', feat.texture
-print("commit OK:", feat.name, feat.feature_type, feat.width_mm, feat.texture)
+assert feat.local_subdiv == 0, feat.local_subdiv
+print("commit OK:", feat.name, feat.feature_type, feat.width_mm, feat.texture,
+      "local_subdiv =", feat.local_subdiv)
 
-verts_after_commit = len(obj.data.vertices)
-assert verts_after_commit != verts_before, (verts_before, verts_after_commit)
-print("auto-carve changed the mesh OK, verts =", verts_after_commit)
+verts_after_commit = [tuple(v.co) for v in obj.data.vertices]
+# SIMPLE's default local_subdiv=0 means a plain carve no longer necessarily
+# adds vertices (unlike GRAVEL/PAVED_ROAD) — compare positions, not just
+# count, so this still catches "the carve did nothing".
+assert verts_after_commit != verts_before, "SIMPLE carve did not change the mesh"
+print("auto-carve changed the mesh OK, verts =", len(verts_after_commit))
 
 # Change type via the enum, mirroring what the panel does — re-fills
 # width/depth/repeat/texture for the new type and rebuilds again.
 feat.feature_type = 'GRAVEL'
 assert feat.feature_type == 'GRAVEL'
 assert feat.texture == 'BRICK_GRAVEL', feat.texture
-print("type change + refill OK")
+assert feat.local_subdiv == 2, feat.local_subdiv
+print("type change + refill OK, local_subdiv =", feat.local_subdiv)
+
+# Local Subdivision is per-line: dropping it back to 0 should shrink the
+# tile's vertex count relative to GRAVEL's default of 2 (less local corridor
+# density), proving the field actually reaches the mesh builder.
+verts_at_level_2 = len(obj.data.vertices)
+feat.local_subdiv = 0
+verts_at_level_0 = len(obj.data.vertices)
+assert verts_at_level_0 < verts_at_level_2, (verts_at_level_0, verts_at_level_2)
+print("local_subdiv edit changed vertex count OK:",
+      verts_at_level_2, "->", verts_at_level_0)
+feat.local_subdiv = 2
 
 # A second line, to exercise multi-line snap-target aggregation.
 _commit_feature(bpy.context, obj, [(0.0, -20.0), (0.0, 20.0)])

@@ -145,6 +145,7 @@ def _bake_signature(tile):
         parts.append((
             f.name, f.feature_type, round(f.width_mm, 4),
             round(f.depth_mm, 4), round(f.repeat_mm, 4), f.texture,
+            f.local_subdiv,
             tuple((round(pt.x, 4), round(pt.y, 4)) for pt in f.points),
         ))
     for reg in tp.surface_regions:

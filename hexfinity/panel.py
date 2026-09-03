@@ -374,6 +374,7 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
             sub.prop(feature, "width_mm")
             sub.prop(feature, "depth_mm")
             sub.prop(feature, "repeat_mm")
+            sub.prop(feature, "local_subdiv")
 
     @staticmethod
     def _draw_scatter_params(box, reg, surf, map_props):

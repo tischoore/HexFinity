@@ -651,6 +651,17 @@ class HexFinityPathFeature(bpy.types.PropertyGroup):
         soft_max=200.0,
         update=_on_path_feature_update,
     )
+    local_subdiv: bpy.props.IntProperty(
+        name="Local Subdivision",
+        description="Extra mesh density inside THIS path's own corridor "
+                    "(width + blend band) only — like a region's Local "
+                    "Subdivision, does not affect the rest of the tile. "
+                    "Auto-filled from Type; editable here. 0 = off",
+        default=0,
+        min=0,
+        soft_max=6,
+        update=_on_path_feature_update,
+    )
     texture: bpy.props.EnumProperty(
         name="Texture",
         description="Grayscale displacement texture sampled along the line. "
