@@ -38,7 +38,7 @@ TAB_HEIGHT_MM = 8.0              # vertical (z)
 TAB_DEPTH_MM = 10.0              # radially outward
 TAB_OFFSET_FROM_CORNER_MM = 10.0  # tab is this far from the next corner;
                                   # hole is this far from the previous corner.
-TAB_HOLE_TOLERANCE_MM = 0.5      # hole is +TOL in every axis vs tab so tiles slide together.
+TAB_HOLE_TOLERANCE_MM = 1.0      # hole is +TOL in every axis vs tab so tiles slide together.
 TAB_FILLET_MM = 4.0              # radius rounding the two outer (leading) vertical
                                  # edges of each tab so tiles mate more easily; the
                                  # square hole is left sharp.
@@ -51,11 +51,11 @@ TAB_FILLET_SEGMENTS = 3          # arc tessellation per rounded outer corner.
 # scene's man_height_mm (which scales other print features elsewhere), since
 # the peg is meant to stay a fixed, known size regardless of a given tree's
 # random per-placement scale.
-FLORA_PIN_DIAMETER_MM = 2.0
-FLORA_PIN_RADIUS_MM = FLORA_PIN_DIAMETER_MM / 2.0            # 1.0
-FLORA_PIN_HOLE_TOLERANCE_MM = 0.4      # independent from TAB_HOLE_TOLERANCE_MM —
+FLORA_PIN_DIAMETER_MM = 4.0
+FLORA_PIN_RADIUS_MM = FLORA_PIN_DIAMETER_MM / 2.0            
+FLORA_PIN_HOLE_TOLERANCE_MM = 0.8      # independent from TAB_HOLE_TOLERANCE_MM —
                                         # tuned against a 2mm peg, not a 10x8x10mm tab.
-FLORA_NOTCH_RADIUS_MM = FLORA_PIN_RADIUS_MM + FLORA_PIN_HOLE_TOLERANCE_MM / 2.0  # ~1.1
+FLORA_NOTCH_RADIUS_MM = FLORA_PIN_RADIUS_MM + FLORA_PIN_HOLE_TOLERANCE_MM / 2.0  
 FLORA_NOTCH_DEPTH_MM = 10.0             # ~ typical man-height scale; not derived from
                                         # map_props.man_height_mm — a flat constant.
 FLORA_PIN_LENGTH_MM = FLORA_NOTCH_DEPTH_MM - FLORA_PIN_HOLE_TOLERANCE_MM
