@@ -454,16 +454,24 @@ HexFinity
 │  │   ├─ Edge Snap (int ≥ 2)   (snap points per hex edge, incl. both corners)
 │  │   ├─ [ Draw Feature ]      (click waypoints above the tile; snapping to a
 │  │   │                         hex-edge point or another line's waypoint ends it)
-│  │   ├─ Name + Type (Simple / Gravel / Paved Road — each type carries its
-│  │   │                         own texture, no separate Texture dropdown)
-│  │   └─ Width / Depth / Repeat / Local Subdivision  (grayscale displacement
-│  │                             texture sampled along the line — white raises,
-│  │                             black carves; auto-carves into the tile on
-│  │                             every edit, no manual step. Local Subdivision
-│  │                             is per-line, like a region's own Local
-│  │                             Subdivision — extra mesh density inside just
-│  │                             that line's own corridor, auto-filled from
-│  │                             Type: 0 for Simple, 2 for Gravel/Paved Road)
+│  │   ├─ Name + Type (Simple / Gravel / Paved Road / River — each texture
+│  │   │                         type carries its own texture, no separate
+│  │   │                         Texture dropdown; River has no texture at all)
+│  │   ├─ Width  (Simple/Gravel/Paved Road: groove width. River: flat bed
+│  │   │           width — embankments extend outward beyond it)
+│  │   ├─ Simple/Gravel/Paved Road: Depth / Repeat / Local Subdivision
+│  │   │           (grayscale displacement texture sampled along the line —
+│  │   │           white raises, black carves. Local Subdivision is per-line,
+│  │   │           extra mesh density inside just that line's own corridor,
+│  │   │           auto-filled from Type: 0 for Simple, 2 for Gravel/Paved Road)
+│  │   └─ River: Depth (levels, min 1) / Embankment Angle (10-90°) /
+│  │              Embankment Variation (mm) / Bottom (Flat / Tessendorf's FFT)
+│  │              / Local Subdivision (auto-filled to 3) — a carved channel
+│  │              with a flat (or Ocean-modifier-rippled) bed and constant-
+│  │              angle banks, not a texture groove; a hint label reminds you
+│  │              to lower the shared corner Level(s) to continue a river
+│  │              into a neighbouring tile. All Path Feature fields auto-carve
+│  │              into the tile on every edit, no manual step.
 │  ├─ ▸ Terrain Brush          (Raise/Lower, Radius, Strength, Preserve Edge → Paint)
 │  └─ ▸ Bake                   (freeze pads/notches/path carving/brush into the mesh)
 │      ├─ [ Bake Tile ]         (shown when not yet baked)
@@ -581,3 +589,4 @@ After generating a map:
 12. **Tree base pad check** — raise a corner so the tile is sloped, then plant a tree near the raised side with *Flatten Base* on: the terrain under the tree tessellates into a small flat pad that blends smoothly back into the slope, and the tree sits flush and level instead of poking through on one side. Toggle *Flatten Base* off and the pad disappears (old sunken-in look returns); drag *Pad Blend (mm)* or *Penetration (mm)* and both re-seat live. Plant a tree near a hex edge and confirm the seam with the neighbour tile stays aligned (the pad fades out near the rim rather than desyncing it). A headless smoke test of the full plant→pad→rebuild→property-update path lives in `tests/_headless_flora_pad_check.py`: `blender --background --python tests/_headless_flora_pad_check.py`.
 13. **Pin/notch check** — plant a tree and press `Esc`/right-click to leave the Flora tool: a socket is cut under the tree, the tree still sits flush on the surface (not sunk into the socket), and a `FloraPin_*` object appears **nested under its tree** in the Outliner. Paint a brush stroke elsewhere on the tile (or edit a corner height) — the pin disappears and the socket fills back in; press **Finalize Flora** and both return, tree still flush. Export the tile — a separate `flora_*.stl` is written alongside the tile's own STL, listed in `flora_manifest.csv`, with its lowest point (the pin's tip) sitting at z=0. Plant a tree, skip finalizing, and export — a warning appears and no `flora_*.stl` is written for it. A headless smoke test of the full plant→finalize→pin/socket→seating-correctness→un-finalize→re-finalize→export path lives in `tests/_headless_flora_pin_check.py`: `blender --background --python tests/_headless_flora_pin_check.py`.
 14. **Bake check** — paint a brush stroke, plant a tree with *Flatten Base* on, drop a terrain object with snap enabled, and draw a Path Feature line, all on the same tile. Press **Bake Tile** — the mesh stays visually identical, the tree's pin/socket is cut (same as Finalize), and the *Terrain Brush* box's *Paint* strokes are folded in. Edit an unrelated Draw Area region afterwards — the pads/notches/path carving/brush stay put (not recomputed) and the region change still shows up. Paint another brush stroke — it stacks visibly on top of the frozen shape. Now edit a corner height: the console prints a revert notice, the pad/terrain/notch/path layer falls back to live and reflects the new corner shape, but the frozen brush contribution from before the edit is untouched. Press **Un-bake Tile** — everything returns to live recompute with no visible change, and the *Bake Tile* button reappears. A headless smoke test of the full brush+pad+pin+path bake→live-edit-untouched→corner-edit-invalidates→un-bake path lives in `tests/_headless_bake_check.py`: `blender --background --python tests/_headless_bake_check.py`.
+15. **River check** — *Path Feature → Draw Feature*, draw a line, set its Type to **River**: the width jumps to ~3× Man Height, Depth (levels)/Embankment Angle/Embankment Variation/Bottom appear in place of Depth/Repeat, and a channel with sloped banks carves in immediately (no texture). Drag *Embankment Angle* toward 90° — the banks steepen visibly; toward 10° — they spread into a wide, gentle slope. Raise *Embankment Variation* — the bank line stops being a perfectly parallel offset of the drawn line and gets a natural wander. Set *Bottom* to **Tessendorf's FFT** — the flat bed gains a static ripple (the embankment slopes stay untouched); confirm no stray objects/meshes are left behind in the Outliner/`bpy.data` afterwards (the Ocean-modifier bake uses a throwaway scratch object). Set *Bottom* back to **Flat** — the bed returns to dead flat. Draw a second River line ending near a hex edge shared with a generated neighbour tile, then lower both tiles' shared corner Level(s) at that edge to at least the river's Depth — the channel should read as continuous across the seam instead of damming up at the rim.

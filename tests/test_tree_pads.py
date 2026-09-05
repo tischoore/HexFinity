@@ -1042,3 +1042,200 @@ def test_path_local_subdiv_per_path_independence():
         "vertices, even alongside a busier path on the same tile"
 
     _assert_crack_free(new_faces, protected_b)
+
+
+# ---------------------------------------------------------------------------
+# River path feature — refine_and_carve_river.
+
+CENTER_RIVER = [{
+    "kind": "river",
+    "points": [(-30.0, 0.0), (30.0, 0.0)],
+    "width_mm": 10.0, "depth_mm": 5.0,
+    "embankment_angle_deg": 45.0, "embankment_variation_mm": 0.0,
+    "river_bottom_style": "NONE", "local_subdiv": 3, "seed": 1,
+}]
+
+
+def _river_grid(angle_deg=45.0, variation_mm=0.0, width_mm=10.0,
+                depth_mm=3.0, seed=7, n=6, size=60.0, local_subdiv=3):
+    verts, faces, protected = _grid_mesh(n, size)
+    river = {
+        "points": [(10.0, size / 2.0), (size - 10.0, size / 2.0)],
+        "width_mm": width_mm, "depth_mm": depth_mm,
+        "embankment_angle_deg": angle_deg,
+        "embankment_variation_mm": variation_mm,
+        "river_bottom_style": "NONE", "local_subdiv": local_subdiv,
+        "seed": seed,
+    }
+    return verts, faces, protected, river
+
+
+def test_river_tile_is_manifold():
+    verts, faces = _sloped_tile(path_features=CENTER_RIVER)
+    assert_two_manifold(verts, faces)
+
+
+def test_no_river_features_adds_zero_vertices():
+    verts_plain, _ = _sloped_tile()
+    verts_none, _ = _sloped_tile(path_features=None)
+    assert len(verts_none) == len(verts_plain)
+
+
+def test_river_and_texture_path_on_same_tile_both_apply():
+    texture_path = dict(CENTER_PATH[0])
+    texture_path["kind"] = "texture"
+    texture_path["points"] = [(-30.0, 20.0), (30.0, 20.0)]
+    river = dict(CENTER_RIVER[0])
+    river["points"] = [(-30.0, -20.0), (30.0, -20.0)]
+    verts, faces = _sloped_tile(path_features=[texture_path, river])
+    assert_two_manifold(verts, faces)
+
+
+def test_river_bed_stays_flat_cross_sectionally():
+    verts, faces, protected, river = _river_grid()
+    tree_pads.refine_and_carve_river(
+        verts, faces, protected, [river],
+        diameter_mm=1000.0, base_thickness_mm=-1e9)
+    half_bed = river["width_mm"] / 2.0
+    bed_verts = [v for v in verts
+                 if abs(v[1] - 30.0) <= half_bed - 0.5
+                 and 15.0 <= v[0] <= 45.0]
+    assert len(bed_verts) >= 3, "expected several vertices inside the bed"
+    zs = {round(v[2], 6) for v in bed_verts}
+    assert len(zs) == 1, f"bed should be perfectly flat cross-sectionally, got {zs}"
+    assert next(iter(zs)) == pytest.approx(-river["depth_mm"], abs=1e-6)
+
+
+def test_river_shallower_angle_carves_a_wider_bank():
+    def _max_affected_distance(angle_deg):
+        verts, faces, protected, river = _river_grid(angle_deg=angle_deg)
+        tree_pads.refine_and_carve_river(
+            verts, faces, protected, [river],
+            diameter_mm=1000.0, base_thickness_mm=-1e9)
+        affected = [abs(v[1] - 30.0) for v in verts
+                    if 15.0 <= v[0] <= 45.0 and abs(v[2]) > 1e-6]
+        return max(affected) if affected else 0.0
+
+    reach_steep = _max_affected_distance(90.0)
+    reach_shallow = _max_affected_distance(10.0)
+    assert reach_shallow > reach_steep, \
+        "a shallower embankment angle should carve a visibly wider bank"
+
+
+def test_river_embankment_ramp_is_linear_not_smoothstep():
+    verts, faces, protected, river = _river_grid(
+        angle_deg=20.0, width_mm=6.0, depth_mm=12.0, n=20, local_subdiv=4)
+    tree_pads.refine_and_carve_river(
+        verts, faces, protected, [river],
+        diameter_mm=1000.0, base_thickness_mm=-1e9)
+    half_bed = river["width_mm"] / 2.0
+    run = river["depth_mm"] / math.tan(math.radians(river["embankment_angle_deg"]))
+    bank_edge = half_bed + run
+
+    samples = [(abs(v[1] - 30.0), v[2]) for v in verts if 20.0 <= v[0] <= 40.0]
+    samples = [(d, z) for (d, z) in samples
+              if half_bed + 0.5 < d < bank_edge - 0.5]
+    assert len(samples) >= 3, "expected several vertices strictly inside the ramp"
+
+    # A straight-line cross-section: z(d) = -depth + (d - half_bed)/run * depth.
+    # Every sample should lie on this line — an eased (smoothstep) curve
+    # would not, except at isolated points.
+    for d, z in samples:
+        expected = -river["depth_mm"] + (d - half_bed) / run * river["depth_mm"]
+        assert z == pytest.approx(expected, abs=0.1), \
+            f"ramp at d={d} should lie on the straight-line bank profile"
+
+
+def test_river_near_rim_leaves_rim_corners_at_analytic_height():
+    R = 220.0 / 2.0
+    diameter = 220.0
+    lh = 10.0
+    base = 10.0
+    levels = (0, 1, 2, 3, 4, 5)
+    river = {
+        "kind": "river",
+        "points": [(R - 20.0, 0.0), (R - 6.0, 0.0)],
+        "width_mm": 6.0, "depth_mm": 3.0,
+        "embankment_angle_deg": 45.0, "embankment_variation_mm": 1.0,
+        "river_bottom_style": "NONE", "local_subdiv": 3, "seed": 9,
+    }
+    verts, faces = build_hex_tile(
+        diameter_mm=diameter, level_height_mm=lh, base_thickness_mm=base,
+        corner_levels=levels, center_level=None, smoothness_passes=3,
+        path_features=[river],
+    )
+    assert_two_manifold(verts, faces)
+    corner_z = [base + L * lh for L in levels]
+    for i in range(6):
+        angle = math.pi / 3.0 - i * (math.pi / 3.0)
+        cx, cy = R * math.cos(angle), R * math.sin(angle)
+        match = [v for v in verts
+                 if abs(v[0] - cx) < 1e-6 and abs(v[1] - cy) < 1e-6]
+        assert match, f"corner {i} vertex missing"
+        assert match[0][2] == pytest.approx(corner_z[i], abs=1e-9)
+
+
+def test_river_seed_is_deterministic():
+    def _build():
+        verts, faces, protected, river = _river_grid(variation_mm=4.0, seed=42)
+        tree_pads.refine_and_carve_river(
+            verts, faces, protected, [river],
+            diameter_mm=1000.0, base_thickness_mm=-1e9)
+        return verts
+
+    assert _build() == _build()
+
+
+def _river_with_ripple(seed=5):
+    # Small synthetic "pixels" grid standing in for a baked Ocean
+    # heightfield — the pattern only matters for exercising the sampling/
+    # taper math here; path_features.py owns the actual Ocean-modifier bake.
+    return {
+        "points": [(10.0, 30.0), (50.0, 30.0)],
+        "width_mm": 10.0, "depth_mm": 4.0,
+        "embankment_angle_deg": 30.0, "embankment_variation_mm": 0.0,
+        "river_bottom_style": "TESSENDORF_FFT", "local_subdiv": 3,
+        "seed": seed,
+        "pixels": [0.9, 0.1, 0.1, 0.9], "tex_width": 2, "tex_height": 2,
+        "ripple_patch_mm": 20.0,
+    }
+
+
+def test_river_ripple_only_affects_bed_not_embankment():
+    half_bed = 5.0
+    verts_flat, faces_flat, protected_flat = _grid_mesh(10, 60.0)
+    river_flat = _river_with_ripple()
+    river_flat["river_bottom_style"] = "NONE"
+    tree_pads.refine_and_carve_river(
+        verts_flat, faces_flat, protected_flat, [river_flat],
+        diameter_mm=1000.0, base_thickness_mm=-1e9)
+
+    verts_ripple, faces_ripple, protected_ripple = _grid_mesh(10, 60.0)
+    river_ripple = _river_with_ripple()
+    tree_pads.refine_and_carve_river(
+        verts_ripple, faces_ripple, protected_ripple, [river_ripple],
+        diameter_mm=1000.0, base_thickness_mm=-1e9)
+
+    assert len(verts_flat) == len(verts_ripple), \
+        "the ripple choice must not change refinement/vertex count"
+
+    saw_bed_difference = False
+    for i in range(len(verts_flat)):
+        x, y, _ = verts_flat[i]
+        if not (15.0 <= x <= 45.0):
+            continue
+        d = abs(y - 30.0)
+        if d > half_bed + 0.5:
+            assert verts_flat[i][2] == pytest.approx(verts_ripple[i][2], abs=1e-9), \
+                "ripple must not affect vertices outside the flat bed"
+        elif d < half_bed - 1.0:
+            if verts_flat[i][2] != pytest.approx(verts_ripple[i][2], abs=1e-9):
+                saw_bed_difference = True
+    assert saw_bed_difference, "expected the ripple to visibly perturb the bed"
+
+
+def test_river_ripple_tapers_to_zero_at_bed_edge():
+    half_bed = 5.0
+    d = half_bed - 1e-6
+    taper = tree_pads._smoothstep(1.0 - d / half_bed)
+    assert taper == pytest.approx(0.0, abs=1e-3)

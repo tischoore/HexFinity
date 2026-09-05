@@ -618,6 +618,8 @@ class HexFinityPathFeature(bpy.types.PropertyGroup):
             ('SIMPLE', "Simple", "A plain flat-carved line, no texture"),
             ('GRAVEL', "Gravel", "A gravel-textured line"),
             ('PAVED_ROAD', "Paved Road", "A stone-paved road"),
+            ('RIVER', "River", "A carved river channel with sloped, "
+                                "irregular embankments and no texture"),
         ],
         default='SIMPLE',
         update=_on_path_feature_type_update,
@@ -668,6 +670,50 @@ class HexFinityPathFeature(bpy.types.PropertyGroup):
                     "\"None (flat)\" carves a uniform full-depth groove "
                     "instead of a textured profile",
         items=_path_texture_items,
+        update=_on_path_feature_update,
+    )
+    depth_levels: bpy.props.IntProperty(
+        name="Depth (levels)",
+        description="RIVER only — channel depth below the surrounding "
+                    "terrain, in map Levels (see Level Height), not mm. "
+                    "Re-resolved to mm from the current Level Height on "
+                    "every rebuild, the same way corner heights are",
+        default=1,
+        min=1,
+        soft_max=20,
+        update=_on_path_feature_update,
+    )
+    embankment_angle_deg: bpy.props.FloatProperty(
+        name="Embankment Angle",
+        description="RIVER only — slope of the riverbank in degrees. 90 is "
+                    "a vertical bank; lower values slope gently outward "
+                    "beyond the flat bed width",
+        default=45.0,
+        min=10.0,
+        max=90.0,
+        update=_on_path_feature_update,
+    )
+    embankment_variation_mm: bpy.props.FloatProperty(
+        name="Embankment Variation (mm)",
+        description="RIVER only — irregularity of the bank line along the "
+                    "river's length. Auto-filled from Man Height on a type "
+                    "change; editable here",
+        default=5.0,
+        min=0.0,
+        soft_max=50.0,
+        update=_on_path_feature_update,
+    )
+    river_bottom_style: bpy.props.EnumProperty(
+        name="Bottom",
+        description="RIVER only — treatment of the flat channel bed "
+                    "(never the embankment slopes)",
+        items=[
+            ('NONE', "Flat", "A flat planar channel bed at the depth level"),
+            ('TESSENDORF_FFT', "Tessendorf's FFT",
+             "A wave-rippled bed, baked from Blender's built-in Ocean "
+             "modifier (Tessendorf FFT ocean synthesis)"),
+        ],
+        default='NONE',
         update=_on_path_feature_update,
     )
     points: bpy.props.CollectionProperty(type=HexFinitySurfacePoint)

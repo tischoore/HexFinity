@@ -45,6 +45,13 @@ NOTCH_REFINE_BLEND_MM = 0.5
 # into — treat it the same as "mesh too coarse to drill" and skip.
 NOTCH_MIN_LOOP_VERTS = 8
 
+# River bed ripple (Tessendorf's-FFT bottom style): the baked Ocean-modifier
+# height grid is normalized to [0, 1] before it ever reaches this module, so
+# this factor alone controls how strongly it perturbs the bed — kept modest
+# and scaled to the river's own depth so it reads as a ripple, not a second
+# channel.
+RIVER_RIPPLE_AMPLITUDE_FACTOR = 0.12
+
 
 def _edge_key(a, b):
     return (a, b) if a < b else (b, a)
@@ -627,6 +634,52 @@ def sample_grayscale(pixels, width, height, u, v):
     return top * (1.0 - ty) + bot * ty
 
 
+def _refine_corridors_with_own_levels(verts, faces, protected_edges,
+                                       refine_specs):
+    """Adaptively subdivide `faces` near any spec in `refine_specs`
+    (pad-shaped `{"x","y","radius_mm","blend_mm","_levels"}` dicts), where
+    each spec only qualifies for as many passes as its own `"_levels"` —
+    unlike `_iteratively_refine`'s single shared `max_levels` ceiling, this
+    is for callers whose specs come from several independent entities (each
+    path/river's own `local_subdiv`) that must not "borrow" a denser
+    neighbour's extra refinement. Mirrors `refine_regions`'s per-region
+    `levels` gating. Mutates `verts` in place (append-only) and returns the
+    retriangulated face list. Shared by `refine_and_displace_along_path` and
+    `refine_and_carve_river`.
+    """
+    faces = list(faces)
+    max_levels = max((s["_levels"] for s in refine_specs), default=0)
+    for level in range(max_levels):
+        active = [s for s in refine_specs if s["_levels"] > level]
+        if not active:
+            break
+        marked = set()
+        for face in faces:
+            a, b, c = face
+            for (u, v) in ((a, b), (b, c), (c, a)):
+                key = _edge_key(u, v)
+                if key in protected_edges or key in marked:
+                    continue
+                if _edge_qualifies(verts, u, v, active):
+                    marked.add(key)
+        if not marked:
+            break
+
+        mid_idx = {}
+        for key in marked:
+            u, v = key
+            ux, uy, uz = verts[u]
+            vx, vy, vz = verts[v]
+            mid_idx[key] = len(verts)
+            verts.append(((ux + vx) / 2.0, (uy + vy) / 2.0, (uz + vz) / 2.0))
+
+        new_faces = []
+        for face in faces:
+            new_faces.extend(_retriangulate(face, marked, mid_idx, verts))
+        faces = new_faces
+    return faces
+
+
 def refine_and_displace_along_path(verts, faces, protected_edges, paths,
                                     diameter_mm, base_thickness_mm):
     """Refine + curvilinear-texture-displace `faces` along each path's
@@ -685,41 +738,8 @@ def refine_and_displace_along_path(verts, faces, protected_edges, paths,
                     "_levels": levels,
                 })
 
-    # Per-path independent level gating, mirroring refine_regions's
-    # max(levels)-bounded loop with a per-pass "still active" filter —
-    # unlike refine_regions, a plain 3D-linear midpoint is fine here (no
-    # procedural value field to resample), so this reuses
-    # _edge_qualifies/_retriangulate exactly as _iteratively_refine does.
-    faces = list(faces)
-    max_levels = max((s["_levels"] for s in refine_specs), default=0)
-    for level in range(max_levels):
-        active = [s for s in refine_specs if s["_levels"] > level]
-        if not active:
-            break
-        marked = set()
-        for face in faces:
-            a, b, c = face
-            for (u, v) in ((a, b), (b, c), (c, a)):
-                key = _edge_key(u, v)
-                if key in protected_edges or key in marked:
-                    continue
-                if _edge_qualifies(verts, u, v, active):
-                    marked.add(key)
-        if not marked:
-            break
-
-        mid_idx = {}
-        for key in marked:
-            u, v = key
-            ux, uy, uz = verts[u]
-            vx, vy, vz = verts[v]
-            mid_idx[key] = len(verts)
-            verts.append(((ux + vx) / 2.0, (uy + vy) / 2.0, (uz + vz) / 2.0))
-
-        new_faces = []
-        for face in faces:
-            new_faces.extend(_retriangulate(face, marked, mid_idx, verts))
-        faces = new_faces
+    faces = _refine_corridors_with_own_levels(verts, faces, protected_edges,
+                                              refine_specs)
 
     for i in range(len(verts)):
         x, y, z = verts[i]
@@ -752,6 +772,250 @@ def refine_and_displace_along_path(verts, faces, protected_edges, paths,
                 gray = 0.0
             offset = (gray - 0.5) * 2.0 * p["depth_mm"]
             z = z + w * offset
+        verts[i] = (x, y, max(z, base_thickness_mm))
+
+    return faces
+
+
+# ---------------------------------------------------------------------------
+# A fourth refine+apply strategy, for River path features: unlike the three
+# above (radial flatten-to-target, radial drill-a-cylinder, curvilinear
+# additive texture-groove), a river channel needs a constant bed depth and
+# constant-angle banks regardless of ambient terrain noise, so this lerps
+# toward an *absolute* target height (refine_and_flatten's shape) in the
+# curvilinear (s, t) frame `refine_and_displace_along_path` already samples
+# in — combining both existing patterns rather than introducing a new one.
+
+def _point_at_arclength(points, s):
+    """Inverse of curvilinear_coords's `s`: the (x, y) on the open polyline
+    `points` at arc-length `s`, clamped to [0, total_length] — not wrapped —
+    matching curvilinear_coords's own clamping past either endpoint."""
+    if s <= 0.0:
+        return points[0]
+    cum = 0.0
+    last = points[0]
+    for i in range(len(points) - 1):
+        ax, ay = points[i]
+        bx, by = points[i + 1]
+        seg_len = math.hypot(bx - ax, by - ay)
+        if seg_len < 1e-9:
+            continue
+        if s <= cum + seg_len:
+            t = (s - cum) / seg_len
+            return (ax + (bx - ax) * t, ay + (by - ay) * t)
+        cum += seg_len
+        last = (bx, by)
+    return last
+
+
+def _sample_centerline_heights(verts, faces, points, step_mm):
+    """[(s_i, z_i), ...] at ~step_mm spacing along `points`, `z_i` sampled
+    via `sample_surface_z` at the centerline point for that arc-length.
+    Captured once, up front, from the pre-carve surface — mirrors
+    `refine_and_flatten`'s up-front pad-height sampling — so a river's own
+    refinement-appended vertices can never feed back into its own
+    reference height."""
+    total = 0.0
+    for i in range(len(points) - 1):
+        ax, ay = points[i]
+        bx, by = points[i + 1]
+        total += math.hypot(bx - ax, by - ay)
+    step = max(step_mm, 1.0)
+    n_steps = max(1, int(math.ceil(total / step))) if total > 0.0 else 1
+    table = []
+    for k in range(n_steps + 1):
+        s = total * k / n_steps
+        x, y = _point_at_arclength(points, s)
+        z = sample_surface_z(verts, faces, x, y)
+        table.append((s, z))
+    return table
+
+
+def _interp_table(table, s):
+    """Piecewise-linear lookup of z at arc-length `s` in a
+    `[(s_i, z_i), ...]` table sorted ascending by `s_i`; clamps past either
+    end."""
+    if not table:
+        return 0.0
+    if s <= table[0][0]:
+        return table[0][1]
+    if s >= table[-1][0]:
+        return table[-1][1]
+    for i in range(len(table) - 1):
+        s0, z0 = table[i]
+        s1, z1 = table[i + 1]
+        if s0 <= s <= s1:
+            if s1 - s0 < 1e-12:
+                return z0
+            frac = (s - s0) / (s1 - s0)
+            return z0 + (z1 - z0) * frac
+    return table[-1][1]
+
+
+def refine_and_carve_river(verts, faces, protected_edges, rivers,
+                            diameter_mm, base_thickness_mm):
+    """Refine + carve `faces` into a river channel along each river's
+    polyline. Append-only on `verts`, same contract as `refine_and_flatten`/
+    `refine_and_displace_along_path`.
+
+    `rivers` is a list of `{"points", "width_mm", "depth_mm",
+    "embankment_angle_deg", "embankment_variation_mm", "river_bottom_style",
+    "local_subdiv", "seed"}` dicts (tile-local mm/degrees), plus
+    `"pixels"`/`"tex_width"`/`"tex_height"`/`"ripple_patch_mm"` when
+    `river_bottom_style == "TESSENDORF_FFT"` — a static ripple height grid
+    baked from Blender's Ocean modifier by path_features.py, normalized to
+    [0, 1] the same way a loaded PNG heightmap is, and sampled here with the
+    exact same `sample_grayscale` this module already uses for texture
+    paths (no bpy, no FFT/numpy math lives in this module).
+
+    Cross-section, at arc-length `s` and signed lateral offset `t`
+    (`d = abs(t)`) from the centerline:
+      - `half_bed = width_mm / 2` is the flat, navigable bed — constant
+        regardless of embankment angle; embankments extend *outward*
+        beyond it, never inward.
+      - `nominal_run_mm = depth_mm / tan(embankment_angle_deg)` is the
+        horizontal slope run per side. No special-casing at 90°: `tan(90°)`
+        is numerically ~1.6e16 in floats, so the run already comes out
+        ~0 (a vertical bank).
+      - A deterministic per-side noise term (`embankment_variation_mm`)
+        perturbs that run so the bank line wanders naturally rather than
+        tracing a perfectly parallel offset of the centerline.
+      - Weight `w(d)`: 1.0 within the bed; a **linear** (not smoothstep)
+        ramp down to 0 across the embankment run; 0 beyond. Linear because
+        a constant-angle slope is geometrically a straight line in
+        cross-section — don't "fix" this to match `refine_and_flatten`'s
+        smoothstep shape.
+      - Target height is `reference_z(s) - depth_mm`, where `reference_z`
+        is the pre-carve surface sampled once along the centerline (see
+        `_sample_centerline_heights`) — so the bed follows the tile's own
+        longitudinal slope while staying flat *across* the channel at any
+        given `s`. `new_z = old_z + w * (target_z - old_z)` — algebraically
+        identical to lerping toward a separately-defined ramp target, so no
+        extra target function is needed.
+      - The mandatory rim-fade (`rim_edge_distance`) still applies, using
+        the local embankment run itself as the fade distance. This is the
+        same hard structural invariant every pad/path/brush displacement in
+        this codebase relies on — a tile's rim vertices must be fully
+        determined by the shared corner-level control mesh so two
+        independently-built neighbouring tiles' seams match — not
+        something to special-case away for rivers. A river meant to
+        continue into a neighbouring tile needs the shared corner Level(s)
+        at the crossing edge lowered to match `depth_mm`/`level_height_mm`
+        on both tiles (see path_features.py's module docstring); that is a
+        workflow, not something this function can or should compensate for.
+      - When `river_bottom_style == "TESSENDORF_FFT"`, the baked ripple is
+        added to the bed target strictly within `d <= half_bed`, tapered to
+        0 at the bed/embankment boundary so it stays continuous with the
+        (always ripple-free) ramp.
+
+    Multiple overlapping rivers apply sequentially, each lerping toward its
+    own target on top of whatever the previous one left — same
+    "each contribution modifies the running result" shape
+    `refine_and_flatten`'s per-pad loop already uses.
+    """
+    if not rivers:
+        return list(faces)
+
+    river_ctx = []
+    for r in rivers:
+        points = r["points"]
+        half_bed = r["width_mm"] / 2.0
+        depth_mm = r["depth_mm"]
+        angle_deg = max(10.0, min(90.0, r["embankment_angle_deg"]))
+        nominal_run_mm = depth_mm / math.tan(math.radians(angle_deg))
+        variation_mm = max(0.0, r.get("embankment_variation_mm", 0.0))
+        max_reach_mm = max(nominal_run_mm + variation_mm, 1e-6)
+        step_mm = max(half_bed, 1.0)
+        centerline_table = _sample_centerline_heights(verts, faces, points,
+                                                       step_mm)
+        river_ctx.append({
+            "points": points,
+            "half_bed": half_bed,
+            "depth_mm": depth_mm,
+            "nominal_run_mm": nominal_run_mm,
+            "variation_mm": variation_mm,
+            "max_reach_mm": max_reach_mm,
+            "noise_pitch_mm": max(4.0 * half_bed, 20.0),
+            "centerline_table": centerline_table,
+            "seed": r.get("seed", 0),
+            "local_subdiv": int(r.get("local_subdiv", 0)),
+            "river_bottom_style": r.get("river_bottom_style", "NONE"),
+            "pixels": r.get("pixels"),
+            "tex_width": r.get("tex_width", 0),
+            "tex_height": r.get("tex_height", 0),
+            "ripple_patch_mm": r.get("ripple_patch_mm")
+                or max(r["width_mm"] * 2.0, 50.0),
+        })
+
+    # Refinement corridor: same shape refine_and_displace_along_path builds,
+    # sized to each river's own worst-case reach (bed + max embankment run)
+    # rather than a fixed blend_mm.
+    refine_specs = []
+    for ctx in river_ctx:
+        pts = ctx["points"]
+        step = max(ctx["half_bed"], 1.0)
+        for i in range(len(pts) - 1):
+            ax, ay = pts[i]
+            bx, by = pts[i + 1]
+            seg_len = math.hypot(bx - ax, by - ay)
+            n_steps = max(1, int(math.ceil(seg_len / step)))
+            for k in range(n_steps + 1):
+                t = k / n_steps
+                refine_specs.append({
+                    "x": ax + (bx - ax) * t, "y": ay + (by - ay) * t,
+                    "radius_mm": ctx["half_bed"],
+                    "blend_mm": ctx["max_reach_mm"],
+                    "_levels": ctx["local_subdiv"],
+                })
+
+    faces = _refine_corridors_with_own_levels(verts, faces, protected_edges,
+                                              refine_specs)
+
+    for i in range(len(verts)):
+        x, y, z = verts[i]
+        for ctx in river_ctx:
+            half_bed = ctx["half_bed"]
+            s, t = curvilinear_coords(x, y, ctx["points"])
+            d = abs(t)
+
+            side_offset = 1.0e6 if t >= 0.0 else -1.0e6
+            noise = procedural_surfaces._value_noise(
+                s, side_offset, ctx["noise_pitch_mm"], ctx["seed"])
+            run = max(0.0, ctx["nominal_run_mm"] + noise * ctx["variation_mm"])
+            bank_edge = half_bed + run
+
+            if d <= half_bed:
+                w = 1.0
+            elif run > 1e-9 and d <= bank_edge:
+                w = 1.0 - (d - half_bed) / run
+            else:
+                continue
+
+            fade_dist = max(run, 1e-6)
+            rim = rim_edge_distance(x, y, diameter_mm)
+            w *= 0.0 if rim < 0.0 else (1.0 if rim > fade_dist else rim / fade_dist)
+            if w <= 0.0:
+                continue
+
+            ref_z = _interp_table(ctx["centerline_table"], s)
+            target_z = ref_z - ctx["depth_mm"]
+
+            if (d <= half_bed and half_bed > 1e-9
+                    and ctx["river_bottom_style"] == 'TESSENDORF_FFT'
+                    and ctx["pixels"]):
+                taper = _smoothstep(1.0 - d / half_bed)
+                patch_mm = (ctx["ripple_patch_mm"]
+                            if ctx["ripple_patch_mm"] > 1e-9 else 1.0)
+                u = s / patch_mm
+                v = 0.5 + t / (2.0 * half_bed)
+                v = 0.0 if v < 0.0 else (1.0 if v > 1.0 else v)
+                gray = sample_grayscale(ctx["pixels"], ctx["tex_width"],
+                                        ctx["tex_height"], u, v)
+                ripple_mm = ((gray - 0.5) * 2.0
+                             * RIVER_RIPPLE_AMPLITUDE_FACTOR * ctx["depth_mm"])
+                target_z += taper * ripple_mm
+
+            z = z + w * (target_z - z)
         verts[i] = (x, y, max(z, base_thickness_mm))
 
     return faces

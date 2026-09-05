@@ -16,6 +16,20 @@ a line into `mesh_builder.build_hex_tile`'s `path_features` kwarg via
 Every edit (drawing a line, changing its type/width/depth/repeat/texture,
 removing it) auto-rebuilds the tile — there is no manual "Generate" step,
 matching every other generative feature in the codebase.
+
+RIVER is a fourth feature_type with its own field shape (depth in map
+Levels, an embankment angle + variation, a Flat/Tessendorf's-FFT bottom
+style, no texture/repeat) and its own carve math
+(tree_pads.refine_and_carve_river) — see _RIVER_DEFAULTS/path_specs()
+below. Like every other pad/path/brush displacement in this codebase, a
+river's depth fades to exactly 0 at the tile's rim edge (the invariant that
+keeps two independently-built neighbouring tiles' shared edges matching).
+For a river meant to continue into a neighbouring tile, lower the shared
+corner Level(s) at the crossing edge to at least the river's own
+depth_levels on both tiles (the per-corner Level sliders already
+auto-propagate to the shared neighbour corner) — this makes the ambient
+terrain the rim-fade reverts to already sit at the river's bed depth, so
+the seam reads as continuous with no special-case code required.
 """
 
 import math
@@ -66,15 +80,41 @@ _TYPE_DEFAULTS = {
                    "texture": "STONE_ROAD", "local_subdiv": 2},
 }
 
+# RIVER's field shape is different enough (levels instead of mm depth, an
+# angle, a variation amount, a bottom-style enum, no texture/repeat) that it
+# gets its own defaults dict rather than a squeezed-in _TYPE_DEFAULTS entry.
+# width_factor and embankment_variation_factor are man_height_mm-scaled
+# (model-scale-aware, resolved once here then freely hand-editable in mm,
+# exactly like width_mm already is for the other three types); depth_levels
+# and embankment_angle_deg are unit-less/degrees literals.
+_RIVER_DEFAULTS = {
+    "width_factor": 3.0,
+    "depth_levels": 1,
+    "local_subdiv": 3,
+    "embankment_angle_deg": 45.0,
+    "embankment_variation_factor": 0.5,
+    "river_bottom_style": "NONE",
+}
+
 
 def apply_type_defaults(feature, man_height_mm):
-    """Fill `feature`'s width_mm/depth_mm/repeat_mm/texture/local_subdiv
-    from `_TYPE_DEFAULTS[feature.feature_type]`. width_mm is a direct factor
-    of man_height_mm (model-scale-aware); depth_mm/repeat_mm/local_subdiv
-    are fixed literal values, not scaled by man height. Called directly (not
-    just via the `feature_type` update callback) so a freshly drawn line is
+    """Fill `feature`'s type-appropriate fields from `_TYPE_DEFAULTS`/
+    `_RIVER_DEFAULTS`. width_mm (and, for RIVER, embankment_variation_mm) is
+    a direct factor of man_height_mm (model-scale-aware); every other field
+    is a fixed literal, not scaled by man height. Called directly (not just
+    via the `feature_type` update callback) so a freshly drawn line is
     correctly sized even when its type equals the property's own default and
     no update fires."""
+    if feature.feature_type == 'RIVER':
+        d = _RIVER_DEFAULTS
+        feature.width_mm = d["width_factor"] * man_height_mm
+        feature.depth_levels = d["depth_levels"]
+        feature.local_subdiv = d["local_subdiv"]
+        feature.embankment_angle_deg = d["embankment_angle_deg"]
+        feature.embankment_variation_mm = (
+            d["embankment_variation_factor"] * man_height_mm)
+        feature.river_bottom_style = d["river_bottom_style"]
+        return
     d = _TYPE_DEFAULTS.get(feature.feature_type)
     if d is None:
         return
@@ -124,18 +164,185 @@ def _get_or_load_heightmap(key):
     return result
 
 
+# ---------------------------------------------------------------------------
+# River ripple synthesis — bakes one static snapshot of Blender's built-in
+# Ocean modifier (a port of the Houdini Ocean Toolkit, itself an
+# implementation of Tessendorf's Fourier-domain/Phillips-spectrum ocean-wave
+# method) into a plain [0, 1] height grid, consumed exactly like a loaded
+# PNG heightmap by tree_pads.sample_grayscale — no new bpy-free FFT/numpy
+# math needed anywhere. This has to live here rather than in
+# tree_pads.py/mesh_builder.py: bpy.types.OceanModifier is a real mesh
+# modifier and can only be touched from the bpy-importing layer.
+
+_OCEAN_HEIGHTFIELD_CACHE = {}
+_OCEAN_SCRATCH_COLLECTION_NAME = "HexFinity Scratch"
+
+# Fixed, not user-exposed — the user only asked for a Flat/Tessendorf's-FFT
+# choice, not wave-tuning knobs. Choppiness is forced to 0 deliberately (see
+# _generate_ocean_heightfield): any horizontal displacement would move a
+# GENERATE-mode vertex off the regular base grid, breaking the "bucket by
+# (x, y) position" grid-reconstruction below.
+_OCEAN_RESOLUTION = 5
+_OCEAN_WIND_VELOCITY = 5.0
+_OCEAN_CHOPPINESS = 0.0
+_OCEAN_WAVE_SCALE = 1.0
+_OCEAN_WAVE_ALIGNMENT = 0.0
+_OCEAN_DAMPING = 0.5
+_OCEAN_DEPTH = 200.0
+
+
+def _get_ocean_scratch_collection():
+    """Get-or-create a plain scratch collection to briefly hold an Ocean-
+    modifier bake object. The object is created, evaluated, and removed
+    within a single synchronous call below — Blender only redraws the
+    viewport/outliner between operator invocations, never mid-call — so it
+    is never actually visible to the user and needs no hidden/excluded
+    view-layer setup."""
+    coll = bpy.data.collections.get(_OCEAN_SCRATCH_COLLECTION_NAME)
+    if coll is None:
+        coll = bpy.data.collections.new(_OCEAN_SCRATCH_COLLECTION_NAME)
+    if coll.name not in bpy.context.scene.collection.children:
+        bpy.context.scene.collection.children.link(coll)
+    return coll
+
+
+def _generate_ocean_heightfield(seed, patch_mm, resolution=_OCEAN_RESOLUTION):
+    """(pixels, width, height) or None — a static Tessendorf-FFT ocean-wave
+    height snapshot baked from Blender's built-in Ocean modifier, normalized
+    to [0, 1] (the same convention as a loaded grayscale heightmap PNG) and
+    returned as a flat row-major Python list. Session-cached by
+    (seed, resolution, patch_mm) — mirrors _get_or_load_heightmap.
+
+    The Ocean modifier computes its height field as a pure function of
+    `time` from the Phillips-spectrum synthesis, so no bake-to-disk
+    (`ocean_bake`) is needed for a single static snapshot — baking only
+    matters for accumulating *foam* over an animated frame range, which
+    this doesn't use. `time` is fixed at 0.0; `random_seed` alone varies
+    the result between rivers/tiles.
+
+    Grid dimensions are discovered from the actual evaluated mesh (bucketed
+    by vertex (x, y) position, not raw vertex index or an assumed formula
+    from `resolution`) rather than assumed, since Blender's exact internal
+    vertex ordering/resolution-to-grid-size mapping isn't a documented
+    contract to rely on.
+    """
+    key = (seed, resolution, round(patch_mm, 3))
+    if key in _OCEAN_HEIGHTFIELD_CACHE:
+        return _OCEAN_HEIGHTFIELD_CACHE[key]
+
+    coll = _get_ocean_scratch_collection()
+    mesh = bpy.data.meshes.new("HF_OceanScratch")
+    obj = bpy.data.objects.new("HF_OceanScratch", mesh)
+    coll.objects.link(obj)
+    obj.hide_render = True
+    result = None
+    try:
+        mod = obj.modifiers.new("Ocean", 'OCEAN')
+        mod.geometry_mode = 'GENERATE'
+        mod.spatial_size = max(int(round(patch_mm)), 1)
+        mod.resolution = resolution
+        mod.random_seed = seed % 2147483647
+        mod.time = 0.0
+        mod.wind_velocity = _OCEAN_WIND_VELOCITY
+        mod.choppiness = _OCEAN_CHOPPINESS
+        mod.wave_scale = _OCEAN_WAVE_SCALE
+        mod.wave_alignment = _OCEAN_WAVE_ALIGNMENT
+        mod.damping = _OCEAN_DAMPING
+        mod.depth = _OCEAN_DEPTH
+
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        eval_obj = obj.evaluated_get(depsgraph)
+        eval_mesh = eval_obj.to_mesh()
+        try:
+            coords = [(v.co.x, v.co.y, v.co.z) for v in eval_mesh.vertices]
+        finally:
+            eval_obj.to_mesh_clear()
+
+        if coords:
+            xs = sorted(set(round(c[0], 6) for c in coords))
+            ys = sorted(set(round(c[1], 6) for c in coords))
+            width, height = len(xs), len(ys)
+            x_index = {x: i for i, x in enumerate(xs)}
+            y_index = {y: i for i, y in enumerate(ys)}
+            grid = [0.0] * (width * height)
+            for (x, y, z) in coords:
+                ix = x_index[round(x, 6)]
+                iy = y_index[round(y, 6)]
+                grid[iy * width + ix] = z
+            z_min, z_max = min(grid), max(grid)
+            span = z_max - z_min
+            if span > 1e-9:
+                pixels = [(z - z_min) / span for z in grid]
+            else:
+                pixels = [0.5] * len(grid)
+            result = (pixels, width, height)
+    finally:
+        bpy.data.objects.remove(obj, do_unlink=True)
+        bpy.data.meshes.remove(mesh)
+
+    _OCEAN_HEIGHTFIELD_CACHE[key] = result
+    return result
+
+
+def _river_seed(tile_props, feature_index):
+    """Deterministic per-river seed: the tile's own seed formula (mirrors
+    operators.py's `surface_seed`) XORed with the feature's own index, so
+    multiple rivers on one tile get decorrelated but reproducible seeds for
+    both the embankment-variation noise and the ocean-ripple bake."""
+    tile_seed = ((tile_props.coord_q * 73856093)
+                 ^ (tile_props.coord_r * 19349663))
+    return (tile_seed ^ (feature_index * 668265263)) & 0x7FFFFFFF
+
+
 def path_specs(tile_obj):
     """Turn `tile_obj`'s path_features into mesh_builder.build_hex_tile's
     `path_features` kwarg list — mirrors flora.pad_specs(obj) /
-    operators.terrain_pad_specs(obj)."""
+    operators.terrain_pad_specs(obj). Each spec is tagged `"kind"`:
+    `"texture"` (SIMPLE/GRAVEL/PAVED_ROAD, consumed by
+    tree_pads.refine_and_displace_along_path) or `"river"` (RIVER, consumed
+    by tree_pads.refine_and_carve_river) — mesh_builder.build_hex_tile
+    partitions the list by this tag.
+
+    A river's `depth_mm` is resolved fresh from `depth_levels *
+    level_height_mm` on every call — unlike `width_mm` (resolved once at
+    type-select time, then freely hand-editable in mm), a river's depth is
+    always re-derived from the current scene-wide Level Height, the same
+    way corner heights are never resolved-once either.
+    """
     tile = tile_obj.hexfinity_tile
+    map_props = bpy.context.scene.hexfinity_map
     specs = []
-    for feature in tile.path_features:
+    for i, feature in enumerate(tile.path_features):
         if len(feature.points) < 2:
+            continue
+        if feature.feature_type == 'RIVER':
+            seed = _river_seed(tile, i)
+            spec = {
+                "kind": "river",
+                "points": [(p.x, p.y) for p in feature.points],
+                "width_mm": feature.width_mm,
+                "depth_mm": feature.depth_levels * map_props.level_height_mm,
+                "embankment_angle_deg": feature.embankment_angle_deg,
+                "embankment_variation_mm": feature.embankment_variation_mm,
+                "river_bottom_style": feature.river_bottom_style,
+                "local_subdiv": feature.local_subdiv,
+                "seed": seed,
+            }
+            if feature.river_bottom_style == 'TESSENDORF_FFT':
+                patch_mm = max(feature.width_mm * 2.0, 50.0)
+                heightfield = _generate_ocean_heightfield(seed, patch_mm)
+                if heightfield is not None:
+                    pixels, tex_width, tex_height = heightfield
+                    spec["pixels"] = pixels
+                    spec["tex_width"] = tex_width
+                    spec["tex_height"] = tex_height
+                    spec["ripple_patch_mm"] = patch_mm
+            specs.append(spec)
             continue
         heightmap = _get_or_load_heightmap(feature.texture)
         pixels, tex_width, tex_height = heightmap if heightmap else (None, 0, 0)
         specs.append({
+            "kind": "texture",
             "points": [(p.x, p.y) for p in feature.points],
             "width_mm": feature.width_mm,
             "depth_mm": feature.depth_mm,

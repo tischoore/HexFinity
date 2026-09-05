@@ -372,9 +372,20 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
             sub.prop(feature, "name")
             sub.prop(feature, "feature_type")
             sub.prop(feature, "width_mm")
-            sub.prop(feature, "depth_mm")
-            sub.prop(feature, "repeat_mm")
-            sub.prop(feature, "local_subdiv")
+            if feature.feature_type == 'RIVER':
+                sub.prop(feature, "depth_levels")
+                sub.prop(feature, "embankment_angle_deg")
+                sub.prop(feature, "embankment_variation_mm")
+                sub.prop(feature, "river_bottom_style")
+                sub.prop(feature, "local_subdiv")
+                box.label(text="To continue into a neighbouring tile, "
+                                "lower the shared corner Level(s) at the "
+                                "crossing edge to at least Depth.",
+                          icon='INFO')
+            else:
+                sub.prop(feature, "depth_mm")
+                sub.prop(feature, "repeat_mm")
+                sub.prop(feature, "local_subdiv")
 
     @staticmethod
     def _draw_scatter_params(box, reg, surf, map_props):

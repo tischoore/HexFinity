@@ -293,19 +293,29 @@ def build_hex_tile(
     sequential calls would let one kind's flattening bake in before the
     other samples, double-blending where footprints overlap.
 
-    `path_features`, when given, is a list of `{"points", "width_mm",
-    "depth_mm", "blend_mm", "repeat_mm", "pixels", "tex_width",
-    "tex_height", "local_subdiv"}` dicts (tile-local mm) — one per drawn
-    path feature line. Applied via `tree_pads.refine_and_displace_along_path`,
-    strictly after the merged `flora_pads`/`terrain_pads` flatten pass and
-    before `flora_notches`, so a path carves into whatever landform/pad
-    flattening already produced (the topmost layer in the user-facing
-    Water/Land/Draw Area/Path Feature stack). New vertices are appended
+    `path_features`, when given, is a list of per-drawn-line dicts
+    (tile-local mm), each tagged `"kind"`: `"texture"` (SIMPLE/GRAVEL/
+    PAVED_ROAD — `{"points", "width_mm", "depth_mm", "blend_mm",
+    "repeat_mm", "pixels", "tex_width", "tex_height", "local_subdiv"}`,
+    applied via `tree_pads.refine_and_displace_along_path`) or `"river"`
+    (RIVER — `{"points", "width_mm", "depth_mm", "embankment_angle_deg",
+    "embankment_variation_mm", "river_bottom_style", "local_subdiv",
+    "seed"}` plus `"pixels"`/`"tex_width"`/`"tex_height"`/
+    `"ripple_patch_mm"` when rippled, applied via
+    `tree_pads.refine_and_carve_river`). The list is partitioned by `"kind"`
+    (defaulting missing/old-shaped entries to `"texture"`) and each group is
+    passed to its own `tree_pads` call, texture-group first, river-group
+    second, strictly after the merged `flora_pads`/`terrain_pads` flatten
+    pass and before `flora_notches` — so a path/river carves into whatever
+    landform/pad flattening already produced (the topmost layer in the
+    user-facing Water/Land/Draw Area/Path Feature stack), and a river's
+    absolute-target carve is the last word if it happens to overlap a
+    texture path's shallower additive groove. New vertices are appended
     after the existing prefix, same contract as `flora_pads`/`terrain_pads`.
     `local_subdiv` gates how many local corridor-refinement passes that
-    path's own circles contribute, independently of every other path on the
-    same tile (0 = no extra local density for that path) — mirrors a Draw
-    Area region's own `local_subdiv`.
+    path's/river's own circles contribute, independently of every other
+    path on the same tile (0 = no extra local density for that one) —
+    mirrors a Draw Area region's own `local_subdiv`.
 
     `baked_extra`, when given, is a `(extra_verts, extra_faces,
     prefix_overrides)` tuple captured by a previous call's `bake_capture`
@@ -563,9 +573,18 @@ def build_hex_tile(
                 from . import tree_pads
             except ImportError:
                 import tree_pads
-            top_faces = tree_pads.refine_and_displace_along_path(
-                verts_mm, top_faces, protected_edges, path_features,
-                diameter_mm, base_thickness_mm)
+            texture_paths = [p for p in path_features
+                             if p.get("kind", "texture") == "texture"]
+            river_paths = [p for p in path_features
+                           if p.get("kind") == "river"]
+            if texture_paths:
+                top_faces = tree_pads.refine_and_displace_along_path(
+                    verts_mm, top_faces, protected_edges, texture_paths,
+                    diameter_mm, base_thickness_mm)
+            if river_paths:
+                top_faces = tree_pads.refine_and_carve_river(
+                    verts_mm, top_faces, protected_edges, river_paths,
+                    diameter_mm, base_thickness_mm)
         if flora_notches:
             try:
                 from . import tree_pads
