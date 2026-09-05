@@ -774,8 +774,24 @@ def test_curvilinear_coords_other_side_is_negative():
 def test_curvilinear_coords_past_endpoint_clamps():
     s, t = tree_pads.curvilinear_coords(20.0, 0.0, [(0.0, 0.0), (10.0, 0.0)])
     assert s == pytest.approx(10.0)
+    assert t == pytest.approx(10.0), \
+        "a point collinear with, and beyond, the endpoint must report the " \
+        "true distance past it, not ~0 (the original bug: the carve would " \
+        "otherwise keep applying indefinitely along the path's direction)"
     s2, t2 = tree_pads.curvilinear_coords(-5.0, 0.0, [(0.0, 0.0), (10.0, 0.0)])
     assert s2 == pytest.approx(0.0)
+    assert t2 == pytest.approx(5.0), \
+        "the same fix applies symmetrically before the polyline's start"
+
+
+def test_curvilinear_coords_past_endpoint_is_radial_not_lateral():
+    # A point 6mm past the endpoint (10,0) and 8mm to the side. The old
+    # (buggy) infinite-line formula would report t=8.0 (just the lateral
+    # offset, ignoring the 6mm overshoot); the fixed rounded-cap behaviour
+    # reports the true radial distance to the endpoint (hypot(6, 8) == 10).
+    s, t = tree_pads.curvilinear_coords(16.0, 8.0, [(0.0, 0.0), (10.0, 0.0)])
+    assert s == pytest.approx(10.0)
+    assert t == pytest.approx(10.0)
 
 
 def test_curvilinear_coords_multi_segment_accumulates_arc_length():
@@ -860,6 +876,31 @@ def test_no_path_features_adds_zero_vertices():
     verts_empty, _ = _sloped_tile(path_features=[])
     assert len(verts_none) == len(verts_plain)
     assert len(verts_empty) == len(verts_plain)
+
+
+def test_path_feature_stops_at_final_waypoint_not_beyond():
+    # Regression for the "carve continues past the drawn endpoint" bug: a
+    # vertex collinear with, and well beyond, the path's own last waypoint
+    # must be left untouched, even though the path's direction "aims at"
+    # it. Before the curvilinear_coords fix, this vertex's t reported ~0
+    # (infinite-line distance) instead of the true ~20mm overshoot, so it
+    # was incorrectly carved.
+    verts, faces, protected = _grid_mesh(6, 60.0)
+    path = {
+        "points": [(10.0, 30.0), (30.0, 30.0)],  # stops well short of x=60
+        "width_mm": 10.0, "depth_mm": 2.0, "blend_mm": 3.0,
+        "repeat_mm": 20.0, "pixels": None, "tex_width": 0, "tex_height": 0,
+        "local_subdiv": 0,
+    }
+    before = list(verts)
+    tree_pads.refine_and_displace_along_path(
+        verts, faces, protected, [path], diameter_mm=1000.0, base_thickness_mm=-1e9)
+    beyond = [v for v in before if v[0] > 40.0 and abs(v[1] - 30.0) < 1e-6]
+    assert beyond, "expected grid vertices collinear with, and beyond, the endpoint"
+    for bv in beyond:
+        match = [v for v in verts if v[0] == bv[0] and v[1] == bv[1]]
+        assert match and match[0][2] == pytest.approx(bv[2], abs=1e-9), \
+            "a vertex well beyond the path's final waypoint must stay untouched"
 
 
 def test_path_feature_verts_beyond_reach_unchanged():
@@ -1090,6 +1131,23 @@ def test_river_and_texture_path_on_same_tile_both_apply():
     river["points"] = [(-30.0, -20.0), (30.0, -20.0)]
     verts, faces = _sloped_tile(path_features=[texture_path, river])
     assert_two_manifold(verts, faces)
+
+
+def test_river_stops_at_final_waypoint_not_beyond():
+    # Same regression as test_path_feature_stops_at_final_waypoint_not_beyond,
+    # for the river carve path.
+    verts, faces, protected, river = _river_grid()
+    river["points"] = [(10.0, 30.0), (30.0, 30.0)]  # stops well short of x=60
+    before = list(verts)
+    tree_pads.refine_and_carve_river(
+        verts, faces, protected, [river],
+        diameter_mm=1000.0, base_thickness_mm=-1e9)
+    beyond = [v for v in before if v[0] > 45.0 and abs(v[1] - 30.0) < 1e-6]
+    assert beyond, "expected grid vertices collinear with, and beyond, the endpoint"
+    for bv in beyond:
+        match = [v for v in verts if v[0] == bv[0] and v[1] == bv[1]]
+        assert match and match[0][2] == pytest.approx(bv[2], abs=1e-9), \
+            "a river must stay untouched well beyond its final waypoint"
 
 
 def test_river_bed_stays_flat_cross_sectionally():

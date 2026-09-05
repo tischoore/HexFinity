@@ -572,8 +572,18 @@ def curvilinear_coords(x, y, points):
     projected point (clamped to the polyline's start/end, not wrapped past
     the endpoints — a point beyond the last waypoint projects onto the
     final segment's end); `t` is the signed perpendicular distance from the
-    centerline (positive to the segment direction's left). This is the
-    coordinate frame `refine_and_displace_along_path` samples a texture in.
+    centerline (positive to the segment direction's left) *while the
+    nearest point falls strictly within a segment's span*. Once a point
+    falls beyond one of the polyline's two open ends (its projection onto
+    every segment clamps to that segment's own start/end), `t` instead
+    becomes the true Euclidean distance to that clamped endpoint (sign
+    preserved from the unclamped perpendicular formula) rather than the
+    perpendicular-to-the-infinite-line value — otherwise a point exactly
+    collinear with, and beyond, an endpoint would report `t ~= 0`
+    regardless of how far past it lies, letting a path's carve continue
+    indefinitely instead of tapering into a rounded cap at its own ends.
+    This is the coordinate frame `refine_and_displace_along_path` and
+    `refine_and_carve_river` sample/carve in.
     """
     best_d2 = None
     best_s = 0.0
@@ -591,8 +601,9 @@ def curvilinear_coords(x, y, points):
                 best_s = cum
                 best_t = math.hypot(x - ax, y - ay)
             continue
-        t_param = ((x - ax) * dx + (y - ay) * dy) / (seg_len * seg_len)
-        t_param = 0.0 if t_param < 0.0 else (1.0 if t_param > 1.0 else t_param)
+        raw_t_param = ((x - ax) * dx + (y - ay) * dy) / (seg_len * seg_len)
+        clamped = raw_t_param < 0.0 or raw_t_param > 1.0
+        t_param = 0.0 if raw_t_param < 0.0 else (1.0 if raw_t_param > 1.0 else raw_t_param)
         proj_x = ax + t_param * dx
         proj_y = ay + t_param * dy
         d2 = (x - proj_x) ** 2 + (y - proj_y) ** 2
@@ -600,7 +611,16 @@ def curvilinear_coords(x, y, points):
             best_d2 = d2
             best_s = cum + t_param * seg_len
             # Signed perpendicular distance: cross(segment_dir, point - A).
-            best_t = (dx * (y - ay) - dy * (x - ax)) / seg_len
+            raw_t = (dx * (y - ay) - dy * (x - ax)) / seg_len
+            if clamped:
+                # Past this segment's own start/end: report true distance to
+                # that clamped point, not distance-to-the-infinite-line, so
+                # the polyline's open ends taper into a rounded cap instead
+                # of extending indefinitely along the segment's direction.
+                dist = math.sqrt(d2)
+                best_t = dist if raw_t >= 0.0 else -dist
+            else:
+                best_t = raw_t
         cum += seg_len
     return best_s, best_t
 
