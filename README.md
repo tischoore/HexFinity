@@ -26,6 +26,7 @@ All linear inputs are expressed in **millimeters**, and mesh vertices are emitte
 - [Terrain objects (import & snap)](#terrain-objects-import--snap)
 - [Flora](#flora)
 - [Procedural surface textures](#procedural-surface-textures)
+- [Path Feature](#path-feature)
 - [Export STLs](#export-stls)
 - [Slice to G-code (Bambu Studio)](#slice-to-g-code-bambu-studio)
 - [UI](#ui)
@@ -313,6 +314,41 @@ silently picking one piece — lower the angle tolerance or click elsewhere.
 See **[docs/procedural_surfaces.md](docs/procedural_surfaces.md)** for the
 displacement workflow and **[docs/boulder-field.md](docs/boulder-field.md)** for the
 scatter kind (algorithm, scene tree, merge-for-print, and manual checklist).
+
+## Path Feature
+
+Path Feature draws open polylines on a tile — footpaths, tracks, roads, and rivers — that carve or texture the top surface along the line. Unlike a Procedural Surface region (a closed loop with a filled interior), a Path Feature is a 1D line with a width, so it always affects a corridor rather than an area.
+
+### Drawing a line
+
+Press **Draw Feature** to start a modal tool. Waypoints are placed on a flat plane one **Man Height** above the tile's tallest corner — not raycast onto the mesh — so a line can be planned in the air over uneven terrain before it's carved:
+
+- Left-click places a waypoint.
+- A free click that would land outside the tile's own hex boundary is rejected outright, so a line can never wander onto a neighbour's footprint.
+- **Edge Snap** points — each hex edge's two corners plus `Edge Snap − 2` evenly spaced interior points, checked in screen-space so it's zoom-independent — plus every waypoint of the tile's already-drawn lines are checked before falling back to a free point. Snapping on the very first click just starts the line there; snapping on any later click both snaps to it and immediately commits and ends the line, so a line always meets an edge or another line at an exact, reproducible point.
+- Right-click or Enter finishes the line manually (minimum 2 points).
+
+A committed line appears in the **Path Feature** list (name + type), editable/removable like a region. Every field auto-recarves the tile — there is no separate Generate step.
+
+### Feature types
+
+The **Type** dropdown picks one of four shapes, each with its own scale-aware defaults (`path_features.apply_type_defaults`, driven by Man Height):
+
+- **Simple / Gravel / Paved Road** — texture-driven grooves, each with a fixed **Width**, **Depth**, and **Repeat** (texture tiling distance along the line). Type alone picks the texture — there is no separate Texture dropdown: Simple carves a flat, textureless groove; Gravel and Paved Road sample a brick-gravel / stone-road grayscale heightmap along the line's own curvilinear coordinate (distance-along / distance-across), using the same convention as every other heightmap displacement in HexFinity — **white = raised, mid-gray = unchanged, black = carved**. **Local Subdivision** (auto-filled by Type: 0 for Simple, 2 for Gravel/Paved Road) adds extra mesh density inside just that line's own corridor.
+- **River** — a structural channel, not a texture groove: a flat bed of the given **Width**, with embankments sloping outward at **Embankment Angle** (10–90°) down to **Depth** — specified in map **Levels**, not mm, so it lines up with the corner-height system. **Embankment Variation (mm)** gives each bank a natural wander instead of a dead-straight offset. **Bottom** is either flat or **Tessendorf's FFT** — a static ripple baked from Blender's real Ocean modifier, confined to the flat bed and tapered to zero at the bank line. **Local Subdivision** (auto-filled to 3) works the same as the texture types. See *River cross-tile continuity* below for **Preserve Edge**.
+
+### Layering
+
+Path Feature carves **on top of** everything else — Surface Texture, Procedural Surface regions, and any flora/terrain pad — matching its position as the topmost layer in the panel stack. Multiple overlapping lines apply in sequence, each adding its own offset to whatever the previous one left.
+
+### River cross-tile continuity
+
+Like every other displacement in HexFinity, a river's carve fades to exactly 0 at the tile rim by default (**Preserve Edge** on) so two independently-built neighbouring tiles still meet edge-to-edge. To make a river visually continue into the next tile, either:
+
+- Lower the shared corner **Level(s)** at the crossing edge to at least the river's own **Depth** (in levels), on both tiles — the ambient terrain the rim-fade reverts to then already sits at the river's bed depth, so the seam reads as continuous; or
+- Turn **Preserve Edge** off on the river — a per-line, opt-in escape hatch. The carve then reaches the rim at a fully deterministic depth/bank position instead of fading, and the embankment wander is forced to 0 right at the rim. Draw a matching river (same edge waypoint, Width, Depth, Embankment Angle, also with Preserve Edge off) on the neighbouring tile and the two channels line up with no corner-Level changes needed.
+
+Turning Preserve Edge off never affects the tile's own manifold validity — only whether it visually/physically matches its neighbour, which becomes the user's responsibility.
 
 ## Export STLs
 
