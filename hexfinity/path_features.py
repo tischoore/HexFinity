@@ -19,17 +19,23 @@ matching every other generative feature in the codebase.
 
 RIVER is a fourth feature_type with its own field shape (depth in map
 Levels, an embankment angle + variation, a Flat/Tessendorf's-FFT bottom
-style, no texture/repeat) and its own carve math
+style, a Preserve Edge toggle, no texture/repeat) and its own carve math
 (tree_pads.refine_and_carve_river) — see _RIVER_DEFAULTS/path_specs()
-below. Like every other pad/path/brush displacement in this codebase, a
-river's depth fades to exactly 0 at the tile's rim edge (the invariant that
-keeps two independently-built neighbouring tiles' shared edges matching).
-For a river meant to continue into a neighbouring tile, lower the shared
-corner Level(s) at the crossing edge to at least the river's own
-depth_levels on both tiles (the per-corner Level sliders already
-auto-propagate to the shared neighbour corner) — this makes the ambient
-terrain the rim-fade reverts to already sit at the river's bed depth, so
-the seam reads as continuous with no special-case code required.
+below. By default (Preserve Edge on), like every other pad/path/brush
+displacement in this codebase, a river's depth fades to exactly 0 at the
+tile's rim edge (the invariant that keeps two independently-built
+neighbouring tiles' shared edges matching). A river meant to continue into
+a neighbouring tile then needs the shared corner Level(s) at the crossing
+edge lowered to at least the river's own depth_levels on both tiles (the
+per-corner Level sliders already auto-propagate to the shared neighbour
+corner) — this makes the ambient terrain the rim-fade reverts to already
+sit at the river's bed depth, so the seam reads as continuous with no
+special-case code required. Turning a river's own Preserve Edge off is the
+other way to get there: with a waypoint on the hex edge, it carves right up
+to the rim with a deterministic (unvaried) embankment there instead of
+fading back to ambient, so a matching river on the neighbouring tile (same
+waypoint position, same width/depth/angle, also Preserve Edge off) can
+continue it directly, without touching corner Levels at all.
 """
 
 import math
@@ -94,6 +100,7 @@ _RIVER_DEFAULTS = {
     "embankment_angle_deg": 45.0,
     "embankment_variation_factor": 0.5,
     "river_bottom_style": "NONE",
+    "preserve_edge": True,
 }
 
 
@@ -114,6 +121,7 @@ def apply_type_defaults(feature, man_height_mm):
         feature.embankment_variation_mm = (
             d["embankment_variation_factor"] * man_height_mm)
         feature.river_bottom_style = d["river_bottom_style"]
+        feature.preserve_edge = d["preserve_edge"]
         return
     d = _TYPE_DEFAULTS.get(feature.feature_type)
     if d is None:
@@ -308,6 +316,13 @@ def path_specs(tile_obj):
     type-select time, then freely hand-editable in mm), a river's depth is
     always re-derived from the current scene-wide Level Height, the same
     way corner heights are never resolved-once either.
+
+    `preserve_edge` (default True, mirrors the Terrain Brush's own
+    Preserve Edge) is passed straight through: `tree_pads.
+    refine_and_carve_river` damps the carve near the tile rim when it's on,
+    or carves right up to the rim with a deterministic (unvaried)
+    embankment when it's off, so a matching river drawn on the
+    neighbouring tile can continue it.
     """
     tile = tile_obj.hexfinity_tile
     map_props = bpy.context.scene.hexfinity_map
@@ -326,6 +341,7 @@ def path_specs(tile_obj):
                 "embankment_variation_mm": feature.embankment_variation_mm,
                 "river_bottom_style": feature.river_bottom_style,
                 "local_subdiv": feature.local_subdiv,
+                "preserve_edge": feature.preserve_edge,
                 "seed": seed,
             }
             if feature.river_bottom_style == 'TESSENDORF_FFT':

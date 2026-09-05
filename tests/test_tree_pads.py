@@ -12,6 +12,7 @@ from mesh_builder import (
     FLORA_NOTCH_DEPTH_MM,
     FLORA_PIN_LENGTH_MM,
     FLORA_NOTCH_MIN_FLOOR_MM,
+    rim_edge_distance,
 )
 from manifold_check import assert_two_manifold
 import tree_pads
@@ -1239,3 +1240,132 @@ def test_river_ripple_tapers_to_zero_at_bed_edge():
     d = half_bed - 1e-6
     taper = tree_pads._smoothstep(1.0 - d / half_bed)
     assert taper == pytest.approx(0.0, abs=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# River path feature — "preserve_edge" (default True; mirrors
+# HexFinityBrushProperties.preserve_edge).
+
+def _edge_probe_mesh(target_x, target_y):
+    """A minimal flat (z=0) triangle fan with (target_x, target_y) as its
+    own vertex 0, for isolated rim-behaviour tests that don't need a full
+    hex tile — refine_and_carve_river's displacement loop is per-vertex,
+    so this only needs to contain the probe point as an actual vertex, not
+    a topologically realistic patch."""
+    verts = [
+        (target_x, target_y, 0.0),
+        (target_x + 80.0, target_y, 0.0),
+        (target_x + 80.0, target_y - 80.0, 0.0),
+        (target_x, target_y - 80.0, 0.0),
+        (target_x - 80.0, target_y - 80.0, 0.0),
+        (target_x - 80.0, target_y, 0.0),
+    ]
+    faces = [(0, 1, 2), (0, 2, 3), (0, 3, 4), (0, 4, 5)]
+    return verts, faces
+
+
+def test_river_preserve_edge_default_is_true():
+    verts, faces, protected, river = _river_grid()
+    assert "preserve_edge" not in river
+    # Missing key must default to True (current/original rim-preserving
+    # behaviour) so every pre-existing river spec/test stays backward
+    # compatible without needing the new field.
+    tree_pads.refine_and_carve_river(
+        verts, faces, protected, [river],
+        diameter_mm=1000.0, base_thickness_mm=-1e9)  # must not raise
+
+
+def test_river_preserve_edge_false_reaches_rim_corner():
+    R = 220.0 / 2.0
+    diameter = 220.0
+    lh = 10.0
+    base = 10.0
+    levels = (0, 1, 2, 3, 4, 5)
+    # Corner 3 sits at level 3 (z = base + 30mm), giving headroom above
+    # base_thickness_mm's safety floor to actually observe a 3mm carve —
+    # corner 0 (level 0, z == base_thickness_mm exactly) would have the
+    # carve immediately clamped back up by that floor regardless of
+    # preserve_edge, same "needs headroom" requirement every other carve
+    # test in this file already follows.
+    corner_i = 3
+    angle_i = math.pi / 3.0 - corner_i * (math.pi / 3.0)
+    cx, cy = R * math.cos(angle_i), R * math.sin(angle_i)
+    corner_z = base + levels[corner_i] * lh
+
+    def _corner_vertex_z(preserve_edge):
+        river = {
+            "kind": "river",
+            "points": [(0.0, 0.0), (cx, cy)],
+            "width_mm": 6.0, "depth_mm": 3.0,
+            "embankment_angle_deg": 45.0, "embankment_variation_mm": 2.0,
+            "river_bottom_style": "NONE", "local_subdiv": 3, "seed": 3,
+            "preserve_edge": preserve_edge,
+        }
+        verts, faces = build_hex_tile(
+            diameter_mm=diameter, level_height_mm=lh, base_thickness_mm=base,
+            corner_levels=levels, center_level=None, smoothness_passes=3,
+            path_features=[river],
+        )
+        assert_two_manifold(verts, faces)
+        match = [v for v in verts
+                 if abs(v[0] - cx) < 1e-6 and abs(v[1] - cy) < 1e-6]
+        assert match, "corner 0 vertex missing"
+        return match[0][2]
+
+    z_preserved = _corner_vertex_z(preserve_edge=True)
+    z_not_preserved = _corner_vertex_z(preserve_edge=False)
+    assert z_preserved == pytest.approx(corner_z, abs=1e-9), \
+        "Preserve Edge on (default) must leave a corner exactly on the rim untouched"
+    assert z_not_preserved == pytest.approx(corner_z - 3.0, abs=1e-3), \
+        "Preserve Edge off must let the carve reach full depth at the rim corner"
+
+
+def test_river_preserve_edge_false_bank_deterministic_at_rim():
+    diameter = 220.0
+    apothem = (diameter / 2.0) * math.sqrt(3.0) / 2.0
+    target_x, target_y = 0.0, apothem
+    assert rim_edge_distance(target_x, target_y, diameter) == pytest.approx(0.0, abs=1e-6)
+
+    half_bed = 3.0
+    depth_mm = 6.0
+    angle_deg = 45.0
+    nominal_run = depth_mm / math.tan(math.radians(angle_deg))  # == 6.0
+    off = half_bed + nominal_run / 2.0  # == 6.0, inside the ramp
+    centerline_y = apothem - off
+    expected_w = 1.0 - (off - half_bed) / nominal_run  # == 0.5
+    expected_z_not_preserved = expected_w * (0.0 - depth_mm)  # ref_z is 0 here
+
+    def _probe_z(seed, preserve_edge):
+        verts, faces = _edge_probe_mesh(target_x, target_y)
+        river = {
+            "points": [(-40.0, centerline_y), (40.0, centerline_y)],
+            "width_mm": half_bed * 2.0, "depth_mm": depth_mm,
+            "embankment_angle_deg": angle_deg,
+            "embankment_variation_mm": 4.0,
+            "river_bottom_style": "NONE", "local_subdiv": 0,
+            "seed": seed, "preserve_edge": preserve_edge,
+        }
+        tree_pads.refine_and_carve_river(
+            verts, faces, set(), [river],
+            diameter_mm=diameter, base_thickness_mm=-1e9)
+        return verts[0][2]
+
+    z_true = _probe_z(seed=1, preserve_edge=True)
+    assert z_true == pytest.approx(0.0, abs=1e-6), \
+        "Preserve Edge on must leave a point exactly on the rim untouched"
+
+    z_false_seed1 = _probe_z(seed=1, preserve_edge=False)
+    z_false_seed2 = _probe_z(seed=99, preserve_edge=False)
+    assert z_false_seed1 == pytest.approx(expected_z_not_preserved, abs=1e-6)
+    assert z_false_seed2 == pytest.approx(expected_z_not_preserved, abs=1e-6)
+    assert z_false_seed1 == pytest.approx(z_false_seed2, abs=1e-9), \
+        "the bank position/depth exactly on the rim must be seed-independent " \
+        "when Preserve Edge is off (Embankment Variation's noise is " \
+        "suppressed right at the edge)"
+
+
+def test_river_preserve_edge_false_tile_is_manifold():
+    river = dict(CENTER_RIVER[0])
+    river["preserve_edge"] = False
+    verts, faces = _sloped_tile(path_features=[river])
+    assert_two_manifold(verts, faces)

@@ -860,8 +860,8 @@ def refine_and_carve_river(verts, faces, protected_edges, rivers,
 
     `rivers` is a list of `{"points", "width_mm", "depth_mm",
     "embankment_angle_deg", "embankment_variation_mm", "river_bottom_style",
-    "local_subdiv", "seed"}` dicts (tile-local mm/degrees), plus
-    `"pixels"`/`"tex_width"`/`"tex_height"`/`"ripple_patch_mm"` when
+    "local_subdiv", "preserve_edge", "seed"}` dicts (tile-local mm/degrees),
+    plus `"pixels"`/`"tex_width"`/`"tex_height"`/`"ripple_patch_mm"` when
     `river_bottom_style == "TESSENDORF_FFT"` — a static ripple height grid
     baked from Blender's Ocean modifier by path_features.py, normalized to
     [0, 1] the same way a loaded PNG heightmap is, and sampled here with the
@@ -892,17 +892,26 @@ def refine_and_carve_river(verts, faces, protected_edges, rivers,
         given `s`. `new_z = old_z + w * (target_z - old_z)` — algebraically
         identical to lerping toward a separately-defined ramp target, so no
         extra target function is needed.
-      - The mandatory rim-fade (`rim_edge_distance`) still applies, using
-        the local embankment run itself as the fade distance. This is the
-        same hard structural invariant every pad/path/brush displacement in
-        this codebase relies on — a tile's rim vertices must be fully
-        determined by the shared corner-level control mesh so two
-        independently-built neighbouring tiles' seams match — not
-        something to special-case away for rivers. A river meant to
-        continue into a neighbouring tile needs the shared corner Level(s)
-        at the crossing edge lowered to match `depth_mm`/`level_height_mm`
-        on both tiles (see path_features.py's module docstring); that is a
-        workflow, not something this function can or should compensate for.
+      - `preserve_edge` (default True) controls the rim behaviour, mirroring
+        the Terrain Brush's own Preserve Edge. When True, the mandatory
+        rim-fade (`rim_edge_distance`) applies, using the local embankment
+        run itself as the fade distance — the same hard structural
+        invariant every pad/path/brush displacement in this codebase relies
+        on by default (a tile's rim vertices are fully determined by the
+        shared corner-level control mesh so two independently-built
+        neighbouring tiles' seams match). A river meant to continue into a
+        neighbouring tile this way needs the shared corner Level(s) at the
+        crossing edge lowered to match `depth_mm`/`level_height_mm` on both
+        tiles (see path_features.py's module docstring) — a workflow, not
+        something this function compensates for. When `preserve_edge` is
+        False instead, the rim-fade is skipped entirely (the carve reaches
+        full depth right up to the rim vertices) and the embankment-
+        variation noise term is separately faded to exactly 0 at the rim
+        (over the same `max_reach_mm` band), so the bank position at the
+        very edge is the deterministic `nominal_run_mm` — letting a
+        matching River drawn on the neighbouring tile, with a waypoint at
+        the same physical edge point and the same width/depth/angle,
+        continue it directly instead of needing the corner-Level workflow.
       - When `river_bottom_style == "TESSENDORF_FFT"`, the baked ripple is
         added to the bed target strictly within `d <= half_bed`, tapered to
         0 at the bed/embankment boundary so it stays continuous with the
@@ -945,6 +954,7 @@ def refine_and_carve_river(verts, faces, protected_edges, rivers,
             "tex_height": r.get("tex_height", 0),
             "ripple_patch_mm": r.get("ripple_patch_mm")
                 or max(r["width_mm"] * 2.0, 50.0),
+            "preserve_edge": bool(r.get("preserve_edge", True)),
         })
 
     # Refinement corridor: same shape refine_and_displace_along_path builds,
@@ -977,11 +987,25 @@ def refine_and_carve_river(verts, faces, protected_edges, rivers,
             half_bed = ctx["half_bed"]
             s, t = curvilinear_coords(x, y, ctx["points"])
             d = abs(t)
+            rim = rim_edge_distance(x, y, diameter_mm)
 
             side_offset = 1.0e6 if t >= 0.0 else -1.0e6
             noise = procedural_surfaces._value_noise(
                 s, side_offset, ctx["noise_pitch_mm"], ctx["seed"])
-            run = max(0.0, ctx["nominal_run_mm"] + noise * ctx["variation_mm"])
+            if ctx["preserve_edge"]:
+                edge_noise_factor = 1.0
+            else:
+                # Preserve Edge off: fade Embankment Variation's noise term
+                # to exactly 0 at the rim (not the whole weight — see
+                # below), so the bank position right at the edge is the
+                # deterministic nominal_run_mm, matching whatever a
+                # same-parameters River on the neighbouring tile computes
+                # at that same physical point.
+                reach = ctx["max_reach_mm"]
+                edge_noise_factor = (0.0 if rim < 0.0
+                                     else (1.0 if rim > reach else rim / reach))
+            run = max(0.0, ctx["nominal_run_mm"]
+                      + noise * ctx["variation_mm"] * edge_noise_factor)
             bank_edge = half_bed + run
 
             if d <= half_bed:
@@ -991,11 +1015,15 @@ def refine_and_carve_river(verts, faces, protected_edges, rivers,
             else:
                 continue
 
-            fade_dist = max(run, 1e-6)
-            rim = rim_edge_distance(x, y, diameter_mm)
-            w *= 0.0 if rim < 0.0 else (1.0 if rim > fade_dist else rim / fade_dist)
-            if w <= 0.0:
-                continue
+            if ctx["preserve_edge"]:
+                fade_dist = max(run, 1e-6)
+                w *= 0.0 if rim < 0.0 else (1.0 if rim > fade_dist else rim / fade_dist)
+                if w <= 0.0:
+                    continue
+            # Preserve Edge off: no rim damping at all — the carve reaches
+            # full depth right up to (and including) the rim vertices, so
+            # it can continue into whatever a matching River on the
+            # neighbouring tile carves at the same physical edge.
 
             ref_z = _interp_table(ctx["centerline_table"], s)
             target_z = ref_z - ctx["depth_mm"]

@@ -378,10 +378,17 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
                 sub.prop(feature, "embankment_variation_mm")
                 sub.prop(feature, "river_bottom_style")
                 sub.prop(feature, "local_subdiv")
-                box.label(text="To continue into a neighbouring tile, "
-                                "lower the shared corner Level(s) at the "
-                                "crossing edge to at least Depth.",
-                          icon='INFO')
+                sub.prop(feature, "preserve_edge")
+                if feature.preserve_edge:
+                    box.label(text="To continue into a neighbouring tile, "
+                                    "lower the shared corner Level(s) at "
+                                    "the crossing edge to at least Depth.",
+                              icon='INFO')
+                else:
+                    box.label(text="Edge not preserved: draw a matching "
+                                    "River on the neighbouring tile at the "
+                                    "same edge point to continue it.",
+                              icon='INFO')
             else:
                 sub.prop(feature, "depth_mm")
                 sub.prop(feature, "repeat_mm")

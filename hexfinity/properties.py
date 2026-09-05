@@ -716,6 +716,19 @@ class HexFinityPathFeature(bpy.types.PropertyGroup):
         default='NONE',
         update=_on_path_feature_update,
     )
+    preserve_edge: bpy.props.BoolProperty(
+        name="Preserve Edge",
+        description="RIVER only — damp the carve to ~0 near a hex rim "
+                    "(and suppress Embankment Variation there) so shared "
+                    "edges/corners stay put, same as the Terrain Brush's "
+                    "own Preserve Edge. Turn OFF, with a waypoint on the "
+                    "hex edge, to carve exactly to the rim with a "
+                    "deterministic (no-variation) bank there, so a "
+                    "matching River drawn on the neighbouring tile can "
+                    "continue it seamlessly",
+        default=True,
+        update=_on_path_feature_update,
+    )
     points: bpy.props.CollectionProperty(type=HexFinitySurfacePoint)
 
 
