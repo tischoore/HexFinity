@@ -229,6 +229,18 @@ A terrain object is only ever parented to (and eligible for a plateau on) the on
 
 Clicking it shows a confirmation dialog with the exact number of pieces the cut will produce before anything happens; confirming deletes the original object, replaces it with one new terrain object per hex it actually overlapped, and immediately regenerates the plateau on every affected hex. Any part of the model that falls outside every hex tile is discarded — it's simply never included in any piece, not kept as an orphaned leftover. If the object already fits within a single hex, the button reports that there's nothing to split and makes no change.
 
+### Conform to Hex (manual lattice)
+
+The plateau system above reshapes the *hex* to match a terrain object's flat base; **Conform to Hex** does the reverse — it lets you bend the *terrain object itself* onto the hex's own generated surface by hand, for a model whose base isn't flat (a sloped landscape scan, a hill, a ridge) rather than sitting on a flat footprint. There's no automatic surface-matching solve (an earlier version tried a one-click auto-tilt; real terrain scans aren't reliably a simple tilted plane, so it's now entirely manual, driven by Blender's own Lattice editing).
+
+It's shown on the dropped-object panel's **Conform to Hex (Lattice)** box:
+
+1. Set the **Lattice Resolution U/V/W** fields to how many control points you want along each axis before you start — a 2×2×2 lattice can only ever tilt the whole object rigidly; raise U/V (and W, if you need a genuine vertical warp rather than a whole column moving together) for finer local bending. If the object spans more than one hex, split it first (**Split by Hex Boundaries**, above) — Apply only ever acts on a single hex.
+2. **Edit Lattice** builds a Lattice around the object at that resolution, binds it with a Lattice modifier, and drops you straight into Edit Mode on it. Drag its control points with Blender's normal tools (box-select, `G`, proportional editing, etc.) and watch the mesh deform live underneath.
+3. When it looks right, Tab back to Object Mode and click **Apply** — it bakes the deformation into the mesh, removes the temporary Lattice, and regenerates the tile's plateau automatically so the hex surface reflects the new shape. If you want to back out instead, **Cancel** removes the Lattice without baking anything, reverting the mesh to exactly its pre-edit shape.
+
+The Apply/Cancel buttons stay reachable from the sidebar even while the Lattice itself is the active/selected object (the normal state once you've Tabbed into Edit Mode on it).
+
 ## Flora
 
 The Flora box plants real tree meshes onto a tile. A **Tree Type** dropdown (currently just "Leafy tree") selects which asset folder to plant from; **Scale Variation** sets a +/- percentage jitter around 1.0 applied to each tree; **Flatten Base** (on by default) tessellates a small flat pad into the terrain under each tree's footprint, blended smoothly back into the surrounding surface over **Pad Blend (mm)**, so a tree's flat base cut sits flush and level even on sloped ground instead of poking through on the uphill side and floating on the downhill side; **Penetration** sets a small guaranteed sink (mm) into that pad so the base doesn't z-fight or make a zero-thickness contact. Pressing **Flora** starts a modal tool: move the mouse over any generated tile and a yellow circle-with-center-dot tracks the raycast hit point live; left-click plants a tree there — a species is chosen at random from the current Tree Type's asset folder, rotated a random amount around its vertical axis, and scaled by the random variation factor. Multiple trees can be planted in one activation. While it's running, the sidebar swaps the button for a "Flora active — Esc / RMB to close" indicator (it can't be a clickable Close button — a running modal operator owns all input, so panel buttons are unreachable until you exit); right-click or `Esc` closes it and restores the button.
@@ -523,7 +535,17 @@ HexFinity
 │      │                                count first — see Terrain objects above)
 │      ├─ Terrain snap to model  (int, 0 = off; enables the plateau)
 │      ├─ Snap damping (mm)
-│      └─ [ Regenerate Plateau ]  (greyed out until Terrain snap to model > 0)
+│      ├─ [ Regenerate Plateau ]  (greyed out until Terrain snap to model > 0)
+│      └─ Conform to Hex (Lattice)
+│          ├─ Lattice Resolution U/V/W  (shown before editing starts)
+│          ├─ [ Edit Lattice ]       (shown before editing; adds + enters the lattice)
+│          └─ [ Apply ] [ Cancel ]   (shown while editing; Apply greyed + message
+│                                     if the object still spans more than one hex)
+│
+├─ If active object is a Conform Lattice being edited:
+│  └─ Editing Lattice: <terrain object name>
+│      └─ [ Apply ] [ Cancel ]      (mirrors the row above, reachable while the
+│                                     lattice itself is the active/selected object)
 │
 └─ Export                      (map-wide; always shown once a map exists)
     └─ [ Export Tiles to STL ] (directory dialog → one STL per distinct tile + manifest)

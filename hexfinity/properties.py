@@ -894,3 +894,35 @@ class HexFinityTerrainProperties(bpy.types.PropertyGroup):
         subtype='NONE',
         update=_on_terrain_snap_update,
     )
+    has_conform_lattice: bpy.props.BoolProperty(
+        name="Conform Lattice Active",
+        description="A Conform-to-Hex Lattice + modifier currently sit on "
+                    "this object, unapplied — the user is manually bending "
+                    "it via hexfinity.start_conform_lattice. Cleared by "
+                    "hexfinity.apply_conform_lattice (bakes the deformation) "
+                    "or hexfinity.cancel_conform_lattice (discards it). "
+                    "UI-only flag — mirrors HexFinityProperties.is_baked.",
+        default=False,
+    )
+    lattice_res_u: bpy.props.IntProperty(
+        name="Lattice Resolution U",
+        description="Control points along the Conform Lattice's U axis, "
+                    "read once by hexfinity.start_conform_lattice when it "
+                    "builds the lattice. More points allow bending the "
+                    "object locally rather than just tilting it as a whole.",
+        min=2, max=8, default=3,
+    )
+    lattice_res_v: bpy.props.IntProperty(
+        name="Lattice Resolution V",
+        description="Control points along the Conform Lattice's V axis. "
+                    "See lattice_res_u.",
+        min=2, max=8, default=3,
+    )
+    lattice_res_w: bpy.props.IntProperty(
+        name="Lattice Resolution W",
+        description="Control points along the Conform Lattice's W (vertical) "
+                    "axis. Kept low by default so a horizontal column of the "
+                    "mesh moves as one, but can be raised for a genuine "
+                    "vertical warp. See lattice_res_u.",
+        min=2, max=8, default=2,
+    )

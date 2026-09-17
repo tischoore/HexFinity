@@ -11,7 +11,7 @@ from .mesh_builder import (build_hex_tile, clamp_center_to_hexagon,
                            top_vertex_count)
 from .manifold_check import assert_two_manifold, ManifoldError
 from .map import (SHARED_CORNERS, neighbour_coord, tile_world_xy, find_tile,
-                  clamp_level, hex_prism_verts_faces)
+                  clamp_level, hex_prism_verts_faces, point_in_hex)
 from .tile_export import (is_custom_tile, manifest_rows, short_hash,
                           tile_filename, tile_geometry_hash,
                           flora_placement_filename, flora_manifest_rows)
@@ -1486,6 +1486,37 @@ class HEXFINITY_OT_unbake_tile(bpy.types.Operator):
 SPLIT_PRISM_MARGIN_MM = 5.0  # extra Z clearance so the cut plane never grazes
 
 
+def _terrain_object_within_own_hex(map_props, obj):
+    """True if `obj`'s world XY bounding box stays entirely inside its own
+    parent tile's hex boundary — a cheap, geometrically exact-enough check
+    for gating `hexfinity.apply_conform_lattice` (and the matching panel
+    warning), via `map.point_in_hex` on the bbox's 4 corners: the hex is
+    convex, so if all 4 corners of the (axis-aligned) bbox are inside it,
+    every point of the bbox is too, since the bbox is exactly the convex
+    hull of those corners.
+
+    Deliberately NOT `_hex_split_candidates` (see its own docstring): that
+    function compares against a `diameter_mm`-wide square centered on
+    EVERY tile, as a cheap *pre-filter* meant to be followed by a real
+    boolean-cut test — neighbouring tiles are only `1.5 * R` apart while
+    each tile's own square already extends `R` from its center, so almost
+    any terrain object filling a meaningful chunk of its own hex (the
+    normal case for something worth conforming) trips a false "spans
+    multiple hexes" positive against it. This function instead tests the
+    object against its own tile's actual hex polygon, not a neighbour's
+    square, so a well-fitting object is never flagged.
+    """
+    tile = obj.parent
+    if tile is None:
+        return False
+    bmin, bmax = _world_bbox([obj])
+    tx, ty = tile.location.x, tile.location.y  # tiles are translation-only
+    diameter = map_props.diameter_mm
+    corners = ((bmin.x - tx, bmin.y - ty), (bmax.x - tx, bmin.y - ty),
+              (bmin.x - tx, bmax.y - ty), (bmax.x - tx, bmax.y - ty))
+    return all(point_in_hex(x, y, diameter) for x, y in corners)
+
+
 def _hex_split_candidates(map_props, terrain_obj):
     """Generated tiles whose hex bounding square overlaps `terrain_obj`'s
     world XY bbox — a cheap pre-filter (no boolean math) so the caller can
@@ -1603,7 +1634,8 @@ class HEXFINITY_OT_split_terrain_by_hex(bpy.types.Operator):
         if not context.scene.hexfinity_map.is_generated:
             return False
         obj = context.active_object
-        return obj is not None and _is_terrain_object(obj)
+        return (obj is not None and _is_terrain_object(obj)
+                and not obj.hexfinity_terrain.has_conform_lattice)
 
     def invoke(self, context, event):
         obj = context.active_object

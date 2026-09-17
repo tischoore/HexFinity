@@ -89,6 +89,26 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
     def _draw_tile_section(self, context, layout, scene, map_props):
         # ---- Per-tile section (only when a HexFinity tile is active) -----
         obj = context.active_object
+
+        # A Lattice object is the active object while the user is mid-edit on
+        # a Conform Lattice (Tabbing into Edit Mode makes it active) — keep
+        # Apply/Cancel reachable from there rather than losing the panel.
+        if obj is not None and obj.type == 'LATTICE':
+            from . import terrain_lock
+            target = terrain_lock.conform_target_for_lattice(obj)
+            if target is not None:
+                box = layout.box()
+                box.label(text=f"Editing Lattice: {target.name}",
+                         icon='OUTLINER_OB_LATTICE')
+                box.label(text="Drag lattice points (Edit Mode), then "
+                              "Apply or Cancel.", icon='INFO')
+                row = box.row(align=True)
+                row.operator("hexfinity.apply_conform_lattice",
+                             text="Apply", icon='CHECKMARK')
+                row.operator("hexfinity.cancel_conform_lattice",
+                             text="Cancel", icon='X')
+                return
+
         if obj is None or not obj.hexfinity_tile.is_generated:
             # A non-tile mesh is a dropped terrain object — offer to re-seat it
             # onto the surface of whichever hex it currently sits over.
@@ -109,6 +129,31 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
                 if obj.hexfinity_terrain.snap_mm <= 0:
                     box.label(text="Raise Terrain snap to model above 0 first.",
                              icon='INFO')
+
+                from . import operators
+                tprops = obj.hexfinity_terrain
+                lock_box = box.box()
+                lock_box.label(text="Conform to Hex (Lattice)",
+                              icon='OUTLINER_OB_LATTICE')
+                if not tprops.has_conform_lattice:
+                    col = lock_box.column(align=True)
+                    col.prop(tprops, "lattice_res_u")
+                    col.prop(tprops, "lattice_res_v")
+                    col.prop(tprops, "lattice_res_w")
+                    lock_box.operator("hexfinity.start_conform_lattice",
+                                      text="Edit Lattice", icon='MOD_LATTICE')
+                else:
+                    lock_box.label(text="Editing — drag lattice points, "
+                                       "then Apply or Cancel.", icon='INFO')
+                    row = lock_box.row(align=True)
+                    row.operator("hexfinity.apply_conform_lattice",
+                                 text="Apply", icon='CHECKMARK')
+                    row.operator("hexfinity.cancel_conform_lattice",
+                                 text="Cancel", icon='X')
+                    if not operators._terrain_object_within_own_hex(map_props, obj):
+                        lock_box.label(
+                            text="Spans multiple hexes — Apply disabled; run "
+                                "Split by Hex Boundaries first.", icon='ERROR')
             else:
                 layout.label(text="Select a HexTile to edit its corners.")
             return
