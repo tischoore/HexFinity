@@ -483,3 +483,71 @@ def test_find_tile_handles_missing_root_collection():
     scene = _FakeScene([])
     scene.hexfinity_map.root_collection = None
     assert hm.find_tile(scene, 0, 0) is None
+
+
+# ---------------------------------------------------------------------------
+# find_connected_component
+
+def test_find_connected_component_exact_point_match():
+    nodes = {"a": [(0.0, 0.0)], "b": [(0.0, 0.0)]}
+    assert hm.find_connected_component(nodes, "a") == {"a", "b"}
+
+
+def test_find_connected_component_epsilon_close_match():
+    nodes = {"a": [(0.0, 0.0)], "b": [(0.0005, 0.0)]}
+    assert hm.find_connected_component(nodes, "a", epsilon=0.01) == {"a", "b"}
+
+
+def test_find_connected_component_beyond_epsilon_not_connected():
+    nodes = {"a": [(0.0, 0.0)], "b": [(1.0, 0.0)]}
+    assert hm.find_connected_component(nodes, "a", epsilon=0.01) == {"a"}
+
+
+def test_find_connected_component_transitive_chain():
+    # A shares a point with B, B with C, C with D -- none of A/B/C/D share a
+    # point directly with D except through the chain.
+    nodes = {
+        "a": [(0.0, 0.0)],
+        "b": [(0.0, 0.0), (1.0, 0.0)],
+        "c": [(1.0, 0.0), (2.0, 0.0)],
+        "d": [(2.0, 0.0)],
+    }
+    assert hm.find_connected_component(nodes, "a") == {"a", "b", "c", "d"}
+
+
+def test_find_connected_component_isolated_node_returns_itself():
+    nodes = {"a": [(0.0, 0.0)], "b": [(99.0, 99.0)]}
+    assert hm.find_connected_component(nodes, "a") == {"a"}
+
+
+def test_find_connected_component_no_points_isolated():
+    nodes = {"a": [(0.0, 0.0)], "b": []}
+    assert hm.find_connected_component(nodes, "a") == {"a"}
+
+
+def test_find_connected_component_cycle_terminates():
+    # A 3-cycle: A-B, B-C, C-A, each pair sharing a distinct point. Must
+    # terminate (no infinite loop) and return exactly the three nodes.
+    nodes = {
+        "a": [(0.0, 0.0), (2.0, 2.0)],
+        "b": [(0.0, 0.0), (1.0, 1.0)],
+        "c": [(1.0, 1.0), (2.0, 2.0)],
+    }
+    assert hm.find_connected_component(nodes, "a") == {"a", "b", "c"}
+
+
+def test_find_connected_component_fork_shared_by_three():
+    # A, B, and C all meet at the same single point -- a fork/join.
+    nodes = {
+        "a": [(0.0, 0.0), (-1.0, 0.0)],
+        "b": [(0.0, 0.0), (1.0, 0.0)],
+        "c": [(0.0, 0.0), (0.0, 1.0)],
+    }
+    assert hm.find_connected_component(nodes, "a") == {"a", "b", "c"}
+
+
+def test_find_connected_component_does_not_mutate_input():
+    nodes = {"a": [(0.0, 0.0)], "b": [(0.0, 0.0)]}
+    snapshot = {k: list(v) for k, v in nodes.items()}
+    hm.find_connected_component(nodes, "a")
+    assert nodes == snapshot

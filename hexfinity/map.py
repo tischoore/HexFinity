@@ -224,3 +224,39 @@ def find_tile(scene, q, r):
         if props.coord_q == q and props.coord_r == r:
             return obj
     return None
+
+
+def find_connected_component(nodes, start, epsilon=1e-3):
+    """BFS over an undirected "shares a point" graph.
+
+    `nodes`: {key: [(x, y), ...]} — every node's own representative points,
+    in a common coordinate space. `start`: a key in `nodes`. Two nodes are
+    connected if any one of node A's points lies within `epsilon` of any one
+    of node B's points (squared-distance test). Returns the set of keys in
+    the same connected component as `start` (always includes `start`).
+
+    Plain BFS with a `visited` set — safe on graphs with cycles or branching
+    (a node is only ever enqueued once), which callers with user-authored,
+    potentially-looping connectivity (e.g. HexFinity's Path Feature linking)
+    rely on for termination.
+    """
+    def _shares_point(pts_a, pts_b, eps2):
+        for (ax, ay) in pts_a:
+            for (bx, by) in pts_b:
+                if (ax - bx) ** 2 + (ay - by) ** 2 <= eps2:
+                    return True
+        return False
+
+    eps2 = epsilon * epsilon
+    visited = {start}
+    frontier = [start]
+    while frontier:
+        current = frontier.pop()
+        cur_pts = nodes[current]
+        for key, pts in nodes.items():
+            if key in visited:
+                continue
+            if _shares_point(cur_pts, pts, eps2):
+                visited.add(key)
+                frontier.append(key)
+    return visited

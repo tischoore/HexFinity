@@ -439,6 +439,9 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
                 sub.prop(feature, "repeat_mm")
                 sub.prop(feature, "local_subdiv")
 
+            box.operator("hexfinity.link_connected_paths",
+                         text="Link Connected Paths", icon='LINKED')
+
     @staticmethod
     def _draw_scatter_params(box, reg, surf, map_props):
         # Each scatter knob rides a generic param0..param3 slot; label it from

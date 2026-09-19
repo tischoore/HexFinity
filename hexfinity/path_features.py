@@ -46,13 +46,30 @@ from gpu_extras.batch import batch_for_shader
 from bpy_extras import view3d_utils
 from mathutils import Vector
 
-from .map import edge_snap_points, point_in_hex
+from .map import edge_snap_points, point_in_hex, find_connected_component
 
 
 SNAP_RADIUS_PX = 18.0
 _LINE_COLOR = (0.85, 0.55, 0.25, 0.9)
 _SNAP_COLOR = (0.3, 1.0, 0.5, 0.95)
 _POINT_COLOR = (1.0, 1.0, 1.0, 1.0)
+
+# Settings fields propagated by "Link Connected Paths" -- every physical/
+# carve field, deliberately excluding `name` (kept per-path) and `points`
+# (never touch waypoints/geometry, only settings). feature_type is included
+# and handled specially (see HEXFINITY_OT_link_connected_paths.execute):
+# copying it is exactly what makes a multi-hex road's type uniform.
+_PATH_FEATURE_LINK_FIELDS = (
+    "feature_type", "width_mm", "depth_mm", "repeat_mm", "local_subdiv",
+    "texture", "depth_levels", "embankment_angle_deg",
+    "embankment_variation_mm", "river_bottom_style", "preserve_edge",
+)
+
+# Generous vs. float32 property-storage/matrix-round-trip noise at hex-scale
+# (mm) coordinates, far below the real spacing between distinct edge_snap
+# candidates -- see map.find_connected_component's docstring for the shape
+# of the comparison this feeds.
+_LINK_EPSILON_MM = 0.01
 
 # Working resolution every cached heightmap is downsampled to before pixel
 # extraction. The source art is 4K (~67M pixels); a groove profile only
@@ -637,6 +654,102 @@ class HEXFINITY_OT_remove_path_feature(bpy.types.Operator):
             tile.active_path_feature_index = min(idx, len(tile.path_features) - 1)
             from . import operators
             operators.rebuild_tile(obj)
+        return {'FINISHED'}
+
+
+def _world_points(obj, feature):
+    """A path feature's waypoints in world XY (tiles are translation-only
+    placed, matching operators._tile_under_point's tile.location.x/y use)."""
+    return [(obj.location.x + p.x, obj.location.y + p.y) for p in feature.points]
+
+
+def _all_path_nodes(scene):
+    """({(q, r, feature_index): [world (x,y), ...]}, {(q, r): tile_obj}) for
+    every path feature on every generated tile in the map. Mirrors the
+    guard/iteration shape of operators.on_global_update / _corner_lookup."""
+    map_props = scene.hexfinity_map
+    coll = map_props.root_collection
+    nodes, tiles = {}, {}
+    if not map_props.is_generated or coll is None:
+        return nodes, tiles
+    for obj in coll.objects:
+        tp = obj.hexfinity_tile
+        if not tp.is_generated:
+            continue
+        tiles[(tp.coord_q, tp.coord_r)] = obj
+        for i, feature in enumerate(tp.path_features):
+            nodes[(tp.coord_q, tp.coord_r, i)] = _world_points(obj, feature)
+    return nodes, tiles
+
+
+class HEXFINITY_OT_link_connected_paths(bpy.types.Operator):
+    bl_idname = "hexfinity.link_connected_paths"
+    bl_label = "Link Connected Paths"
+    bl_description = ("Apply this path's settings (not its waypoints) to "
+                      "every other path feature transitively connected to "
+                      "it via a shared waypoint, anywhere in the map")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        if obj is None or not obj.hexfinity_tile.is_generated:
+            return False
+        tile = obj.hexfinity_tile
+        return 0 <= tile.active_path_feature_index < len(tile.path_features)
+
+    def execute(self, context):
+        scene = context.scene
+        src_obj = context.active_object
+        src_tile = src_obj.hexfinity_tile
+        src_idx = src_tile.active_path_feature_index
+        src_key = (src_tile.coord_q, src_tile.coord_r, src_idx)
+
+        nodes, tile_lookup = _all_path_nodes(scene)
+        if not nodes.get(src_key):
+            self.report({'WARNING'}, "HexFinity: active path has no waypoints.")
+            return {'CANCELLED'}
+
+        connected = find_connected_component(nodes, src_key, _LINK_EPSILON_MM)
+        connected.discard(src_key)
+        if not connected:
+            self.report({'WARNING'}, "HexFinity: no connected paths found.")
+            return {'CANCELLED'}
+
+        source_feature = src_tile.path_features[src_idx]
+        clip = {f: getattr(source_feature, f) for f in _PATH_FEATURE_LINK_FIELDS}
+
+        touched = {}
+        for (q, r, i) in connected:
+            touched.setdefault((q, r), []).append(i)
+
+        from . import properties
+        from . import operators
+
+        for (q, r), indices in touched.items():
+            obj = tile_lookup[(q, r)]
+            tile = obj.hexfinity_tile
+            for i in indices:
+                feature = tile.path_features[i]
+                # feature_type first, unguarded: its own update callback
+                # always fires a transient rebuild with type-defaulted
+                # values, which the guarded loop below then overwrites with
+                # the actually-copied ones -- same two-rebuilds-per-write
+                # shape as HEXFINITY_OT_apply_surface_texture.
+                feature.feature_type = clip["feature_type"]
+                properties._PATH_FEATURE_FILLING = True
+                try:
+                    for f in _PATH_FEATURE_LINK_FIELDS:
+                        if f == "feature_type":
+                            continue
+                        setattr(feature, f, clip[f])
+                finally:
+                    properties._PATH_FEATURE_FILLING = False
+            operators.rebuild_tile(obj)
+
+        self.report({'INFO'},
+                   f"Linked settings to {len(connected)} connected path "
+                   f"feature(s) across {len(touched)} tile(s).")
         return {'FINISHED'}
 
 

@@ -47,6 +47,7 @@ def _classes():
         regions.HEXFINITY_UL_surface_regions,
         path_features.HEXFINITY_OT_draw_path_feature,
         path_features.HEXFINITY_OT_remove_path_feature,
+        path_features.HEXFINITY_OT_link_connected_paths,
         path_features.HEXFINITY_UL_path_features,
         scatter.HEXFINITY_OT_merge_scatter,
         panel.HEXFINITY_PT_panel,
