@@ -952,3 +952,85 @@ def test_baked_extra_preserves_live_top_displacement():
     )
     assert_two_manifold(verts, faces)
     assert verts[0][2] == pytest.approx(10.0 + 3.0)
+
+
+# ---------------------------------------------------------------------------
+# Terrain brush is a priority layer: it wins over a pad's flatten target in
+# its own footprint, without doubling up wherever the pad never reached.
+
+def _pad_setup():
+    # A small terrain-object plateau (explicit "z" target, not sampled from
+    # the ambient surface) near the tile centre, with a near-zero blend band
+    # so essentially every top vertex is unambiguously fully-inside (w=1) or
+    # fully-outside (w=0) its radius -- no partial-blend vertex to reason
+    # about. Corners raised well above base_thickness_mm so a negative
+    # displacement on an untouched vertex can never hit the floor clamp and
+    # desync the expected per-vertex shift (that clamp interaction is
+    # covered separately by test_top_displacement_clamps_to_base).
+    s = 2
+    base = 10.0
+    ntop = top_vertex_count(s)
+    target_z = 20.0
+    pads = [{"x": 0.0, "y": 0.0, "radius_mm": 20.0, "blend_mm": 0.01, "z": target_z}]
+    corners = (3, 3, 3, 3, 3, 3)
+    return s, base, ntop, pads, corners
+
+
+def test_top_displacement_wins_over_pad_without_doubling():
+    # Comparing a pad-only build against the same pad plus a NON-uniform
+    # brush pattern must show every top vertex shift by exactly its own
+    # top_displacement[i]: vertices the pad flattened ride that flat target
+    # plus their own delta (the brush "wins" there instead of being
+    # homogenized away by the flatten), and vertices the pad never touched
+    # shift by that same single delta, not doubled.
+    s, base, ntop, pads, corners = _pad_setup()
+
+    capture = {}
+    no_brush, _ = build_hex_tile(
+        diameter_mm=100.0, level_height_mm=5.0, base_thickness_mm=base,
+        corner_levels=corners, center_level=None, smoothness_passes=s,
+        terrain_pads=pads, bake_capture=capture,
+    )
+    touched = set(capture["prefix_overrides"])
+    assert 0 < len(touched) < ntop, \
+        "pad should flatten some, but not all, original top vertices"
+
+    disp = [1.0 if i % 2 == 0 else -1.0 for i in range(ntop)]
+    with_brush, faces = build_hex_tile(
+        diameter_mm=100.0, level_height_mm=5.0, base_thickness_mm=base,
+        corner_levels=corners, center_level=None, smoothness_passes=s,
+        terrain_pads=pads, top_displacement=disp,
+    )
+    assert_two_manifold(with_brush, faces)
+    for i in range(ntop):
+        assert with_brush[i][2] == pytest.approx(no_brush[i][2] + disp[i], abs=1e-6), \
+            ("touched" if i in touched else "untouched", i)
+
+
+def test_baked_extra_top_displacement_wins_over_baked_pad():
+    # Same guarantee as above, but through the baked_extra replay branch --
+    # the brush-priority pass must fire after EITHER branch produces
+    # verts_mm/top_faces, not just the live recompute.
+    s, base, ntop, pads, corners = _pad_setup()
+
+    capture = {}
+    no_brush, _ = build_hex_tile(
+        diameter_mm=100.0, level_height_mm=5.0, base_thickness_mm=base,
+        corner_levels=corners, center_level=None, smoothness_passes=s,
+        terrain_pads=pads, bake_capture=capture,
+    )
+    touched = set(capture["prefix_overrides"])
+    assert 0 < len(touched) < ntop
+
+    baked_extra = (capture["extra_verts"], capture["extra_faces"],
+                   capture["prefix_overrides"])
+    disp = [1.0 if i % 2 == 0 else -1.0 for i in range(ntop)]
+    with_brush, faces = build_hex_tile(
+        diameter_mm=100.0, level_height_mm=5.0, base_thickness_mm=base,
+        corner_levels=corners, center_level=None, smoothness_passes=s,
+        baked_extra=baked_extra, top_displacement=disp,
+    )
+    assert_two_manifold(with_brush, faces)
+    for i in range(ntop):
+        assert with_brush[i][2] == pytest.approx(no_brush[i][2] + disp[i], abs=1e-6), \
+            ("touched" if i in touched else "untouched", i)

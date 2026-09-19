@@ -236,6 +236,15 @@ def build_hex_tile(
     deep "lower" stroke can never punch the top through the base and invert the
     side walls. The displacement is z-only and topology-preserving, so the
     `check_manifold()` run by the caller still validates the painted mesh.
+    The brush's delta is applied twice, by design, never doubled in effect:
+    once here (combined with the region value, before any pad/path/notch
+    work below), so those stages see a Z-consistent starting surface for
+    their own new-vertex interpolation and diagonal-choice math (see
+    `tree_pads._retriangulate`); then a second time, at the very end of this
+    function, re-asserted at whichever original-index vertices pad/terrain/
+    path/notch actually changed (and only those), so a hand-painted stroke
+    always wins over one of those recomputing its own footprint on every
+    rebuild, without inflating brush strength anywhere it wasn't touched.
 
     `surface_regions`, when given, is a list of procedural-surface regions, each a
     dict: `surface_type`, `feature_mm`, `depth_mm`, `regularity`, `direction_rad`,
@@ -330,7 +339,10 @@ def build_hex_tile(
     pad/notch/path/region-refine pipeline would have left them.
     `top_displacement` (brush) and `surface_regions`' prefix *value*
     contribution are unaffected — they still apply live, above, before this
-    runs.
+    runs. `prefix_overrides`' keys also double as `touched_indices` for the
+    brush-priority pass at the very end of this function (see below), so a
+    hand-painted stroke still wins over whatever this replay just spliced
+    in, exactly as it would over a live pad/path/notch recompute.
 
     `bake_capture`, when given, is an output-only dict this call fills in
     (only in the branch where `baked_extra` is *not* given, i.e. a live
@@ -504,7 +516,12 @@ def build_hex_tile(
 
     # All top-surface verts are now registered at indices 0 .. num_top-1, before
     # any bottom/side/tab geometry. The brush's painted displacement is keyed to
-    # exactly this index range; apply it here (z-only, clamped to the base).
+    # exactly this index range; apply it here (z-only, clamped to the base) —
+    # unchanged from before, and load-bearing: tree_pads.refine_regions'/
+    # refine_and_flatten's/path-carve's own new-vertex interpolation and
+    # diagonal-choice math (see tree_pads._retriangulate) depend on a
+    # Z-consistent starting surface, so brush must be baked into `verts_mm`
+    # itself before any of that runs, not deferred.
     num_top = len(verts_mm)
     top_faces = [tuple(top_remap[v] for v in f) for f in sub_faces]
     have_disp = top_displacement is not None and len(top_displacement) == num_top
@@ -531,12 +548,14 @@ def build_hex_tile(
                         x, y, regions, surface_origin_xy, surface_seed)
             verts_mm[i] = (x, y, max(z + dz1 + dz2, base_thickness_mm))
 
-    # `bake_capture` records the pre-pad prefix Z here (before any of the
-    # pad/notch/path work below runs) so a live build used to *create* a bake
-    # can diff against it afterward. Harmless no-op cost when unused.
+    # Pre-pad prefix Z snapshot — always taken now (not just when baking),
+    # since the terrain-brush-priority pass at the very end of this function
+    # needs to know exactly which original-index vertices pad/terrain/path/
+    # notch actually touched, regardless of whether this call is baking.
+    prefix_z_pre_pads = [verts_mm[i][2] for i in range(num_top)]
     if bake_capture is not None:
         bake_capture["num_top"] = num_top
-        bake_capture["prefix_z_pre_pads"] = [verts_mm[i][2] for i in range(num_top)]
+        bake_capture["prefix_z_pre_pads"] = prefix_z_pre_pads
 
     if baked_extra is not None:
         # Frozen replay: splice in a previously-captured pad/notch/path
@@ -547,6 +566,7 @@ def build_hex_tile(
             verts_mm[idx] = (x, y, z)
         verts_mm.extend(tuple(v) for v in extra_verts)
         top_faces = [tuple(f) for f in extra_faces]
+        touched_indices = prefix_overrides.keys()
     else:
         if regions and any(reg.get("polygon") and int(reg.get("local_subdiv", 0)) > 0
                             for reg in regions):
@@ -594,14 +614,31 @@ def build_hex_tile(
                 verts_mm, top_faces, protected_edges, flora_notches,
                 warnings=flora_notch_warnings, ok_indices=flora_notch_ok_indices,
                 resolved_heights=flora_notch_heights)
+        touched_indices = {
+            i for i in range(num_top)
+            if abs(verts_mm[i][2] - prefix_z_pre_pads[i]) > 1e-9
+        }
         if bake_capture is not None:
-            prefix_before = bake_capture["prefix_z_pre_pads"]
             bake_capture["extra_verts"] = [tuple(v) for v in verts_mm[num_top:]]
             bake_capture["extra_faces"] = [tuple(f) for f in top_faces]
             bake_capture["prefix_overrides"] = {
-                i: verts_mm[i][2] for i in range(num_top)
-                if abs(verts_mm[i][2] - prefix_before[i]) > 1e-9
+                i: verts_mm[i][2] for i in touched_indices
             }
+
+    # Terrain-brush priority pass: re-assert the FULL painted delta on top of
+    # whatever pad/terrain/path/notch just computed, but ONLY at vertices
+    # they actually touched (`touched_indices`) — everywhere else already
+    # got the brush's contribution from the combined pass above, so adding
+    # it again there would double it. This is what makes a hand-painted
+    # stroke win over a pad/path/notch recompute in its own footprint, on
+    # every rebuild, without inflating brush strength tile-wide. Whether
+    # this build recomputed pad/path/notch live or replayed a baked_extra
+    # snapshot, `touched_indices` is populated above either way.
+    if have_disp:
+        for i in touched_indices:
+            x, y, z = verts_mm[i]
+            verts_mm[i] = (x, y, max(z + top_displacement[i], base_thickness_mm))
+
     faces.extend(top_faces)
 
     # Bottom of the tile carries inter-tile tab/hole interlocks (see module
