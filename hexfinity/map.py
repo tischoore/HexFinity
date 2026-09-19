@@ -79,6 +79,50 @@ def neighbour_coord(q, r, direction):
     raise ValueError(f"unknown direction: {direction!r}")
 
 
+def missing_neighbours(existing):
+    """(q, r) coords adjacent to at least one coord in `existing` but not
+    themselves in it. One entry per open grid slot, deduplicated across
+    however many existing tiles border it (a slot bordered by three
+    existing tiles still yields exactly one coordinate here).
+
+    `existing`: any iterable of (q, r) tuples. Pure data in, pure data out.
+    """
+    existing_set = set(existing)
+    missing = set()
+    for (q, r) in existing_set:
+        for direction in DIRECTIONS:
+            n = neighbour_coord(q, r, direction)
+            if n not in existing_set:
+                missing.add(n)
+    return missing
+
+
+def resolve_new_tile_corners(q, r, lookup, base_level=0):
+    """(p1..p6) levels to seed a brand-new tile at (q, r) with, so it welds
+    onto whichever existing neighbours already border it.
+
+    `lookup`: {(q, r): (p1..p6)} for existing tiles. This is the read
+    direction of the exact same SHARED_CORNERS walk operators.on_corner_changed
+    already does in the write direction when propagating an edit outward —
+    here we pull inward into a tile that doesn't exist yet. A corner with no
+    existing neighbour falls back to `base_level` (mirrors how a freshly
+    generated tile's corners are seeded). If both SHARED_CORNERS partners for
+    a corner exist, they are expected to already agree — that invariant is
+    exactly what on_corner_changed maintains while editing an existing map —
+    so the first table entry is used if they ever disagree.
+    """
+    corners = []
+    for corner_idx in range(6):
+        value = None
+        for (direction, n_corner_idx) in SHARED_CORNERS[corner_idx]:
+            n_values = lookup.get(neighbour_coord(q, r, direction))
+            if n_values is not None:
+                value = n_values[n_corner_idx]
+                break
+        corners.append(base_level if value is None else value)
+    return tuple(corners)
+
+
 def tile_world_xy(q, r, diameter_mm):
     """World-space (x, y) of tile (q, r)'s origin for a flat-top, odd-q
     offset layout with the given point-to-point diameter (mm)."""

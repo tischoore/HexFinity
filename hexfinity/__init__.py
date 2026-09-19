@@ -24,6 +24,7 @@ def _classes():
         properties.HexFinityFloodFillProperties,
         operators.HEXFINITY_OT_generate_map,
         operators.HEXFINITY_OT_clear_map,
+        operators.HEXFINITY_OT_add_adjacent_hex,
         operators.HEXFINITY_OT_import_terrain_object,
         operators.HEXFINITY_OT_redrop_terrain_object,
         operators.HEXFINITY_OT_generate_terrain_plateau,
@@ -51,6 +52,8 @@ def _classes():
         panel.HEXFINITY_PT_panel,
         gizmo.HEXFINITY_GT_center_sphere,
         gizmo.HEXFINITY_GGT_center,
+        gizmo.HEXFINITY_GT_add_hex,
+        gizmo.HEXFINITY_GGT_add_hex,
     )
 
 

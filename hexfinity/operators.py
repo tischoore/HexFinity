@@ -11,7 +11,8 @@ from .mesh_builder import (build_hex_tile, clamp_center_to_hexagon,
                            top_vertex_count)
 from .manifold_check import assert_two_manifold, ManifoldError
 from .map import (SHARED_CORNERS, neighbour_coord, tile_world_xy, find_tile,
-                  clamp_level, hex_prism_verts_faces, point_in_hex)
+                  clamp_level, hex_prism_verts_faces, point_in_hex,
+                  resolve_new_tile_corners)
 from .tile_export import (is_custom_tile, manifest_rows, short_hash,
                           tile_filename, tile_geometry_hash,
                           flora_placement_filename, flora_manifest_rows)
@@ -598,6 +599,57 @@ def _rebuild_flora_tiles(context):
 # ---------------------------------------------------------------------------
 # Operators.
 
+def _create_tile(coll, map_props, q, r, corners):
+    """Create, link, and build one HexFinity tile Object at (q, r) inside
+    `coll`, seeded with the given (p1..p6) corner levels.
+
+    Shared by `_build_map` (bulk generate, every tile seeded at a flat
+    map_props.base_level) and `HEXFINITY_OT_add_adjacent_hex` (single tile,
+    corners resolved from existing neighbours via map.resolve_new_tile_corners).
+
+    Raises ValueError / ManifoldError on a geometry/manifold failure from
+    rebuild_tile — the object is left linked into `coll` with is_generated
+    still False; how much to roll back is the caller's call, since that
+    differs between a bulk-generate failure (roll back everything) and a
+    single add-hex failure (roll back just this one object).
+    """
+    name = f"HexTile_{q:02d}_{r:02d}"
+    mesh = bpy.data.meshes.new(name)
+    obj = bpy.data.objects.new(name, mesh)
+    coll.objects.link(obj)
+    tp = obj.hexfinity_tile
+    tp.coord_q = q
+    tp.coord_r = r
+    # Seed every corner (and the centre override, for when it's later
+    # toggled on). is_generated is still False here, so the corner/local
+    # update callbacks short-circuit — no premature seam propagation; the
+    # first rebuild below builds the raised surface directly.
+    tp.p1, tp.p2, tp.p3, tp.p4, tp.p5, tp.p6 = corners
+    tp.center_level = map_props.base_level
+    x, y = tile_world_xy(q, r, map_props.diameter_mm)
+    obj.location = (x, y, 0.0)
+    rebuild_tile(obj)
+    # Mark *after* a successful build so the panel/gizmo only adopt the tile
+    # once its mesh actually exists.
+    obj.hexfinity_tile.is_generated = True
+    return obj
+
+
+def _corner_lookup(scene):
+    """{(q, r): (p1..p6)} for every currently-generated tile in the map —
+    the plain-data form map.resolve_new_tile_corners needs. Kept here
+    (rather than in map.py) so map.py's bpy-free invariant holds."""
+    coll = scene.hexfinity_map.root_collection
+    if coll is None:
+        return {}
+    return {
+        (o.hexfinity_tile.coord_q, o.hexfinity_tile.coord_r):
+            (o.hexfinity_tile.p1, o.hexfinity_tile.p2, o.hexfinity_tile.p3,
+             o.hexfinity_tile.p4, o.hexfinity_tile.p5, o.hexfinity_tile.p6)
+        for o in coll.objects if o.hexfinity_tile.is_generated
+    }
+
+
 def _build_map(context, operator):
     """Shared implementation between Generate and Regenerate.
 
@@ -624,27 +676,8 @@ def _build_map(context, operator):
     created = []
     try:
         for (q, r) in tiles:
-            name = f"HexTile_{q:02d}_{r:02d}"
-            mesh = bpy.data.meshes.new(name)
-            obj = bpy.data.objects.new(name, mesh)
-            coll.objects.link(obj)
-            tp = obj.hexfinity_tile
-            tp.coord_q = q
-            tp.coord_r = r
-            # Seed every corner (and the centre override, for when it's later
-            # toggled on) at the map-wide base level. is_generated is still
-            # False here, so the corner/local update callbacks short-circuit —
-            # no premature seam propagation; the first rebuild below builds the
-            # raised surface directly.
             bl = map_props.base_level
-            tp.p1 = tp.p2 = tp.p3 = tp.p4 = tp.p5 = tp.p6 = bl
-            tp.center_level = bl
-            x, y = tile_world_xy(q, r, map_props.diameter_mm)
-            obj.location = (x, y, 0.0)
-            rebuild_tile(obj)
-            # Mark *after* a successful build so the panel/gizmo only adopt
-            # the tile once its mesh actually exists.
-            obj.hexfinity_tile.is_generated = True
+            obj = _create_tile(coll, map_props, q, r, (bl, bl, bl, bl, bl, bl))
             created.append(obj)
     except (ValueError, ManifoldError) as exc:
         for o in created:
@@ -722,6 +755,66 @@ class HEXFINITY_OT_clear_map(bpy.types.Operator):
         map_props.is_generated = False
         # Collapse the (now editable again) globals back to the default state.
         map_props.show_globals = False
+        return {'FINISHED'}
+
+
+class HEXFINITY_OT_add_adjacent_hex(bpy.types.Operator):
+    bl_idname = "hexfinity.add_adjacent_hex"
+    bl_label = "Add Hex Tile"
+    bl_description = ("Add a new hex tile at this open grid slot, seeding its "
+                      "corner heights from whichever existing neighbours "
+                      "already border it so it welds onto the map with no "
+                      "seam step")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    coord_q: bpy.props.IntProperty(name="Q")
+    coord_r: bpy.props.IntProperty(name="R")
+
+    @classmethod
+    def poll(cls, context):
+        map_props = context.scene.hexfinity_map
+        return map_props.is_generated and map_props.root_collection is not None
+
+    def execute(self, context):
+        scene = context.scene
+        map_props = scene.hexfinity_map
+        coll = map_props.root_collection
+        if find_tile(scene, self.coord_q, self.coord_r) is not None:
+            self.report({'WARNING'},
+                       f"HexFinity: a tile already exists at "
+                       f"({self.coord_q}, {self.coord_r}).")
+            return {'CANCELLED'}
+
+        corners = resolve_new_tile_corners(
+            self.coord_q, self.coord_r, _corner_lookup(scene), map_props.base_level)
+
+        try:
+            obj = _create_tile(coll, map_props, self.coord_q, self.coord_r, corners)
+        except (ValueError, ManifoldError) as exc:
+            # Only one tile is at stake here — not _build_map's multi-tile
+            # batch — so clean up just this one partially-built object/mesh
+            # rather than reusing _build_map's whole-collection rollback.
+            # find_tile only matches is_generated tiles (never true for a
+            # failed build), so look it up directly among coll.objects.
+            leftover = next(
+                (o for o in coll.objects
+                 if o.hexfinity_tile.coord_q == self.coord_q
+                 and o.hexfinity_tile.coord_r == self.coord_r
+                 and not o.hexfinity_tile.is_generated),
+                None,
+            )
+            if leftover is not None:
+                mesh = leftover.data
+                bpy.data.objects.remove(leftover, do_unlink=True)
+                if mesh is not None and mesh.users == 0:
+                    bpy.data.meshes.remove(mesh)
+            self.report({'ERROR'}, f"HexFinity: {exc}")
+            return {'CANCELLED'}
+
+        for o in context.selected_objects:
+            o.select_set(False)
+        obj.select_set(True)
+        context.view_layer.objects.active = obj
         return {'FINISHED'}
 
 

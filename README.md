@@ -21,6 +21,7 @@ All linear inputs are expressed in **millimeters**, and mesh vertices are emitte
   - [X / Y semantics](#x--y-semantics)
   - [Layout (odd-q offset, flat-top)](#layout-odd-q-offset-flat-top)
   - [Shared corners](#shared-corners-editing-one-corner-edits-up-to-two-others)
+  - [Expanding the map (add-hex gizmos)](#expanding-the-map-add-hex-gizmos)
   - [Clear](#clear)
 - [Terrain brush (sculpt)](#terrain-brush-sculpt)
 - [Terrain objects (import & snap)](#terrain-objects-import--snap)
@@ -187,6 +188,14 @@ The centre vertex of each tile (XY offset, override-level, override-toggle) is *
 When **more than one** HexFinity tile is selected, changing a corner slider on the active tile applies the **same delta** to that *same corner index* on every selected tile. Raising the active tile's `P1` by +2 raises every selected tile's `P1` by +2 (each tile clamps independently at level 0, so a downward delta can bottom some tiles out while others keep dropping). This makes it quick to lift or lower a whole region by a uniform amount while still letting individual tiles differ.
 
 Only the six corner levels `P1`–`P6` fan out this way — centre level, dome, and XY remain per-tile (active object only). The Corner Levels panel shows an `N tiles selected — edits apply to all` hint while a multi-selection is active. Because the parallel edit touches the same *labelled* corner on each tile and seam sync then re-asserts equality on the *geometrically shared* corner (a different index), an adjacent multi-selection converges to a tear-free region lift.
+
+### Expanding the map (add-hex gizmos)
+
+Once a map exists, a small **green sphere gizmo** hovers over every open grid slot that borders the existing map — one per empty slot, not one per edge, so a slot bordered by two or three existing tiles still gets exactly one gizmo. These gizmos are visible for the **whole map at all times**, independent of what's selected (unlike the cyan centre-drag sphere below, which only appears on the active tile), so expanding the map never requires first hunting down and selecting a boundary tile.
+
+Clicking a gizmo adds a new hex tile at that slot. Its corner levels are seeded from whichever existing neighbours already border it, using the exact same [shared-corner](#shared-corners-editing-one-corner-edits-up-to-two-others) correspondence table the seam-sync cascade uses — just read inward instead of propagated outward — so the new tile welds onto the map with no visible seam step. Any corner with no existing neighbour (a fully exposed outer-perimeter slot) falls back to the map's `base_level`. Adding a tile this way is a normal, undo-able operator action (`hexfinity.add_adjacent_hex`).
+
+The gizmo hovers at one map-wide constant height, derived from the map's global `base_level` — not from the corner heights of whichever tiles happen to border that slot.
 
 ### Clear
 
@@ -551,7 +560,7 @@ HexFinity
     └─ [ Export Tiles to STL ] (directory dialog → one STL per distinct tile + manifest)
 ```
 
-A floating sphere gizmo, hovering one *level height* above the tile's apex, drags the active tile's centre XY inside the hex. When a HexFinity tile is selected, the viewport also overlays `P1`–`P6` labels floating one *level height* above each corner so corner identity is unambiguous in the panel.
+A floating sphere gizmo, hovering one *level height* above the tile's apex, drags the active tile's centre XY inside the hex. When a HexFinity tile is selected, the viewport also overlays `P1`–`P6` labels floating one *level height* above each corner so corner identity is unambiguous in the panel. Separately, a **green** sphere gizmo hovers over every open grid slot bordering the map — see [Expanding the map](#expanding-the-map-add-hex-gizmos) — visible for the whole map regardless of selection, not tied to the active tile the way the cyan centre-drag sphere is.
 
 ---
 
@@ -564,9 +573,9 @@ C:\Work\Hexfinity\
 │   ├─ __init__.py             # register / unregister (lazy bpy import)
 │   ├─ blender_manifest.toml   # extension metadata (replaces bl_info)
 │   ├─ properties.py           # HexFinityMapProperties + HexFinityProperties + surface regions + terrain features
-│   ├─ operators.py            # generate_map / clear_map + cascade
+│   ├─ operators.py            # generate_map / clear_map / add_adjacent_hex + cascade
 │   ├─ panel.py                # HEXFINITY_PT_panel (sidebar UI, two-branch)
-│   ├─ gizmo.py                # HEXFINITY_GGT_center (centre-XY drag gizmo)
+│   ├─ gizmo.py                # HEXFINITY_GGT_center (centre-XY drag) + HEXFINITY_GGT_add_hex (open-slot add-hex gizmos)
 │   ├─ overlay.py              # floating P1..P6 labels + region loops/direction + terrain feature lines
 │   ├─ brush.py                # modal terrain paint brush
 │   ├─ regions.py              # modal draw-region + flood-fill-region operators + region list UI
@@ -651,3 +660,4 @@ After generating a map:
 13. **Pin/notch check** — plant a tree and press `Esc`/right-click to leave the Flora tool: a socket is cut under the tree, the tree still sits flush on the surface (not sunk into the socket), and a `FloraPin_*` object appears **nested under its tree** in the Outliner. Paint a brush stroke elsewhere on the tile (or edit a corner height) — the pin disappears and the socket fills back in; press **Finalize Flora** and both return, tree still flush. Export the tile — a separate `flora_*.stl` is written alongside the tile's own STL, listed in `flora_manifest.csv`, with its lowest point (the pin's tip) sitting at z=0. Plant a tree, skip finalizing, and export — a warning appears and no `flora_*.stl` is written for it. A headless smoke test of the full plant→finalize→pin/socket→seating-correctness→un-finalize→re-finalize→export path lives in `tests/_headless_flora_pin_check.py`: `blender --background --python tests/_headless_flora_pin_check.py`.
 14. **Bake check** — paint a brush stroke, plant a tree with *Flatten Base* on, drop a terrain object with snap enabled, and draw a Path Feature line, all on the same tile. Press **Bake Tile** — the mesh stays visually identical, the tree's pin/socket is cut (same as Finalize), and the *Terrain Brush* box's *Paint* strokes are folded in. Edit an unrelated Draw Area region afterwards — the pads/notches/path carving/brush stay put (not recomputed) and the region change still shows up. Paint another brush stroke — it stacks visibly on top of the frozen shape. Now edit a corner height: the console prints a revert notice, the pad/terrain/notch/path layer falls back to live and reflects the new corner shape, but the frozen brush contribution from before the edit is untouched. Press **Un-bake Tile** — everything returns to live recompute with no visible change, and the *Bake Tile* button reappears. A headless smoke test of the full brush+pad+pin+path bake→live-edit-untouched→corner-edit-invalidates→un-bake path lives in `tests/_headless_bake_check.py`: `blender --background --python tests/_headless_bake_check.py`.
 15. **River check** — *Path Feature → Draw Feature*, draw a line, set its Type to **River**: the width jumps to ~3× Man Height, Depth (levels)/Embankment Angle/Embankment Variation/Bottom appear in place of Depth/Repeat, and a channel with sloped banks carves in immediately (no texture). Drag *Embankment Angle* toward 90° — the banks steepen visibly; toward 10° — they spread into a wide, gentle slope. Raise *Embankment Variation* — the bank line stops being a perfectly parallel offset of the drawn line and gets a natural wander. Set *Bottom* to **Tessendorf's FFT** — the flat bed gains a static ripple (the embankment slopes stay untouched); confirm no stray objects/meshes are left behind in the Outliner/`bpy.data` afterwards (the Ocean-modifier bake uses a throwaway scratch object). Set *Bottom* back to **Flat** — the bed returns to dead flat. Draw a second River line ending near a hex edge shared with a generated neighbour tile, then lower both tiles' shared corner Level(s) at that edge to at least the river's Depth — the channel should read as continuous across the seam instead of damming up at the rim. As an alternative to the corner-Level workflow: draw a River with a waypoint snapped exactly onto the shared edge, turn its *Preserve Edge* off — the bank right at that edge should visibly lose its wander and sit at the plain angle-derived position, with the carve now reaching full depth at the rim instead of fading back to ambient — then draw a matching River (same waypoint position, Width, Depth, and Embankment Angle, also with *Preserve Edge* off) on the neighbouring tile: the two channels should line up across the seam with no corner-Level changes needed.
+16. **Add-hex gizmo check** — generate a small (e.g. 3×3) map: a green sphere gizmo should ring every open perimeter slot, visible even with no active object or an unrelated object active (proving it's map-wide, not tied to the active tile like the cyan centre-drag sphere). Click a gizmo bordering two or three existing tiles — the new tile's shared corners should exactly match its neighbours' with no visible seam step, and any corner with no existing neighbour should come in at the map's Base Level. `Ctrl+Z` should remove the new tile and bring its gizmo back; redo should restore it. **Clear Map** should remove every add-hex gizmo. A headless smoke test of the operator (not the gizmo click itself, which isn't scriptable) lives in `tests/_headless_add_hex_check.py`: `blender --background --python tests/_headless_add_hex_check.py`.

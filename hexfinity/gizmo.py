@@ -5,6 +5,7 @@ from bpy_extras import view3d_utils
 from mathutils import Matrix, Vector
 
 from .mesh_builder import clamp_center_to_hexagon
+from .map import missing_neighbours, tile_world_xy
 
 
 def _build_uv_sphere_tris(segments=12, rings=6):
@@ -121,6 +122,32 @@ class HEXFINITY_GT_center_sphere(bpy.types.Gizmo):
             self.target_set_value("offset", tuple(self._init_offset))
 
 
+class HEXFINITY_GT_add_hex(bpy.types.Gizmo):
+    """Clickable sphere marking one open grid slot bordering the existing
+    map. Bound to hexfinity.add_adjacent_hex via target_set_operator (see
+    HEXFINITY_GGT_add_hex.refresh()) — the officially supported way to run
+    an operator on a gizmo click (see Blender's own
+    scripts/templates_py/gizmo_operator_target.py /
+    gizmo_simple_2d.py), rather than a hand-rolled invoke() override:
+    Blender's click-dispatch only recognises a gizmo as interactive once it
+    has a bound target (a target property, as HEXFINITY_GT_center_sphere
+    has, or a bound operator here) — a bare invoke() override with no
+    target silently never gets called on click.
+    """
+
+    bl_idname = "HEXFINITY_GT_add_hex"
+
+    def setup(self):
+        if not hasattr(self, "custom_shape"):
+            self.custom_shape = self.new_custom_shape('TRIS', _SPHERE_VERTS)
+
+    def draw(self, context):
+        self.draw_custom_shape(self.custom_shape)
+
+    def draw_select(self, context, select_id):
+        self.draw_custom_shape(self.custom_shape, select_id=select_id)
+
+
 class HEXFINITY_GGT_center(bpy.types.GizmoGroup):
     """A sphere gizmo that drags the active tile's centre in the XY plane.
 
@@ -201,3 +228,79 @@ class HEXFINITY_GGT_center(bpy.types.GizmoGroup):
         else:
             level = (p.p1 + p.p2 + p.p3 + p.p4 + p.p5 + p.p6) / 6.0
         return map_props.base_thickness_mm + (level + 1) * map_props.level_height_mm
+
+
+def _existing_coords(scene):
+    """Set of (q, r) for every currently-generated tile in the map. A local
+    duplicate of the same collection-scan idiom operators._corner_lookup
+    uses — gizmo.py has no dependency on operators.py today and this keeps
+    it that way for the sake of one three-line scan."""
+    coll = scene.hexfinity_map.root_collection
+    if coll is None:
+        return set()
+    return {
+        (obj.hexfinity_tile.coord_q, obj.hexfinity_tile.coord_r)
+        for obj in coll.objects
+        if obj.hexfinity_tile.is_generated
+    }
+
+
+class HEXFINITY_GGT_add_hex(bpy.types.GizmoGroup):
+    """One clickable green sphere per open grid slot bordering the existing
+    map — visible across the WHOLE map at all times once one exists (poll
+    only checks scene.hexfinity_map.is_generated, unlike HEXFINITY_GGT_center
+    which additionally requires an active generated tile), so expanding the
+    map doesn't require first selecting a boundary tile.
+
+    The gizmo count varies as tiles are added, so refresh() fully
+    reconciles self.gizmos each cycle (clear-and-recreate) rather than
+    assuming a fixed instance count like HEXFINITY_GGT_center does.
+    """
+
+    bl_idname = "HEXFINITY_GGT_add_hex"
+    bl_label = "HexFinity Add Hex"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'WINDOW'
+    bl_options = {'3D', 'PERSISTENT'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.scene.hexfinity_map.is_generated
+
+    def setup(self, context):
+        # Instances are (re)created in refresh() — the open-slot set (and
+        # therefore the gizmo count) depends on the map's current shape and
+        # changes every time a tile is added.
+        pass
+
+    def refresh(self, context):
+        scene = context.scene
+        map_props = scene.hexfinity_map
+
+        for gz in list(self.gizmos):
+            self.gizmos.remove(gz)
+
+        existing = _existing_coords(scene)
+        if not existing:
+            return
+
+        # A single map-wide hover height derived from the global base_level
+        # (not per-tile/per-corner) — same "+1 level hover" idiom as
+        # _apex_z_mm above, just driven by the map's base level instead of a
+        # per-tile computed one.
+        z = (map_props.base_thickness_mm
+             + (map_props.base_level + 1) * map_props.level_height_mm)
+        scale = map_props.diameter_mm * 0.001
+
+        for (q, r) in sorted(missing_neighbours(existing)):
+            gz = self.gizmos.new(HEXFINITY_GT_add_hex.bl_idname)
+            gz.color = (0.15, 0.85, 0.25)
+            gz.color_highlight = (0.4, 1.0, 0.5)
+            gz.alpha = 0.6
+            gz.alpha_highlight = 0.9
+            x, y = tile_world_xy(q, r, map_props.diameter_mm)
+            gz.matrix_basis = Matrix.Translation((x, y, z))
+            gz.scale_basis = scale
+            props = gz.target_set_operator("hexfinity.add_adjacent_hex")
+            props.coord_q = q
+            props.coord_r = r

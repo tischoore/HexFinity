@@ -141,6 +141,120 @@ def test_shared_corner_world_positions_coincide():
 
 
 # ---------------------------------------------------------------------------
+# missing_neighbours
+
+@pytest.mark.parametrize("q,r", [(0, 0), (1, 0)])
+def test_missing_neighbours_single_tile(q, r):
+    # Even and odd column parities both exercised.
+    expected = {hm.neighbour_coord(q, r, d) for d in hm.DIRECTIONS}
+    assert hm.missing_neighbours({(q, r)}) == expected
+
+
+def test_missing_neighbours_excludes_existing_tiles():
+    existing = {(0, 0), hm.neighbour_coord(0, 0, hm.N)}
+    missing = hm.missing_neighbours(existing)
+    assert not (missing & existing)
+
+
+def test_missing_neighbours_dedup_shared_slot():
+    # (0,0) and (1,0) are neighbours of each other (NE/SW) and also share two
+    # further open slots between them -- (1,-1) via (0,0).SE and (1,0).S, and
+    # (0,1) via (0,0).N and (1,0).NW. Naive (non-deduped) counting would give
+    # 5 + 5 = 10 raw entries; the shared slots must collapse to one each.
+    existing = {(0, 0), (1, 0)}
+    missing = hm.missing_neighbours(existing)
+    assert (1, -1) in missing
+    assert (0, 1) in missing
+    assert len(missing) == 8
+
+
+def test_missing_neighbours_full_rectangle():
+    existing = {(q, r) for q in range(2) for r in range(2)}
+    missing = hm.missing_neighbours(existing)
+    assert not (missing & existing)
+    assert missing  # a solid block still has an open perimeter
+    for (q, r) in missing:
+        assert any(
+            hm.neighbour_coord(q, r, hm.OPPOSITE[d]) in existing
+            for d in hm.DIRECTIONS
+        )
+
+
+def test_missing_neighbours_empty_input():
+    assert hm.missing_neighbours(set()) == set()
+
+
+# ---------------------------------------------------------------------------
+# resolve_new_tile_corners
+
+def test_resolve_new_tile_corners_empty_lookup_uses_base_level():
+    got = hm.resolve_new_tile_corners(5, -3, {}, base_level=4)
+    assert got == (4, 4, 4, 4, 4, 4)
+
+
+@pytest.mark.parametrize("direction", list(hm.DIRECTIONS))
+def test_resolve_new_tile_corners_pulls_from_single_neighbour(direction):
+    q, r = 0, 0
+    neighbour_values = (10, 20, 30, 40, 50, 60)
+    base_level = 7
+    lookup = {hm.neighbour_coord(q, r, direction): neighbour_values}
+
+    expected = []
+    for partners in hm.SHARED_CORNERS:
+        match = next((n_idx for (d, n_idx) in partners if d == direction), None)
+        expected.append(base_level if match is None else neighbour_values[match])
+
+    got = hm.resolve_new_tile_corners(q, r, lookup, base_level)
+    assert got == tuple(expected)
+
+
+def test_resolve_new_tile_corners_agreeing_neighbours():
+    q, r = 0, 0
+    # SHARED_CORNERS[0] (P1) partners: (N, 2), (NE, 4) -- both neighbours
+    # supply the same value at their respective corner.
+    shared_value = 42
+    lookup = {
+        hm.neighbour_coord(q, r, hm.N): (0, 0, shared_value, 0, 0, 0),
+        hm.neighbour_coord(q, r, hm.NE): (0, 0, 0, 0, shared_value, 0),
+    }
+    got = hm.resolve_new_tile_corners(q, r, lookup, base_level=1)
+    assert got[0] == shared_value
+
+
+def test_resolve_new_tile_corners_disagreeing_neighbours_deterministic():
+    q, r = 0, 0
+    lookup = {
+        hm.neighbour_coord(q, r, hm.N): (0, 0, 11, 0, 0, 0),
+        hm.neighbour_coord(q, r, hm.NE): (0, 0, 0, 0, 22, 0),
+    }
+    got = hm.resolve_new_tile_corners(q, r, lookup, base_level=1)
+    # SHARED_CORNERS[0] lists (N, 2) before (NE, 4) -- the first table entry
+    # wins when two partners disagree.
+    assert got[0] == 11
+
+
+def test_resolve_new_tile_corners_pulls_from_two_neighbours_at_once():
+    # A slot bordered by two existing tiles at once: (1, -1) is a shared open
+    # neighbour of (0, 0) (flat corner value 100) and (1, 0) (flat corner
+    # value 200) -- via directions NW and N respectively (both present, so
+    # both get consulted for different corners of the new tile).
+    v00, v10, base_level = 100, 200, 5
+    lookup = {
+        (0, 0): (v00,) * 6,
+        (1, 0): (v10,) * 6,
+    }
+    got = hm.resolve_new_tile_corners(1, -1, lookup, base_level)
+    # Derived by hand from SHARED_CORNERS + neighbour_coord(1, -1, *):
+    #   P1 (idx0): (N,2) -> neighbour_coord(1,-1,N)==(1,0)  -> v10
+    #   P2 (idx1): (NE,3),(SE,5) -> neither (2,0)/(2,-1) exist -> base_level
+    #   P3 (idx2): (SE,4),(S,0)  -> neither (2,-1)/(1,-2) exist -> base_level
+    #   P4 (idx3): (S,5),(SW,1) -> neither (1,-2)/(0,-1) exist -> base_level
+    #   P5 (idx4): (SW,0),(NW,2) -> SW=(0,-1) absent, NW=(0,0) present -> v00
+    #   P6 (idx5): (NW,1),(N,3) -> NW=(0,0) present (checked first)   -> v00
+    assert got == (v10, base_level, base_level, base_level, v00, v00)
+
+
+# ---------------------------------------------------------------------------
 # corner_xy / edge_snap_points
 
 def test_corner_xy_matches_known_formula():
