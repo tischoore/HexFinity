@@ -959,10 +959,29 @@ class HexFinityTerrainProperties(bpy.types.PropertyGroup):
 # plain x/y shape for the hull, but needs its own type (with an extra
 # edge_idx field) for waypoints since -1 marks an interior point.
 
+def _on_segment_waypoint_update(self, context):
+    # The persistent flag overlay (segments._draw_committed_waypoints) reads
+    # this RNA data straight off the workflow object every redraw, but a
+    # plain property edit / list-selection change in the N-panel doesn't by
+    # itself guarantee a VIEW_3D repaint — force one so an edited coordinate
+    # or a newly-selected waypoint shows up immediately, not just on the
+    # next unrelated redraw.
+    wm = getattr(context, "window_manager", None)
+    if wm is None:
+        return
+    for window in wm.windows:
+        screen = window.screen
+        if screen is None:
+            continue
+        for area in screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+
+
 class HexFinitySegmentWaypoint(bpy.types.PropertyGroup):
-    x: bpy.props.FloatProperty(name="X", default=0.0)
-    y: bpy.props.FloatProperty(name="Y", default=0.0)
-    z: bpy.props.FloatProperty(name="Z", default=0.0)
+    x: bpy.props.FloatProperty(name="X", default=0.0, update=_on_segment_waypoint_update)
+    y: bpy.props.FloatProperty(name="Y", default=0.0, update=_on_segment_waypoint_update)
+    z: bpy.props.FloatProperty(name="Z", default=0.0, update=_on_segment_waypoint_update)
     edge_idx: bpy.props.IntProperty(
         name="Edge Index",
         description="Hull-edge index this waypoint is snapped to, or -1 for "
@@ -1000,7 +1019,8 @@ class HexFinitySegmentAuthoring(bpy.types.PropertyGroup):
     hull: bpy.props.CollectionProperty(type=HexFinitySurfacePoint)
     waypoints: bpy.props.CollectionProperty(type=HexFinitySegmentWaypoint)
     active_waypoint_index: bpy.props.IntProperty(
-        name="Active Waypoint", default=0, options={'HIDDEN'})
+        name="Active Waypoint", default=0, options={'HIDDEN'},
+        update=_on_segment_waypoint_update)
     has_drawn_path: bpy.props.BoolProperty(default=False, options={'HIDDEN'})
 
 

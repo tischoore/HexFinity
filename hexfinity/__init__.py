@@ -106,6 +106,7 @@ def register():
         type=properties.HexFinitySegmentAuthoring
     )
     overlay.register()
+    segments.register()
     try:
         segments.ensure_settings_file()
     except Exception as exc:
@@ -120,8 +121,9 @@ def register():
 
 def unregister():
     import bpy
-    from . import overlay
+    from . import overlay, segments
     overlay.unregister()
+    segments.unregister()
     if hasattr(bpy.types.Object, "hexfinity_segment"):
         del bpy.types.Object.hexfinity_segment
     if hasattr(bpy.types.Object, "hexfinity_terrain"):

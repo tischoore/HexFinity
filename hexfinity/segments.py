@@ -33,6 +33,7 @@ import math
 import os
 
 import bpy
+import blf
 import gpu
 from gpu_extras.batch import batch_for_shader
 from bpy_extras import view3d_utils
@@ -47,6 +48,25 @@ SNAP_RADIUS_PX = 18.0
 _LINE_COLOR = (0.85, 0.55, 0.25, 0.9)
 _SNAP_COLOR = (0.3, 1.0, 0.5, 0.95)
 _POINT_COLOR = (1.0, 1.0, 1.0, 1.0)
+
+# Persistent (post-modal) waypoint flags — drawn for the current Add Path
+# Segment Type workflow object so a committed path stays visible once the
+# Draw Path modal ends, mirroring overlay.py's "still visible after the
+# modal draw operator exits" convention for Path Feature lines.
+_FLAG_COLOR = _LINE_COLOR
+_FLAG_ACTIVE_COLOR = _SNAP_COLOR
+_FLAG_POLE_PX = 20.0
+_FLAG_POLE_ACTIVE_PX = 30.0
+_FLAG_WIDTH_PX = 10.0
+_FLAG_WIDTH_ACTIVE_PX = 14.0
+_FLAG_HEIGHT_PX = 7.0
+_FLAG_HEIGHT_ACTIVE_PX = 10.0
+_FLAG_FONT_ID = 0
+_FLAG_FONT_SIZE = 12
+_FLAG_TEXT_COLOR = (1.0, 1.0, 1.0, 1.0)
+_FLAG_SHADOW_COLOR = (0.0, 0.0, 0.0, 0.9)
+
+_DRAW_HANDLE = None
 
 # Drawing-plane clearance above the segment's own highest vertex — reuses
 # the 10 mm man-height convention path_features.py uses above a tile.
@@ -673,3 +693,111 @@ class HEXFINITY_OT_snap_waypoint_to_edge(bpy.types.Operator):
 
         wp.x, wp.y, wp.edge_idx = result
         return {'FINISHED'}
+
+
+# ---------------------------------------------------------------------------
+# Persistent waypoint overlay — a SpaceView3D POST_PIXEL handler, separate
+# from HEXFINITY_OT_draw_segment_path's own _draw (which only runs while
+# that modal is live). Registered/unregistered from __init__.py's
+# register()/unregister(), mirroring overlay.py's module-level handle
+# pattern, so the committed path + flags stay visible in the viewport for
+# as long as a segment is being authored (panel closed or not), and update
+# immediately when a waypoint is edited or a different one is selected in
+# the list (see properties._on_segment_waypoint_update).
+
+def _draw_flag(shader, x, y, color, active):
+    pole_h = _FLAG_POLE_ACTIVE_PX if active else _FLAG_POLE_PX
+    flag_w = _FLAG_WIDTH_ACTIVE_PX if active else _FLAG_WIDTH_PX
+    flag_h = _FLAG_HEIGHT_ACTIVE_PX if active else _FLAG_HEIGHT_PX
+    top = y + pole_h
+
+    shader.uniform_float("color", color)
+    gpu.state.point_size_set(8.0 if active else 5.0)
+    batch_for_shader(shader, 'POINTS', {"pos": [(x, y)]}).draw(shader)
+    batch_for_shader(shader, 'LINES', {"pos": [(x, y), (x, top)]}).draw(shader)
+    batch_for_shader(shader, 'TRIS', {"pos": [
+        (x, top), (x + flag_w, top - flag_h * 0.5), (x, top - flag_h),
+    ]}).draw(shader)
+
+
+def _draw_committed_waypoints():
+    context = bpy.context
+    scene = context.scene
+    if scene is None:
+        return
+    seg_props = getattr(scene, "hexfinity_segments", None)
+    obj = seg_props.active_object if seg_props is not None else None
+    if obj is None or is_active():
+        return
+    seg = obj.hexfinity_segment
+    if not seg.has_drawn_path or len(seg.waypoints) == 0:
+        return
+
+    region = context.region
+    rv3d = context.region_data
+    if region is None or rv3d is None:
+        return
+
+    mw = obj.matrix_world
+    active_idx = seg.active_waypoint_index
+    screen_pts = [
+        view3d_utils.location_3d_to_region_2d(
+            region, rv3d, mw @ Vector((wp.x, wp.y, wp.z)))
+        for wp in seg.waypoints
+    ]
+
+    shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+    gpu.state.blend_set('ALPHA')
+    gpu.state.line_width_set(2.0)
+    shader.bind()
+
+    line = [(s.x, s.y) for s in screen_pts if s is not None]
+    if len(line) >= 2:
+        shader.uniform_float("color", _FLAG_COLOR)
+        batch_for_shader(shader, 'LINE_STRIP', {"pos": line}).draw(shader)
+
+    for i, s in enumerate(screen_pts):
+        if s is None:
+            continue
+        is_active_wp = (i == active_idx)
+        _draw_flag(shader, s.x, s.y,
+                   _FLAG_ACTIVE_COLOR if is_active_wp else _FLAG_COLOR,
+                   is_active_wp)
+
+    gpu.state.point_size_set(1.0)
+    gpu.state.line_width_set(1.0)
+    gpu.state.blend_set('NONE')
+
+    blf.size(_FLAG_FONT_ID, _FLAG_FONT_SIZE)
+    blf.enable(_FLAG_FONT_ID, blf.SHADOW)
+    blf.shadow(_FLAG_FONT_ID, 3, *_FLAG_SHADOW_COLOR)
+    blf.shadow_offset(_FLAG_FONT_ID, 1, -1)
+    blf.color(_FLAG_FONT_ID, *_FLAG_TEXT_COLOR)
+    try:
+        for i, s in enumerate(screen_pts):
+            if s is None:
+                continue
+            pole_h = _FLAG_POLE_ACTIVE_PX if i == active_idx else _FLAG_POLE_PX
+            blf.position(_FLAG_FONT_ID, s.x + 4.0, s.y + pole_h + 4.0, 0.0)
+            blf.draw(_FLAG_FONT_ID, f"P{i + 1}")
+    finally:
+        blf.disable(_FLAG_FONT_ID, blf.SHADOW)
+
+
+def register():
+    global _DRAW_HANDLE
+    if _DRAW_HANDLE is not None:
+        return
+    _DRAW_HANDLE = bpy.types.SpaceView3D.draw_handler_add(
+        _draw_committed_waypoints, (), 'WINDOW', 'POST_PIXEL')
+
+
+def unregister():
+    global _DRAW_HANDLE
+    if _DRAW_HANDLE is None:
+        return
+    try:
+        bpy.types.SpaceView3D.draw_handler_remove(_DRAW_HANDLE, 'WINDOW')
+    except (ValueError, RuntimeError):
+        pass
+    _DRAW_HANDLE = None

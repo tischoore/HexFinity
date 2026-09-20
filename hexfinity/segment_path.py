@@ -496,7 +496,15 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
                 continue
             pieces.append((tile, dup_obj))
 
-        bpy.data.objects.remove(obj, do_unlink=True)
+        # Only consume `obj` once it actually produced at least one non-empty
+        # piece — a bbox pre-filter can admit a candidate tile whose real
+        # (non-axis-aligned) hex prism the piece never actually overlaps, so
+        # every intersection can come out empty even with >1 candidate. In
+        # that case `obj` must survive for the caller's own "no pieces"
+        # cleanup (_commit_piece) — removing it unconditionally here left
+        # that cleanup trying to remove an already-freed object.
+        if pieces:
+            bpy.data.objects.remove(obj, do_unlink=True)
         return pieces
 
     @staticmethod
