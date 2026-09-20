@@ -30,6 +30,7 @@ All linear inputs are expressed in **millimeters**, and mesh vertices are emitte
 - [Path Feature](#path-feature)
 - [Export STLs](#export-stls)
 - [Slice to G-code (Bambu Studio)](#slice-to-g-code-bambu-studio)
+- [Scripts](#scripts)
 - [UI](#ui)
 - [Project layout](#project-layout)
 - [Install (development)](#install-development)
@@ -444,6 +445,14 @@ covered by `scripts/tests/test_slice_tiles.py`.
 See **[docs/slicing.md](docs/slicing.md)** for parameters, the Bambu CLI
 caveats this works around, and troubleshooting.
 
+## Scripts
+
+`scripts/` holds standalone command-line utilities used alongside the
+Blender add-on — batch STL re-centering, batch G-code slicing, and batch
+STL rescaling (e.g. converting an export between print scales, such as
+28 mm ↔ 10 mm). See **[scripts/README.md](scripts/README.md)** for the
+full list, each script's CLI, and worked examples.
+
 ## UI
 
 The plugin adds a **HexFinity** tab to the 3D Viewport's N-panel (sidebar). The panel has two branches.
@@ -602,6 +611,8 @@ C:\Work\Hexfinity\
 │   ├─ tile_export.py          # pure-Python export hashing + naming (no bpy)
 │   ├─ face_select.py          # pure-Python face-normal flood fill + boundary-loop extraction for the Flood Fill tool (no bpy)
 │   └─ manifold_check.py       # post-build 2-manifold verification
+├─ scripts\                    # standalone CLI utilities — see scripts/README.md
+│   └─ tests\                  # pytest coverage for the bpy-free scripts
 └─ tests\
     ├─ conftest.py
     ├─ test_mesh_builder.py
