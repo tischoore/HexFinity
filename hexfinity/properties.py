@@ -962,11 +962,28 @@ class HexFinityTerrainProperties(bpy.types.PropertyGroup):
 class HexFinitySegmentWaypoint(bpy.types.PropertyGroup):
     x: bpy.props.FloatProperty(name="X", default=0.0)
     y: bpy.props.FloatProperty(name="Y", default=0.0)
+    z: bpy.props.FloatProperty(name="Z", default=0.0)
     edge_idx: bpy.props.IntProperty(
         name="Edge Index",
         description="Hull-edge index this waypoint is snapped to, or -1 for "
                     "an interior (non-edge-snapped) point",
         default=-1,
+    )
+    lock_x: bpy.props.BoolProperty(
+        name="Lock X",
+        description="Keep X fixed when Snap to Edge runs for this waypoint",
+        default=False,
+    )
+    lock_y: bpy.props.BoolProperty(
+        name="Lock Y",
+        description="Keep Y fixed when Snap to Edge runs for this waypoint",
+        default=False,
+    )
+    lock_z: bpy.props.BoolProperty(
+        name="Lock Z",
+        description="Reserved for a future Z-aware snap; Snap to Edge "
+                    "itself never touches Z",
+        default=False,
     )
 
 
@@ -982,6 +999,8 @@ class HexFinitySegmentAuthoring(bpy.types.PropertyGroup):
     type_is_new: bpy.props.BoolProperty(options={'HIDDEN'})
     hull: bpy.props.CollectionProperty(type=HexFinitySurfacePoint)
     waypoints: bpy.props.CollectionProperty(type=HexFinitySegmentWaypoint)
+    active_waypoint_index: bpy.props.IntProperty(
+        name="Active Waypoint", default=0, options={'HIDDEN'})
     has_drawn_path: bpy.props.BoolProperty(default=False, options={'HIDDEN'})
 
 

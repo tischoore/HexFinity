@@ -50,9 +50,9 @@ it for you).
             "man_height_mm": 10.0,
             "hull_local_mm": [[-40.0, -12.5], [40.0, -12.5], [40.0, 12.5], [-40.0, 12.5]],
             "waypoints": [
-              {"x_mm": -40.0, "y_mm": 0.0, "edge_idx": 3},
-              {"x_mm": 0.0,   "y_mm": 0.0, "edge_idx": -1},
-              {"x_mm": 40.0,  "y_mm": 0.0, "edge_idx": 1}
+              {"x_mm": -40.0, "y_mm": 0.0, "z_mm": 12.0, "edge_idx": 3},
+              {"x_mm": 0.0,   "y_mm": 0.0, "z_mm": 12.0, "edge_idx": -1},
+              {"x_mm": 40.0,  "y_mm": 0.0, "z_mm": 12.0, "edge_idx": 1}
             ],
             "is_end_segment": false,
             "edge_snap": 3,
@@ -89,7 +89,7 @@ This is a deliberate simplification, not a validated constraint.
 | `file` | Absolute path to the original STL. The file is **referenced**, not copied — HexFinity does not duplicate it into its own storage, so moving/renaming/deleting the source file breaks this entry. |
 | `man_height_mm` | Always `10.0`. A fixed documentation label recording the scale assumption every segment is authored under — **not enforced or auto-rescaled** by HexFinity. If your STL wasn't modeled at 10 mm man-height, its geometry will be wrong relative to a hex tile's own scale; there is no correction applied. |
 | `hull_local_mm` | The convex hull of the STL's footprint (its vertices projected to XY), in the segment's own local mm space, ordered counter-clockwise. Captured once at authoring time so a future consumer never needs to recompute it from the mesh. |
-| `waypoints` | The drawn connector path: a list of `{x_mm, y_mm, edge_idx}` points in the same local mm space as `hull_local_mm`. |
+| `waypoints` | The drawn connector path: a list of `{x_mm, y_mm, z_mm, edge_idx}` points in the same local mm space as `hull_local_mm`. `z_mm` starts out at the draw tool's click-plane height (the segment's tallest vertex plus clearance) and is only ever refined by hand-editing it in the authoring panel's waypoint list — nothing currently reads it back (the Draw Segments Path consumer only matches connectors by `x_mm`/`y_mm`/`edge_idx`). |
 | `is_end_segment` | `true` if exactly one waypoint has `edge_idx >= 0` (see below) — a segment with only one connection point, e.g. a dead end or terminus, rather than a through-piece. |
 | `edge_snap` | The Edge Snap density (points per hull edge) the waypoints were drawn with — kept for reference/reproducibility, not re-validated against `hull_local_mm` later. |
 | `added_utc` | UTC timestamp (`YYYY-MM-DDTHH:MM:SSZ`) of when this segment was added. |

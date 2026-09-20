@@ -90,3 +90,46 @@ def test_hull_edge_snap_targets_includes_midpoints():
         b = _SQUARE[(i + 1) % len(_SQUARE)]
         mid = (round((a[0] + b[0]) / 2.0, 6), round((a[1] + b[1]) / 2.0, 6))
         assert mid in xy_only
+
+
+# ---------------------------------------------------------------------------
+# nearest_point_on_hull_edge
+# _SQUARE edges: 0 = bottom (y=-10), 1 = right (x=10), 2 = top (y=10),
+# 3 = left (x=-10).
+
+def test_nearest_point_on_hull_edge_unconstrained_picks_closest_edge():
+    x, y, edge_idx = sg.nearest_point_on_hull_edge(2.0, -8.0, _SQUARE)
+    assert (x, y) == pytest.approx((2.0, -10.0))
+    assert edge_idx == 0
+
+
+def test_nearest_point_on_hull_edge_lock_x_solves_y_on_nearest_crossing():
+    # x=5 crosses both the bottom (edge 0) and top (edge 2) edges; the point
+    # sits closer to the bottom, so the solved y should land there.
+    x, y, edge_idx = sg.nearest_point_on_hull_edge(
+        5.0, -9.0, _SQUARE, lock_x=True)
+    assert x == pytest.approx(5.0)
+    assert y == pytest.approx(-10.0)
+    assert edge_idx == 0
+
+
+def test_nearest_point_on_hull_edge_lock_y_solves_x_on_nearest_crossing():
+    x, y, edge_idx = sg.nearest_point_on_hull_edge(
+        -9.0, 5.0, _SQUARE, lock_y=True)
+    assert x == pytest.approx(-10.0)
+    assert y == pytest.approx(5.0)
+    assert edge_idx == 3
+
+
+def test_nearest_point_on_hull_edge_lock_x_outside_range_returns_none():
+    assert sg.nearest_point_on_hull_edge(20.0, 0.0, _SQUARE, lock_x=True) is None
+
+
+def test_nearest_point_on_hull_edge_both_locked_returns_none():
+    assert sg.nearest_point_on_hull_edge(
+        2.0, -8.0, _SQUARE, lock_x=True, lock_y=True) is None
+
+
+def test_nearest_point_on_hull_edge_degenerate_hull_returns_none():
+    assert sg.nearest_point_on_hull_edge(0.0, 0.0, [(0.0, 0.0)]) is None
+    assert sg.nearest_point_on_hull_edge(0.0, 0.0, []) is None

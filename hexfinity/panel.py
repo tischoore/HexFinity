@@ -117,11 +117,37 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         else:
             box.operator("hexfinity.draw_segment_path", text="Draw Path",
                          icon='MOD_CURVE')
+            if seg.has_drawn_path and len(seg.waypoints) > 0:
+                HEXFINITY_PT_panel._draw_segment_waypoints(box, seg)
         row = box.row()
         row.enabled = seg.has_drawn_path
         row.operator("hexfinity.finish_add_segment", text="Finish Add Segment",
                      icon='CHECKMARK')
         box.operator("hexfinity.cancel_add_segment", text="Cancel", icon='X')
+
+    @staticmethod
+    def _draw_segment_waypoints(box, seg):
+        box.label(text="Waypoints", icon='CON_TRACKTO')
+        box.template_list(
+            "HEXFINITY_UL_segment_waypoints", "",
+            seg, "waypoints",
+            seg, "active_waypoint_index",
+            rows=3,
+        )
+        idx = seg.active_waypoint_index
+        if not (0 <= idx < len(seg.waypoints)):
+            return
+        wp = seg.waypoints[idx]
+        col = box.column(align=True)
+        for axis in ("x", "y", "z"):
+            row = col.row(align=True)
+            row.prop(wp, axis)
+            lock_attr = f"lock_{axis}"
+            locked = getattr(wp, lock_attr)
+            row.prop(wp, lock_attr, text="",
+                     icon='LOCKED' if locked else 'UNLOCKED', toggle=True)
+        box.operator("hexfinity.snap_waypoint_to_edge", text="Snap to Edge",
+                     icon='SNAP_ON')
 
     def _draw_tile_section(self, context, layout, scene, map_props):
         # ---- Per-tile section (only when a HexFinity tile is active) -----

@@ -107,7 +107,7 @@ def test_has_type_false_for_unknown():
 # find_segment / add_segment dedup
 
 _HULL = [(-10.0, -5.0), (10.0, -5.0), (10.0, 5.0), (-10.0, 5.0)]
-_WAYPOINTS = [(-10.0, 0.0, 3), (10.0, 0.0, 1)]
+_WAYPOINTS = [(-10.0, 0.0, 12.0, 3), (10.0, 0.0, 12.0, 1)]
 
 
 def test_add_segment_creates_type_if_missing():
@@ -117,7 +117,7 @@ def test_add_segment_creates_type_if_missing():
     assert ss.has_type(data, "Bridge")
     assert entry["file"] == "C:/segs/Bridge/a.stl"
     assert entry["hull_local_mm"] == [list(p) for p in _HULL]
-    assert entry["waypoints"][0] == {"x_mm": -10.0, "y_mm": 0.0, "edge_idx": 3}
+    assert entry["waypoints"][0] == {"x_mm": -10.0, "y_mm": 0.0, "z_mm": 12.0, "edge_idx": 3}
     assert entry["man_height_mm"] == ss.DEFAULT_MAN_HEIGHT_MM
     assert "added_utc" in entry
 

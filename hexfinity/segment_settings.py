@@ -159,8 +159,8 @@ def add_segment(data, type_name, filepath, hull_local_mm, waypoints,
         "man_height_mm": man_height_mm,
         "hull_local_mm": [[x, y] for (x, y) in hull_local_mm],
         "waypoints": [
-            {"x_mm": x, "y_mm": y, "edge_idx": edge_idx}
-            for (x, y, edge_idx) in waypoints
+            {"x_mm": x, "y_mm": y, "z_mm": z, "edge_idx": edge_idx}
+            for (x, y, z, edge_idx) in waypoints
         ],
         "is_end_segment": is_end_segment,
         "edge_snap": edge_snap,

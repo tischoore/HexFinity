@@ -466,7 +466,7 @@ class HEXFINITY_OT_draw_segment_path(bpy.types.Operator):
         if hit is not None:
             target, edge_idx = hit
             lp = self._obj.matrix_world.inverted() @ target
-            self._pts_local.append((lp.x, lp.y))
+            self._pts_local.append((lp.x, lp.y, lp.z))
             self._pts_world.append(target.copy())
             self._edge_idxs.append(edge_idx)
             return
@@ -481,7 +481,7 @@ class HEXFINITY_OT_draw_segment_path(bpy.types.Operator):
         if not point_in_polygon(lp.x, lp.y, _hull_local(self._obj)):
             self.report({'INFO'}, "Point must be inside the segment's footprint")
             return
-        self._pts_local.append((lp.x, lp.y))
+        self._pts_local.append((lp.x, lp.y, lp.z))
         self._pts_world.append(hit_pt.copy())
         self._edge_idxs.append(-1)
 
@@ -491,9 +491,10 @@ class HEXFINITY_OT_draw_segment_path(bpy.types.Operator):
             return {'RUNNING_MODAL'}
         seg = self._obj.hexfinity_segment
         seg.waypoints.clear()
-        for (x, y), edge_idx in zip(self._pts_local, self._edge_idxs):
+        for (x, y, z), edge_idx in zip(self._pts_local, self._edge_idxs):
             wp = seg.waypoints.add()
-            wp.x, wp.y, wp.edge_idx = x, y, edge_idx
+            wp.x, wp.y, wp.z, wp.edge_idx = x, y, z, edge_idx
+        seg.active_waypoint_index = 0
         seg.has_drawn_path = True
         bpy.ops.ed.undo_push(message="HexFinity Draw Segment Path")
         self._finish(context)
@@ -595,7 +596,7 @@ class HEXFINITY_OT_finish_add_segment(bpy.types.Operator):
         type_name = seg.type_name
         data = _load_settings()
         hull = [(p.x, p.y) for p in seg.hull]
-        waypoints = [(wp.x, wp.y, wp.edge_idx) for wp in seg.waypoints]
+        waypoints = [(wp.x, wp.y, wp.z, wp.edge_idx) for wp in seg.waypoints]
         try:
             segment_settings.add_segment(
                 data, type_name, seg.source_filepath, hull, waypoints,
@@ -627,4 +628,48 @@ class HEXFINITY_OT_cancel_add_segment(bpy.types.Operator):
         obj = _resolve_workflow(context)
         if obj is not None:
             _cleanup_workflow(context, obj)
+        return {'FINISHED'}
+
+
+class HEXFINITY_UL_segment_waypoints(bpy.types.UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data,
+                  active_propname, index):
+        edge_label = f"edge {item.edge_idx}" if item.edge_idx >= 0 else "interior"
+        layout.label(
+            text=(f"P{index + 1}  ({edge_label})  "
+                  f"X:{item.x:.2f} Y:{item.y:.2f} Z:{item.z:.2f}"),
+            icon='EMPTY_AXIS')
+
+
+class HEXFINITY_OT_snap_waypoint_to_edge(bpy.types.Operator):
+    bl_idname = "hexfinity.snap_waypoint_to_edge"
+    bl_label = "Snap to Edge"
+    bl_description = ("Move the selected waypoint onto the nearest point of "
+                      "the segment's hull boundary (X/Y plane only) — "
+                      "locked axes are held fixed")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = _resolve_workflow(context)
+        if obj is None:
+            return False
+        seg = obj.hexfinity_segment
+        return 0 <= seg.active_waypoint_index < len(seg.waypoints)
+
+    def execute(self, context):
+        obj = _resolve_workflow(context)
+        seg = obj.hexfinity_segment
+        wp = seg.waypoints[seg.active_waypoint_index]
+        if wp.lock_x and wp.lock_y:
+            self.report({'WARNING'}, "X and Y are both locked — nothing to move")
+            return {'CANCELLED'}
+
+        result = segment_geometry.nearest_point_on_hull_edge(
+            wp.x, wp.y, _hull_local(obj), lock_x=wp.lock_x, lock_y=wp.lock_y)
+        if result is None:
+            self.report({'WARNING'}, "No hull edge crosses the locked coordinate")
+            return {'CANCELLED'}
+
+        wp.x, wp.y, wp.edge_idx = result
         return {'FINISHED'}
