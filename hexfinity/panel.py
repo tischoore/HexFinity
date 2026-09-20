@@ -465,9 +465,9 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
                      icon='GREASEPENCIL')
         row.operator("hexfinity.draw_segments_path_dialog",
                      text="Draw Segments Path", icon='MESH_DATA')
-        box.label(text="Select every hex a line should span first — an edge "
-                        "click then continues onto a selected neighbour "
-                        "instead of ending there.", icon='INFO')
+        box.label(text="An edge click continues the line onto a generated "
+                        "neighbouring hex automatically. Right-click ends "
+                        "the drawing session.", icon='INFO')
 
         row = box.row()
         row.template_list(
@@ -505,11 +505,10 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
                                     "the crossing edge to at least Depth.",
                               icon='INFO')
                 else:
-                    box.label(text="Edge not preserved: select the "
-                                    "neighbouring tile and continue drawing "
-                                    "across the edge (or draw a matching "
-                                    "River there at the same edge point) to "
-                                    "continue it.",
+                    box.label(text="Edge not preserved: continue drawing "
+                                    "across the edge onto the neighbouring "
+                                    "tile (or draw a matching River there at "
+                                    "the same edge point) to continue it.",
                               icon='INFO')
             else:
                 sub.prop(feature, "depth_mm")

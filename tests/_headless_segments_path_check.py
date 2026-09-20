@@ -101,9 +101,11 @@ def fake_get_or_import_segment_mesh(filepath):
 segment_path._get_or_import_segment_mesh = fake_get_or_import_segment_mesh
 
 
-def new_state(selected_tiles, hover_tile, prev_open_world=None, run_id="run1"):
+def new_state(hover_tile, prev_open_world=None, run_id="run1"):
+    """No `selected_tiles` parameter any more -- `_clip_to_hexes` now scans
+    every generated tile in the map itself (`_generated_tiles`), so a run
+    is no longer restricted to a pre-selected set."""
     state = types.SimpleNamespace()
-    state._selected_tiles = selected_tiles
     state._hover_tile = hover_tile
     state._prev_open_world = prev_open_world
     state._run_id = run_id
@@ -113,7 +115,8 @@ def new_state(selected_tiles, hover_tile, prev_open_world=None, run_id="run1"):
     # staticmethods take no implicit self -- bind those as plain functions,
     # everything else as a bound method on `state`.
     static_names = ("_world_bbox", "_shared_edge_idx", "_surface_z_at",
-                    "_closest_point_on_segment", "_point_in_tile_local")
+                    "_closest_point_on_segment", "_point_in_tile_local",
+                    "_generated_tiles")
     for name in static_names:
         setattr(state, name, getattr(cls, name))
     for name in ("_clip_to_hexes", "_edge_endpoints_world", "_commit_piece",
@@ -123,8 +126,11 @@ def new_state(selected_tiles, hover_tile, prev_open_world=None, run_id="run1"):
 
 
 # ---------------------------------------------------------------------------
-# Case A: a short segment placed entirely within one selected hex -- no
-# boolean split, one piece, parented + listed on that tile alone.
+# Case A: a short segment placed entirely within one generated hex -- no
+# boolean split, one piece, parented + listed on that tile alone. Neither
+# tile0 nor tile1 is selected anywhere in this script until the Remove test
+# at the very end, proving placement/clipping no longer depends on
+# pre-selection.
 
 _fake_meshes["short.stl"] = make_box_mesh("HF_Segment_short", 40.0)
 seg_short = {
@@ -134,7 +140,7 @@ seg_short = {
         {"x_mm": 20.0, "y_mm": 0.0, "edge_idx": -1},
     ],
 }
-state = new_state([tile0], tile0)
+state = new_state(tile0)
 before = len(tile0.hexfinity_tile.path_features)
 state._commit_piece(bpy.context, seg_short, Vector((0.0, 0.0, surface_z)), 0.0)
 tile0_features = tile0.hexfinity_tile.path_features
@@ -153,8 +159,9 @@ assert piece not in operators._terrain_objects(tile0)
 print("segment piece excluded from _terrain_objects/_is_terrain_object OK")
 
 # ---------------------------------------------------------------------------
-# Case B: a long segment whose bounding box spans both selected hexes ->
-# boolean-INTERSECT split into two non-empty, correctly parented pieces.
+# Case B: a long segment whose bounding box spans both generated hexes ->
+# boolean-INTERSECT split into two non-empty, correctly parented pieces,
+# with tile1 auto-continued onto despite never being selected.
 
 span_length = mp.diameter_mm * 1.4
 _fake_meshes["long.stl"] = make_box_mesh("HF_Segment_long", span_length)
@@ -168,7 +175,7 @@ seg_long = {
 midpoint_world = (Vector(tile0.location[:]) + Vector(tile1.location[:])) / 2.0
 midpoint_world.z = surface_z
 
-state = new_state([tile0, tile1], tile0)
+state = new_state(tile0)
 before0 = len(tile0.hexfinity_tile.path_features)
 before1 = len(tile1.hexfinity_tile.path_features)
 state._commit_piece(bpy.context, seg_long, midpoint_world, 0.0)
@@ -182,6 +189,8 @@ p1 = f1[before1].segment_piece
 assert p0 is not None and p1 is not None
 assert p0.parent is tile0 and p1.parent is tile1
 assert len(p0.data.polygons) > 0 and len(p1.data.polygons) > 0
+assert tile1.select_get(), "crossing neighbour should be auto-selected"
+print("crossing neighbour auto-selected despite no pre-selection OK")
 print("cross-hex placement: boolean-split into two parented pieces OK ->",
       f0[before0].name, "/", f1[before1].name)
 

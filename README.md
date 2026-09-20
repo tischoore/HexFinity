@@ -348,17 +348,17 @@ Press **Draw Feature** to start a modal tool. Waypoints are placed on a flat pla
 
 - Left-click places a waypoint.
 - A free click that would land outside the tile's own hex boundary is rejected outright, so a line can never wander onto a neighbour's footprint.
-- **Edge Snap** points — each hex edge's two corners plus `Edge Snap − 2` evenly spaced interior points, checked in screen-space so it's zoom-independent — plus every waypoint of the tile's already-drawn lines are checked before falling back to a free point. Snapping on the very first click just starts the line there. Snapping onto an existing line's waypoint on any later click both snaps to it and immediately commits and ends the line, so a line always meets another line at an exact, reproducible point. Snapping onto a hex-edge point either ends the line the same way, or — see *Drawing across multiple hexes* — continues it onto the neighbouring hex.
-- Right-click or Enter finishes the line manually (minimum 2 points).
+- **Edge Snap** points — each hex edge's two corners plus `Edge Snap − 2` evenly spaced interior points, checked in screen-space so it's zoom-independent — plus every waypoint of the tile's already-drawn lines are checked before falling back to a free point. Snapping on the very first click just starts the line there. Snapping onto an existing line's waypoint on any later click commits the current line at an exact, reproducible point but leaves the tool running, ready to start a new line. Snapping onto a hex-edge point — see *Drawing across multiple hexes* — continues the line onto the neighbouring hex.
+- Enter commits the current line early (minimum 2 points) without ending the tool. **Right-click is the only way to end the whole drawing session** (it also commits whatever line is in progress, if it has 2+ points).
 
 A committed line appears in the **Path Feature** list (name + type), editable/removable like a region. Every field auto-recarves the tile — there is no separate Generate step.
 
 ### Drawing across multiple hexes
 
-A single Draw Feature stroke can span several hexes, crossing a boundary only at an edge waypoint — never through a free interior click. Before starting the tool, select every hex the line should pass through (normal Blender multi-select); the active object is where drawing starts. Clicking an edge waypoint then behaves as follows:
+A single Draw Feature stroke can span several hexes, crossing a boundary only at an edge waypoint — never through a free interior click. No pre-selection is needed; the active object is just where drawing starts. Clicking an edge waypoint then behaves as follows:
 
-- If the neighbouring hex across that edge is also selected and generated, the current segment is committed to the tile being left, and a new segment starts immediately on the neighbour, seeded at the shared waypoint — the line keeps going, uninterrupted, without ending the tool.
-- Otherwise (the neighbour isn't selected, or there is no tile there — a real map edge), the line ends at that point, exactly like today's single-hex behaviour.
+- If the neighbouring hex across that edge is generated, the current segment is committed to the tile being left, and a new segment starts immediately on the neighbour, seeded at the shared waypoint — the line keeps going, uninterrupted, without ending the tool.
+- Otherwise (there is no tile there — a real map edge), the segment is still committed at that edge waypoint, but the whole drawing session ends there, since there's nothing left to continue onto.
 
 Each spanned hex ends up owning its own independent Path Feature — there's no single shared multi-hex object — but every segment created this way inherits the previous one's Type/Width/Depth/Repeat/River settings, so the whole path reads as one uniform feature without a manual "Link Connected Paths" pass. Crossing a boundary also smoothly pans the viewport onto the new hex over about 1.2 seconds, keeping the camera's rotation and distance unchanged, so the view glides along with the line as it's drawn rather than jumping. Each hex's segment is committed (and undo-pushed) the moment it closes, so undoing after a multi-hex draw steps back through it one hex at a time; pressing Esc only discards whichever segment is still in progress, leaving every hex already crossed as-is.
 
@@ -386,8 +386,8 @@ Turning Preserve Edge off never affects the tile's own manifold validity — onl
 
 Drawing across multiple hexes (above) already keeps a multi-hex line's settings uniform as it's drawn. **Link Connected Paths** (below the active line's field block) covers the remaining case: syncing settings after the fact, for lines that weren't drawn in one continuous multi-hex stroke. It applies the active path's settings — Type, Width, Depth, Repeat, Local Subdivision, Texture, and every River-only field — to every other path feature, anywhere in the map, that is transitively reachable from it via a shared waypoint. That covers two cases uniformly:
 
-- **Cross-tile**: a waypoint an edge-snapped line placed on one tile's rim coincides, in world space, with a waypoint a line on the neighbouring tile snapped to at the same physical spot — whether that second line was drawn independently or created automatically by crossing into a selected neighbour.
-- **Same-tile forks/joins**: a later line that snapped onto an existing line's waypoint (its own endpoint, or any point along it — per the "snapping onto a waypoint ends the line" drawing rule).
+- **Cross-tile**: a waypoint an edge-snapped line placed on one tile's rim coincides, in world space, with a waypoint a line on the neighbouring tile snapped to at the same physical spot — whether that second line was drawn independently or created automatically by crossing into a generated neighbour.
+- **Same-tile forks/joins**: a later line that snapped onto an existing line's waypoint (its own endpoint, or any point along it — per the "snapping onto a waypoint commits the current line" drawing rule).
 
 The **Name** of each path is left untouched — only the propagated settings above are overwritten (absolute values, not a delta), mirroring how Surface Texture's Copy/Apply buttons also leave `name` alone. Waypoints/geometry are never touched by this button, only settings. Because the underlying "which paths are connected" graph can legitimately branch and loop (nothing stops several lines from meeting at the same waypoint, or a set of lines forming a cycle across a ring of hexes), the traversal is a plain breadth-first search over a `visited` set — every path feature is only ever processed once, so a cycle simply closes instead of looping forever.
 
@@ -395,9 +395,9 @@ The **Name** of each path is left untouched — only the propagated settings abo
 
 **Draw Segments Path**, next to Draw Feature, places pre-built segment meshes — bridges, junctions, etc. — registered under Settings' **Add Path Segment Type** (see [Settings](#settings)) instead of carving a heightmap groove. Pressing it opens a small popup listing every type currently in `settings.json`; **Draw** starts the placement tool, **Cancel** abandons it.
 
-Select every hex the chain should span first, same rule as Draw Feature. While placing:
+No pre-selection is needed — the tool works across every generated hex in the map, same as Draw Feature. While placing:
 
-- Moving the mouse slides the current (not-yet-placed) segment across whichever selected hex is under the cursor, shown as a translucent preview.
+- Moving the mouse slides the current (not-yet-placed) segment across whichever generated hex is under the cursor, shown as a translucent preview.
 - **Scroll wheel** rotates it around the vertical axis.
 - **+ / -** cycles to the next/previous segment registered under the chosen type.
 - **Left-click** places it — refused unless it's the very first piece of the chain, or one of its own connector waypoints (the edge-tagged points recorded when the segment was authored) has snapped onto the previous piece's still-open connector, a hex's own edge point, or another already-placed piece's connector.
@@ -560,12 +560,13 @@ HexFinity
 │  ├─ ▸ Path Feature            (line list + Edge Snap + Draw Feature — see below)
 │  │   ├─ Edge Snap (int ≥ 2)   (snap points per hex edge, incl. both corners)
 │  │   ├─ [ Draw Feature ]      (click waypoints above the tile; snapping to
-│  │   │                         another line's waypoint ends it; snapping to a
-│  │   │                         hex-edge point ends it too, UNLESS the
-│  │   │                         neighbouring hex across that edge is also
-│  │   │                         selected, in which case the line continues
-│  │   │                         onto it — select every hex a line should
-│  │   │                         span before drawing to draw across hexes)
+│  │   │                         another line's waypoint commits the current
+│  │   │                         line but keeps the tool open; snapping to a
+│  │   │                         hex-edge point continues the line onto the
+│  │   │                         neighbouring hex automatically if it's
+│  │   │                         generated, else ends the session there — no
+│  │   │                         pre-selection needed; RMB is the only way
+│  │   │                         to deliberately end the session)
 │  │   ├─ Name + Type (Simple / Gravel / Paved Road / River — each texture
 │  │   │                         type carries its own texture, no separate
 │  │   │                         Texture dropdown; River has no texture at all)
@@ -582,9 +583,9 @@ HexFinity
 │  │              (on by default) — a carved channel with a flat (or Ocean-
 │  │              modifier-rippled) bed and constant-angle banks, not a
 │  │              texture groove; a hint label suggests either lowering the
-│  │              shared corner Level(s) (Preserve Edge on) or selecting the
-│  │              neighbouring tile and continuing to draw across the edge,
-│  │              or drawing a matching River there by hand (Preserve Edge
+│  │              shared corner Level(s) (Preserve Edge on) or continuing to
+│  │              draw across the edge onto the neighbouring tile, or
+│  │              drawing a matching River there by hand (Preserve Edge
 │  │              off) to continue a river across a seam. All Path Feature
 │  │              fields auto-carve into the tile on
 │  │              every edit, no manual step.

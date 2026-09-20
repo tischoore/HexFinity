@@ -11,21 +11,30 @@ that turns a line into `mesh_builder.build_hex_tile`'s `path_features` kwarg
 via `path_specs()`. The actual curvilinear-sampling math is bpy-free, in
 `tree_pads.refine_and_displace_along_path`.
 
-A click that snaps to an existing line's waypoint (on the same tile) always
-ends the line there, same as ever. A click that snaps to one of the tile's
-own hex-edge points (`map.edge_snap_points`) either ends the line there
-(if the neighbour tile across that edge isn't selected, or doesn't exist) or
-*continues the line onto that neighbour tile* (if it is selected) — the
-line's current segment is committed to the tile being left, and a brand-new
-segment, seeded with the shared edge point and the just-committed segment's
-settings, starts on the neighbour. This is how a single drawing gesture
-spans multiple hexes: select every hex the path should cross (normal
-multi-select) before starting Draw Feature. Each spanned hex ends up owning
-its own independent path feature, sharing only a coincident waypoint with
-its neighbour's feature — the same "each hex is self-contained" model
+A click that snaps to one of the tile's own hex-edge points
+(`map.edge_snap_points`) *continues the line onto the neighbour tile across
+that edge* whenever a generated tile exists there — no pre-selection is
+needed. The line's current segment is committed to the tile being left, and
+a brand-new segment, seeded with the shared edge point and the
+just-committed segment's settings, starts on the neighbour. This is how a
+single drawing gesture spans multiple hexes automatically. If there is no
+generated tile across that edge (a real map boundary), the segment is still
+committed there but the whole drawing session ends — there is nothing left
+to continue onto. Each spanned hex ends up owning its own independent path
+feature, sharing only a coincident waypoint with its neighbour's feature —
+the same "each hex is self-contained" model
 `HEXFINITY_OT_link_connected_paths` already assumes when syncing settings
 across a shared endpoint. Crossing recentres the viewport on the new hex,
 keeping the camera's rotation/distance unchanged.
+
+A click that snaps to an existing line's waypoint (a same-tile join) commits
+the current segment there too, but — unlike an unreachable edge crossing —
+leaves the drawing session running, ready to start a fresh line. Enter/
+Return behaves the same way: it commits the current line early without
+ending the session. **Right-click is the only gesture that deliberately
+ends the whole drawing session** (after committing whatever line is
+currently in progress, if any). Esc still cancels outright, discarding only
+the in-progress, not-yet-committed points.
 
 Every edit (drawing a line, changing its type/width/depth/repeat/texture,
 removing it) auto-rebuilds the tile — there is no manual "Generate" step,
@@ -514,11 +523,12 @@ class HEXFINITY_OT_draw_path_feature(bpy.types.Operator):
     bl_idname = "hexfinity.draw_path_feature"
     bl_label = "Draw Path Feature"
     bl_description = ("Click points above the active tile to draw a line. "
-                      "Clicking near another line's waypoint snaps to it and "
-                      "ends the line. Clicking near a hex edge point ends the "
-                      "line there, or continues it onto the neighbouring hex "
-                      "if that hex is also selected. Enter/RMB finishes "
-                      "early, Backspace removes the last point, Esc cancels.")
+                      "Clicking near a hex edge point continues the line "
+                      "onto the neighbouring hex if it's generated, or ends "
+                      "the session if it isn't. Clicking near another "
+                      "line's waypoint, or Enter, commits the current line "
+                      "without ending the session. RMB ends the session, "
+                      "Backspace removes the last point, Esc cancels.")
     bl_options = {'REGISTER'}
 
     @classmethod
@@ -546,9 +556,9 @@ class HEXFINITY_OT_draw_path_feature(bpy.types.Operator):
         context.window_manager.modal_handler_add(self)
         context.workspace.status_text_set(
             "Draw Path Feature:  LMB = add point    "
-            "snap to line = finish    snap to selected-neighbour edge = "
-            "continue there    Enter/RMB = finish (2+ pts)    "
-            "Backspace = undo point    Esc = cancel")
+            "snap to hex edge = continue onto neighbour    "
+            "snap to line/Enter = commit line (2+ pts)    "
+            "RMB = end session    Backspace = undo point    Esc = cancel")
         self._update_snap_hint(context)
         if context.area is not None:
             context.area.tag_redraw()
@@ -581,9 +591,11 @@ class HEXFINITY_OT_draw_path_feature(bpy.types.Operator):
                 context.area.tag_redraw()
             return {'RUNNING_MODAL'}
 
-        if (event.type in {'RET', 'NUMPAD_ENTER', 'RIGHTMOUSE'}
-                and event.value == 'PRESS'):
-            return self._close(context)
+        if event.type in {'RET', 'NUMPAD_ENTER'} and event.value == 'PRESS':
+            return self._close(context, end_session=False)
+
+        if event.type == 'RIGHTMOUSE' and event.value == 'PRESS':
+            return self._close(context, end_session=True)
 
         if event.type == 'ESC' and event.value == 'PRESS':
             self._finish(context)
@@ -629,7 +641,7 @@ class HEXFINITY_OT_draw_path_feature(bpy.types.Operator):
             if was_empty:
                 return None
             return self._close(context, crossing_edge_idx=edge_idx,
-                               crossing_point_world=target)
+                               crossing_point_world=target, end_session=False)
 
         map_props = context.scene.hexfinity_map
         z_local = _feature_plane_z_local(self._tile.hexfinity_tile, map_props)
@@ -640,13 +652,25 @@ class HEXFINITY_OT_draw_path_feature(bpy.types.Operator):
             return None
         lp = self._tile.matrix_world.inverted() @ hit
         if not point_in_hex(lp.x, lp.y, map_props.diameter_mm):
-            self.report({'INFO'}, "Point must be inside the selected hex")
+            self.report({'INFO'}, "Point must be inside the current hex")
             return None
         self._pts_local.append((lp.x, lp.y))
         self._pts_world.append(hit.copy())
         return None
 
-    def _close(self, context, crossing_edge_idx=None, crossing_point_world=None):
+    def _close(self, context, crossing_edge_idx=None, crossing_point_world=None,
+               end_session=True):
+        """Commit the current in-progress line (if it has 2+ points) and
+        decide what happens to the drawing session:
+
+        - a hex-edge snap whose neighbour tile is generated always
+          continues the session onto it, regardless of `end_session`;
+        - a hex-edge snap with no generated tile across it (a true map
+          boundary) always ends the session — there's nothing left to draw
+          onto;
+        - anything else (a same-tile waypoint join, or an explicit
+          Enter/right-click) ends the session only if `end_session` is
+          True; otherwise the session stays open, ready for a new line."""
         if len(self._pts_local) < 2:
             self.report({'WARNING'}, "A line needs at least 2 points")
             return {'RUNNING_MODAL'}
@@ -659,26 +683,27 @@ class HEXFINITY_OT_draw_path_feature(bpy.types.Operator):
             self._continue_onto(context, neighbour, crossing_point_world)
             return {'RUNNING_MODAL'}
 
-        self._finish(context)
-        return {'FINISHED'}
+        if crossing_edge_idx is not None or end_session:
+            self._finish(context)
+            return {'FINISHED'}
+
+        self._pending_seed_settings = None
+        self._pts_local = []
+        self._pts_world = []
+        return {'RUNNING_MODAL'}
 
     def _resolve_crossing_neighbour(self, context, edge_idx):
         """The neighbour tile across `self._tile`'s edge `edge_idx`, or None
-        if there's nothing to continue onto: `edge_idx` is None (the snap was
-        an existing waypoint, not a hex-edge point), there's no generated
-        tile there (a real map edge), or that tile isn't currently selected
-        — selection is the sole gate on whether an edge-point click
-        continues the line or ends it, per the tool's multi-hex workflow:
-        select every hex a path should span before drawing."""
+        if there's nothing to continue onto: `edge_idx` is None (the snap
+        was an existing waypoint, not a hex-edge point) or there's no
+        generated tile there (a real map edge). No pre-selection is
+        required — a generated neighbour is always continued onto."""
         if edge_idx is None:
             return None
         tile_props = self._tile.hexfinity_tile
         direction = EDGE_DIRECTIONS[edge_idx]
         nq, nr = neighbour_coord(tile_props.coord_q, tile_props.coord_r, direction)
-        neighbour = find_tile(context.scene, nq, nr)
-        if neighbour is None or neighbour not in context.selected_objects:
-            return None
-        return neighbour
+        return find_tile(context.scene, nq, nr)
 
     def _continue_onto(self, context, neighbour, world_point):
         """Start a new segment on `neighbour`, seeded with the shared
@@ -693,6 +718,10 @@ class HEXFINITY_OT_draw_path_feature(bpy.types.Operator):
         lp = neighbour.matrix_world.inverted() @ world_point
         self._pts_local = [(lp.x, lp.y)]
         self._pts_world = [world_point.copy()]
+        # The neighbour is no longer guaranteed to already be selected (no
+        # pre-selection is required to cross onto it) -- select it too, not
+        # just active, so it stays visibly highlighted as the tool moves on.
+        neighbour.select_set(True)
         context.view_layer.objects.active = neighbour
         self._start_view_pan(context, neighbour)
 

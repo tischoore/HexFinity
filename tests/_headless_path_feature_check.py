@@ -182,8 +182,6 @@ crossing_feature.depth_mm = 2.0
 print("tile0 segment ending at shared edge point committed OK:",
       crossing_feature.feature_type, crossing_feature.width_mm)
 
-obj2.select_set(True)
-obj.select_set(True)
 bpy.context.view_layer.objects.active = obj
 
 # A plain object standing in for the modal operator's `self` -- only
@@ -197,10 +195,14 @@ state._tile = obj
 state._start_view_pan = types.MethodType(
     HEXFINITY_OT_draw_path_feature._start_view_pan, state)
 
+# Explicitly deselect both tiles -- crossing no longer depends on selection,
+# only on whether a generated tile exists across the edge.
+obj2.select_set(False)
+obj.select_set(False)
 neighbour = HEXFINITY_OT_draw_path_feature._resolve_crossing_neighbour(
     state, bpy.context, edge_idx)
 assert neighbour is obj2, (neighbour, obj2)
-print("crossing neighbour resolved via selected+generated NE tile OK")
+print("crossing neighbour resolved via generated NE tile, no selection needed OK")
 
 assert HEXFINITY_OT_draw_path_feature._resolve_crossing_neighbour(
     state, bpy.context, None) is None
@@ -230,14 +232,54 @@ w1 = (obj2.location.x + new_feat.points[0].x, obj2.location.y + new_feat.points[
 assert abs(w0[0] - w1[0]) < 1e-6 and abs(w0[1] - w1[1]) < 1e-6, (w0, w1)
 print("shared waypoint coincides across tiles OK")
 
-# Deselecting the neighbour must block the crossing -- it falls back to
-# today's exact single-hex behaviour (the caller would then just finish the
-# line there instead of continuing).
-obj2.select_set(False)
+# A true dead end -- no tile at all across the edge -- must still block the
+# crossing (there is nothing to continue onto), independent of selection.
+tile2.is_generated = False
 state._tile = obj
 assert HEXFINITY_OT_draw_path_feature._resolve_crossing_neighbour(
     state, bpy.context, edge_idx) is None
-print("deselected neighbour correctly blocks crossing OK")
+print("ungenerated/missing neighbour correctly blocks crossing OK")
+tile2.is_generated = True
+
+# _close's own end_session handling: a same-tile waypoint-join snap (or an
+# Enter keypress) commits the current line but must NOT end the session --
+# only an explicit right-click (end_session=True) does, per the "ending is
+# always right click" rule. _resolve_crossing_neighbour returning None with
+# crossing_edge_idx=None must therefore fall through to the "stay open"
+# branch rather than the dead-end-forces-finish one.
+state._pts_local = [(-10.0, -10.0), (10.0, -10.0)]
+state._pts_world = [Vector((0.0, 0.0, 0.0)), Vector((0.0, 0.0, 0.0))]
+state._pending_seed_settings = None
+state._resolve_crossing_neighbour = types.MethodType(
+    HEXFINITY_OT_draw_path_feature._resolve_crossing_neighbour, state)
+before_join_count = len(tile.path_features)
+result = HEXFINITY_OT_draw_path_feature._close(
+    state, bpy.context, crossing_edge_idx=None, end_session=False)
+assert result == {'RUNNING_MODAL'}, result
+assert len(tile.path_features) == before_join_count + 1
+assert state._pts_local == [] and state._pts_world == []
+print("waypoint-join / Enter commits but keeps the session open OK")
+
+# The same commit with end_session=True (right-click) must end the session --
+# _finish/_close return FINISHED. _finish touches draw handlers/status text,
+# which need a couple more state attributes to no-op cleanly in background
+# mode.
+state._pts_local = [(-10.0, 10.0), (10.0, 10.0)]
+state._pts_world = [Vector((0.0, 0.0, 0.0)), Vector((0.0, 0.0, 0.0))]
+state._pending_seed_settings = None
+state._draw_handle = None
+state._pan_timer = None
+state._pan_start = None
+state._pan_target = None
+state._stop_view_pan = types.MethodType(
+    HEXFINITY_OT_draw_path_feature._stop_view_pan, state)
+state._finish = types.MethodType(HEXFINITY_OT_draw_path_feature._finish, state)
+before_rmb_count = len(tile.path_features)
+result = HEXFINITY_OT_draw_path_feature._close(
+    state, bpy.context, crossing_edge_idx=None, end_session=True)
+assert result == {'FINISHED'}, result
+assert len(tile.path_features) == before_rmb_count + 1
+print("right-click always ends the session OK")
 
 hexfinity.unregister()
 print("unregister() OK")

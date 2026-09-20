@@ -1,11 +1,15 @@
 """Draw Segments Path — the consumer of settings.json's segment_path
 library (see segments.py/segment_geometry.py/segment_settings.py, the
 "Add Path Segment Type" authoring tool). Places pre-built segment STLs
-(bridges, junctions, etc.) across one or more selected hex tiles, snapping
-connector waypoint to connector waypoint, and boolean-clipping a piece
-that physically straddles a hex boundary into per-hex pieces — the same
-INTERSECT-against-a-hex-prism pattern operators._cut_terrain_by_hex
-already uses to split an overhanging terrain object.
+(bridges, junctions, etc.) across the generated hex tiles it touches,
+snapping connector waypoint to connector waypoint, and boolean-clipping a
+piece that physically straddles a hex boundary into per-hex pieces — the
+same INTERSECT-against-a-hex-prism pattern operators._cut_terrain_by_hex
+already uses to split an overhanging terrain object. No pre-selection is
+required: a piece that straddles into any generated neighbour is clipped
+and the chain continues onto it automatically, the same "always continue
+onto a generated neighbour" model path_features.py uses. Right-click/Esc
+remain the only way to end a run.
 
 Unlike a regular Path Feature (an open polyline carved as a heightmap
 groove into the tile's own generated mesh, see path_features.py), a placed
@@ -146,14 +150,14 @@ class HEXFINITY_OT_draw_segments_path_dialog(bpy.types.Operator):
     bl_idname = "hexfinity.draw_segments_path_dialog"
     bl_label = "Draw Segments Path"
     bl_description = ("Pick a segment type, then click-place a chain of its "
-                      "segments across the selected hexes")
+                      "segments across the generated hexes")
     bl_options = {'INTERNAL'}
 
     type_name: bpy.props.EnumProperty(name="Type", items=_type_items)
 
     @classmethod
     def poll(cls, context):
-        return any(o.hexfinity_tile.is_generated for o in context.selected_objects)
+        return context.scene.hexfinity_map.is_generated
 
     def invoke(self, context, event):
         if not _load_types():
@@ -185,14 +189,14 @@ class HEXFINITY_OT_draw_segments_path_dialog(bpy.types.Operator):
 class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
     bl_idname = "hexfinity.start_segments_path_draw"
     bl_label = "Draw Segments Path"
-    bl_description = "Click-place segments of the chosen type across the selected hexes"
+    bl_description = "Click-place segments of the chosen type across the generated hexes"
     bl_options = {'REGISTER'}
 
     type_name: bpy.props.StringProperty()
 
     @classmethod
     def poll(cls, context):
-        return any(o.hexfinity_tile.is_generated for o in context.selected_objects)
+        return context.scene.hexfinity_map.is_generated
 
     def invoke(self, context, event):
         if context.area is None or context.area.type != 'VIEW_3D':
@@ -204,8 +208,6 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
             self.report({'ERROR'}, f"No segments registered under type {self.type_name!r}.")
             return {'CANCELLED'}
 
-        self._selected_tiles = [o for o in context.selected_objects
-                                if o.hexfinity_tile.is_generated]
         self._segments = segments
         self._variant_index = 0
         self._rotation_z = 0.0
@@ -303,7 +305,20 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
     def _current_segment(self):
         return self._segments[self._variant_index]
 
-    def _raycast_selected_tiles(self, context, coord):
+    @staticmethod
+    def _generated_tiles(context):
+        """Every generated tile in the map -- the candidate set for hover
+        raycasting and boolean-clip splitting, mirroring the plain
+        `is_generated`-filtered scan operators.py's own export step uses.
+        No pre-selection is required; a piece straddling into any of these
+        is clipped and the run continues onto it automatically."""
+        map_props = context.scene.hexfinity_map
+        coll = map_props.root_collection
+        if coll is None:
+            return []
+        return [o for o in coll.objects if o.hexfinity_tile.is_generated]
+
+    def _raycast_generated_tile(self, context, coord):
         region = context.region
         rv3d = context.region_data
         if region is None or rv3d is None:
@@ -316,7 +331,7 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
         if not hit or hit_obj is None:
             return None, None
         tile = hit_obj.original
-        if not tile.hexfinity_tile.is_generated or tile not in self._selected_tiles:
+        if not tile.hexfinity_tile.is_generated:
             return None, None
         return tile, location.copy()
 
@@ -361,7 +376,7 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
 
     def _update_hover(self, context, event):
         coord = (event.mouse_region_x, event.mouse_region_y)
-        tile, hit_world = self._raycast_selected_tiles(context, coord)
+        tile, hit_world = self._raycast_generated_tile(context, coord)
         self._hover_tile = tile
         self._hover_world = hit_world
         self._snap_world = None
@@ -419,7 +434,7 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
 
     def _try_place(self, context):
         if self._transform is None:
-            self.report({'INFO'}, "Hover over a selected hex to place")
+            self.report({'INFO'}, "Hover over a generated hex to place")
             return
         if not self._connects_to_prev():
             self.report({'WARNING'},
@@ -439,8 +454,8 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
         return Vector((min(xs), min(ys), min(zs))), Vector((max(xs), max(ys), max(zs)))
 
     def _clip_to_hexes(self, context, obj, map_props):
-        """Boolean-INTERSECT `obj` against every selected tile's hex prism it
-        overlaps (bbox pre-filtered, mirrors operators._hex_split_candidates),
+        """Boolean-INTERSECT `obj` against every generated tile's hex prism
+        it overlaps (bbox pre-filtered, mirrors operators._hex_split_candidates),
         exactly like operators._cut_terrain_by_hex splits an overhanging
         terrain object. Returns [(tile, piece_obj), ...]; `obj` itself is
         reused directly (no boolean) when only one hex is involved, or
@@ -448,7 +463,7 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
         bmin, bmax = self._world_bbox(obj)
         half = map_props.diameter_mm * 0.5
         candidates = []
-        for tile in self._selected_tiles:
+        for tile in self._generated_tiles(context):
             tx, ty = tile.location.x, tile.location.y
             if (bmax.x < tx - half or bmin.x > tx + half
                     or bmax.y < ty - half or bmin.y > ty + half):
@@ -561,7 +576,7 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
         pieces = self._clip_to_hexes(context, obj, map_props)
         if not pieces:
             bpy.data.objects.remove(obj, do_unlink=True)
-            self.report({'WARNING'}, "Segment falls outside every selected hex")
+            self.report({'WARNING'}, "Segment falls outside the generated map")
             return
 
         crossing_neighbour = None
@@ -574,8 +589,7 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
                 crossing_z = self._surface_z_at(context, tile_a, crossing_xy.x, crossing_xy.y)
                 crossing_point = Vector((crossing_xy.x, crossing_xy.y, crossing_z))
                 remaining.append(crossing_point)
-                if tile_b in self._selected_tiles:
-                    crossing_neighbour = tile_b
+                crossing_neighbour = tile_b
 
         from . import properties
 
@@ -616,9 +630,14 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
             next_tile = pieces[-1][0]
 
         if crossing_neighbour is not None and crossing_neighbour is not self._hover_tile:
+            # Not guaranteed to already be selected -- no pre-selection is
+            # required to cross onto it -- so select it too, matching
+            # path_features.py's own _continue_onto convention.
+            crossing_neighbour.select_set(True)
             context.view_layer.objects.active = crossing_neighbour
             self._start_view_pan(context, crossing_neighbour)
         elif next_tile is not None and next_tile is not context.view_layer.objects.active:
+            next_tile.select_set(True)
             context.view_layer.objects.active = next_tile
 
     # -- view pan on hex crossing (mirrors path_features.py's own copy) ------
