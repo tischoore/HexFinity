@@ -53,6 +53,7 @@ continue it directly, without touching corner Levels at all.
 """
 
 import math
+import time
 
 import bpy
 import gpu
@@ -65,6 +66,10 @@ from .map import (edge_snap_points, point_in_hex, find_connected_component,
 
 
 SNAP_RADIUS_PX = 18.0
+# How long a hex-crossing's viewport recentre takes to glide, in seconds --
+# fixed rather than user-configurable, matching SNAP_RADIUS_PX's own
+# hardcoded-constant convention for a purely cosmetic value.
+VIEW_PAN_DURATION_S = 1.2
 _LINE_COLOR = (0.85, 0.55, 0.25, 0.9)
 _SNAP_COLOR = (0.3, 1.0, 0.5, 0.95)
 _POINT_COLOR = (1.0, 1.0, 1.0, 1.0)
@@ -532,6 +537,10 @@ class HEXFINITY_OT_draw_path_feature(bpy.types.Operator):
         self._cursor = (event.mouse_region_x, event.mouse_region_y)
         self._snap_hint = None   # (world Vector, edge_idx_or_None) of the hovered snap target
         self._pending_seed_settings = None  # settings to inherit on this tile's next commit
+        self._pan_timer = None       # wm timer, only while a pan animation is running
+        self._pan_start = None       # Vector: view_location when the current pan began
+        self._pan_target = None      # Vector: view_location the current pan is heading to
+        self._pan_start_time = 0.0   # time.monotonic() when the current pan began
         self._draw_handle = bpy.types.SpaceView3D.draw_handler_add(
             self._draw, (context,), 'WINDOW', 'POST_PIXEL')
         context.window_manager.modal_handler_add(self)
@@ -579,6 +588,10 @@ class HEXFINITY_OT_draw_path_feature(bpy.types.Operator):
         if event.type == 'ESC' and event.value == 'PRESS':
             self._finish(context)
             return {'CANCELLED'}
+
+        if event.type == 'TIMER':
+            self._advance_view_pan(context)
+            return {'RUNNING_MODAL'}
 
         return {'RUNNING_MODAL'}
 
@@ -669,8 +682,8 @@ class HEXFINITY_OT_draw_path_feature(bpy.types.Operator):
 
     def _continue_onto(self, context, neighbour, world_point):
         """Start a new segment on `neighbour`, seeded with the shared
-        `world_point` and the just-committed segment's settings, and
-        recentre the view on it."""
+        `world_point` and the just-committed segment's settings, and begin a
+        smooth viewport pan onto it."""
         prev_tile = self._tile.hexfinity_tile
         prev_feature = prev_tile.path_features[prev_tile.active_path_feature_index]
         self._pending_seed_settings = {
@@ -681,17 +694,52 @@ class HEXFINITY_OT_draw_path_feature(bpy.types.Operator):
         self._pts_local = [(lp.x, lp.y)]
         self._pts_world = [world_point.copy()]
         context.view_layer.objects.active = neighbour
-        self._recenter_view(context, neighbour)
+        self._start_view_pan(context, neighbour)
 
-    def _recenter_view(self, context, tile_obj):
-        """Pan the 3D viewport to centre on `tile_obj` without touching its
+    def _start_view_pan(self, context, tile_obj):
+        """Begin (or redirect, if already panning) a smooth glide of the
+        viewport to `tile_obj`'s centre over VIEW_PAN_DURATION_S, preserving
         rotation/distance/perspective, so a multi-hex draw keeps the same
-        viewing angle as it crosses each boundary."""
+        viewing angle as it crosses each boundary. Driven by a wm timer
+        ticked via modal()'s TIMER branch rather than blocking -- point
+        placement keeps working during the glide, it just samples whatever
+        camera position the current tick left. Crossing a second boundary
+        before the first glide finishes simply redirects it: the *current*
+        (mid-flight) view_location becomes the new start, and the existing
+        timer is reused rather than adding a second one."""
         rv3d = context.region_data
-        if rv3d is not None:
-            rv3d.view_location = tile_obj.matrix_world.translation.copy()
+        if rv3d is None:
+            return
+        self._pan_start = rv3d.view_location.copy()
+        self._pan_target = tile_obj.matrix_world.translation.copy()
+        self._pan_start_time = time.monotonic()
+        if self._pan_timer is None:
+            self._pan_timer = context.window_manager.event_timer_add(
+                1.0 / 60.0, window=context.window)
+
+    def _advance_view_pan(self, context):
+        if self._pan_start is None:
+            return
+        rv3d = context.region_data
+        if rv3d is None:
+            return
+        t = min(1.0, (time.monotonic() - self._pan_start_time) / VIEW_PAN_DURATION_S)
+        eased = t * t * (3.0 - 2.0 * t)  # smoothstep ease-in-out
+        rv3d.view_location = self._pan_start.lerp(self._pan_target, eased)
+        if context.area is not None:
+            context.area.tag_redraw()
+        if t >= 1.0:
+            self._stop_view_pan(context)
+
+    def _stop_view_pan(self, context):
+        if self._pan_timer is not None:
+            context.window_manager.event_timer_remove(self._pan_timer)
+            self._pan_timer = None
+        self._pan_start = None
+        self._pan_target = None
 
     def _finish(self, context):
+        self._stop_view_pan(context)
         if self._draw_handle is not None:
             bpy.types.SpaceView3D.draw_handler_remove(self._draw_handle, 'WINDOW')
             self._draw_handle = None

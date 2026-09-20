@@ -188,13 +188,14 @@ bpy.context.view_layer.objects.active = obj
 
 # A plain object standing in for the modal operator's `self` -- only
 # _resolve_crossing_neighbour/_continue_onto are exercised (pure state
-# manipulation, no event/UI access), with _recenter_view bound on so
-# _continue_onto's internal self._recenter_view(...) call resolves; it's a
-# no-op in background mode since context.region_data is None there.
+# manipulation, no event/UI access), with _start_view_pan bound on so
+# _continue_onto's internal self._start_view_pan(...) call resolves; it's a
+# no-op in background mode since context.region_data is None there (so the
+# pan-animation state it would otherwise set never actually gets touched).
 state = types.SimpleNamespace()
 state._tile = obj
-state._recenter_view = types.MethodType(
-    HEXFINITY_OT_draw_path_feature._recenter_view, state)
+state._start_view_pan = types.MethodType(
+    HEXFINITY_OT_draw_path_feature._start_view_pan, state)
 
 neighbour = HEXFINITY_OT_draw_path_feature._resolve_crossing_neighbour(
     state, bpy.context, edge_idx)
