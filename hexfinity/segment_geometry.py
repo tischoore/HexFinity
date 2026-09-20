@@ -5,6 +5,8 @@ map.py because it's specific to arbitrary user-imported footprints rather
 than the hex-grid domain map.py otherwise covers.
 """
 
+import math
+
 try:
     from . import map as hexmap
 except ImportError:
@@ -50,7 +52,13 @@ def hull_edge_snap_targets(hull_vertices, edge_snap):
     tiles. map.polygon_edge_snap_points() orders its flat result
     edge-by-edge with (edge_snap - 1) points per edge, so the edge index of
     flat position `i` is `i // (edge_snap - 1)` (same convention documented
-    for map.edge_snap_points())."""
+    for map.edge_snap_points()).
+
+    Despite the "hull" naming (this module's original and still most common
+    caller), the underlying math has no convexity requirement — segments.py
+    also calls this with a segment's user-authored Corners polygon once it
+    becomes the authoritative footprint (see _footprint_local() there),
+    which may legitimately be concave."""
     n = max(2, edge_snap)
     per_edge = n - 1
     pts = hexmap.polygon_edge_snap_points(hull_vertices, n)
@@ -142,3 +150,96 @@ def nearest_point_on_hull_edge(x, y, hull_vertices, lock_x=False, lock_y=False):
             best = (x, candidate, edge_idx) if lock_x else (candidate, y, edge_idx)
 
     return best
+
+
+def sharp_hull_corner_points(hull_vertices, angle_threshold_deg):
+    """[(x, y, vertex_index), ...] for every vertex of the closed polygon
+    `hull_vertices` whose turn (the angle between its incoming and outgoing
+    edge directions) is at least `angle_threshold_deg` — backs the Add
+    Corner tool's "snap to a real sharp corner" hint, distinguishing a
+    genuine corner from the many near-straight vertices a rounded/filleted
+    STL edge's own convex hull otherwise accumulates.
+
+    Mirrors face_select.flood_fill_faces's dot-product/cosine-threshold
+    style rather than computing an actual angle via acos/atan2 (neither of
+    which is used anywhere else in this codebase): a straight-ahead vertex
+    has incoming/outgoing directions that agree (dot == 1, turn == 0), a
+    90-degree corner has perpendicular directions (dot == 0), and a full
+    reversal has opposing directions (dot == -1, turn == 180). Since a
+    *larger* turn angle is a *smaller* dot product, the comparison direction
+    is inverted from flood_fill_faces's own ">= cos_threshold" ("close
+    enough to the seed"): here a vertex qualifies when
+    `dot <= cos_threshold`.
+
+    Returns [] for a degenerate polygon (fewer than 3 vertices). A vertex
+    adjacent to a zero-length edge (a duplicate point) is skipped — its
+    turn is undefined — the same way nearest_point_on_hull_edge guards a
+    near-zero edge length.
+    """
+    n = len(hull_vertices)
+    if n < 3:
+        return []
+
+    cos_threshold = math.cos(math.radians(angle_threshold_deg))
+    sharp = []
+    for i in range(n):
+        px, py = hull_vertices[i - 1]
+        x, y = hull_vertices[i]
+        nx, ny = hull_vertices[(i + 1) % n]
+
+        inx, iny = x - px, y - py
+        in_len = math.hypot(inx, iny)
+        outx, outy = nx - x, ny - y
+        out_len = math.hypot(outx, outy)
+        if in_len < 1e-12 or out_len < 1e-12:
+            continue
+        inx, iny = inx / in_len, iny / in_len
+        outx, outy = outx / out_len, outy / out_len
+
+        dot = inx * outx + iny * outy
+        if dot <= cos_threshold:
+            sharp.append((x, y, i))
+
+    return sharp
+
+
+def polygon_edge_midpoints(vertices):
+    """[(x, y, edge_idx), ...] — the single midpoint of every edge of the
+    closed polygon `vertices`, in the same order/winding as `vertices`
+    itself (edge i runs vertices[i] -> vertices[(i+1) % n], wrapping n-1
+    back to 0), tagged with that edge's index.
+
+    Reuses map.polygon_edge_snap_points(vertices, edge_snap=3) rather than
+    reimplementing the (a + b) / 2 arithmetic a second time: at edge_snap=3
+    it already emits exactly two points per edge (t=0, the edge's own start
+    vertex, and t=0.5, the midpoint), so slicing out every second entry
+    starting at index 1 recovers just the midpoints, one per edge."""
+    n = len(vertices)
+    if n < 2:
+        return []
+    pts = hexmap.polygon_edge_snap_points(vertices, 3)
+    return [(x, y, i) for i, (x, y) in enumerate(pts[1::2])]
+
+
+def point_in_polygon_concave(x, y, vertices):
+    """Standard even-odd (crossing-number) ray-cast point-in-polygon test
+    over the closed polygon `vertices`, boundary treatment aside agnostic to
+    winding order or convexity — unlike map.point_in_polygon, whose
+    docstring notes it assumes a convex polygon for its sign-consistency
+    test. Produces the same result as map.point_in_polygon for convex
+    input, so it's safe to use unconditionally once a segment's Corners
+    polygon (which may be genuinely concave) becomes the authoritative
+    footprint (see segments._footprint_local())."""
+    n = len(vertices)
+    if n < 3:
+        return False
+
+    inside = False
+    x1, y1 = vertices[-1]
+    for (x2, y2) in vertices:
+        if (y1 > y) != (y2 > y):
+            x_intersect = x1 + (y - y1) * (x2 - x1) / (y2 - y1)
+            if x < x_intersect:
+                inside = not inside
+        x1, y1 = x2, y2
+    return inside

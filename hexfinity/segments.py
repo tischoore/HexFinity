@@ -39,7 +39,6 @@ from gpu_extras.batch import batch_for_shader
 from bpy_extras import view3d_utils
 from mathutils import Vector
 
-from .map import point_in_polygon
 from . import segment_geometry
 from . import segment_settings
 
@@ -67,16 +66,34 @@ _FLAG_TEXT_COLOR = (1.0, 1.0, 1.0, 1.0)
 _FLAG_SHADOW_COLOR = (0.0, 0.0, 0.0, 0.9)
 
 _DRAW_HANDLE = None
+_CORNERS_DRAW_HANDLE = None
 
 # Drawing-plane clearance above the segment's own highest vertex — reuses
 # the 10 mm man-height convention path_features.py uses above a tile.
 DRAW_PLANE_CLEARANCE_MM = 10.0
 
 _ACTIVE = False
+_CORNER_ACTIVE = False
+
+# Distinct hover color for a sharp-corner snap hit during Add Corner, so it
+# reads differently from a plain hull-edge snap (_SNAP_COLOR).
+_SHARP_CORNER_COLOR = (1.0, 0.75, 0.1, 0.95)
+
+# Persistent (post-modal) corner markers — a distinct glyph/color from the
+# waypoint flags above so both overlays stay visually distinguishable when
+# a segment has both corners and waypoints drawn simultaneously.
+_CORNER_COLOR = (0.3, 0.6, 1.0, 0.9)
+_CORNER_ACTIVE_COLOR = _SHARP_CORNER_COLOR
+_CORNER_MARKER_PX = 6.0
+_CORNER_MARKER_ACTIVE_PX = 9.0
 
 
 def is_active():
     return _ACTIVE
+
+
+def is_corner_active():
+    return _CORNER_ACTIVE
 
 
 # ---------------------------------------------------------------------------
@@ -364,17 +381,58 @@ def _hull_local(obj):
     return [(p.x, p.y) for p in obj.hexfinity_segment.hull]
 
 
+def _corners_local(obj):
+    return [(c.x, c.y) for c in obj.hexfinity_segment.corners]
+
+
+def _footprint_local(obj):
+    """The polygon Draw Path should snap to / test containment against:
+    the user-authored Corners polygon once it has at least 3 points (it
+    becomes the authoritative footprint at that point), else falls back to
+    the auto-computed convex hull. Recomputed fresh on every call — nothing
+    caches this, so corner edits made between Draw Path sessions are picked
+    up automatically the next time it runs."""
+    corners = _corners_local(obj)
+    if len(corners) >= 3:
+        return corners
+    return _hull_local(obj)
+
+
 def _snap_targets_world(obj, edge_snap, z_local):
-    """[(Vector, edge_idx), ...] of every hull-edge snap point for a path
-    drawn on `obj` — mirrors path_features._snap_targets_world, minus the
-    "existing waypoint" targets (a segment's path is a single line, redrawn
-    wholesale each time, not extended across multiple committed features)."""
+    """[(Vector, edge_idx), ...] of every footprint-edge snap point for a
+    path drawn on `obj` — mirrors path_features._snap_targets_world, minus
+    the "existing waypoint" targets (a segment's path is a single line,
+    redrawn wholesale each time, not extended across multiple committed
+    features). Snaps against _footprint_local(obj) (the Corners polygon
+    once authoritative, else the auto hull), plus — once corners are
+    authoritative — an extra midpoint target per corner-to-corner edge, in
+    addition to whatever edge_snap-density points hull_edge_snap_targets
+    already produces (at edge_snap == 3 these coincide; the harmless
+    duplicate is left as-is rather than deduped)."""
     mw = obj.matrix_world
+    footprint = _footprint_local(obj)
     targets = []
     for (x, y, edge_idx) in segment_geometry.hull_edge_snap_targets(
-            _hull_local(obj), edge_snap):
+            footprint, edge_snap):
         targets.append((mw @ Vector((x, y, z_local)), edge_idx))
+    if len(obj.hexfinity_segment.corners) >= 3:
+        for (x, y, edge_idx) in segment_geometry.polygon_edge_midpoints(footprint):
+            targets.append((mw @ Vector((x, y, z_local)), edge_idx))
     return targets
+
+
+def _hull_snap_targets_world(obj, edge_snap, z_local):
+    """[(Vector, edge_idx), ...] of hull-edge snap points, always keyed off
+    the auto-computed convex hull (never the Corners polygon) — used by
+    HEXFINITY_OT_add_corner, since defining corners is the bootstrapping
+    step and a corner can't usefully snap to the very polygon it's still
+    building."""
+    mw = obj.matrix_world
+    return [
+        (mw @ Vector((x, y, z_local)), edge_idx)
+        for (x, y, edge_idx) in segment_geometry.hull_edge_snap_targets(
+            _hull_local(obj), edge_snap)
+    ]
 
 
 class HEXFINITY_OT_draw_segment_path(bpy.types.Operator):
@@ -388,7 +446,7 @@ class HEXFINITY_OT_draw_segment_path(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return _resolve_workflow(context) is not None
+        return _resolve_workflow(context) is not None and not is_corner_active()
 
     def invoke(self, context, event):
         if context.area is None or context.area.type != 'VIEW_3D':
@@ -498,7 +556,8 @@ class HEXFINITY_OT_draw_segment_path(bpy.types.Operator):
             self.report({'INFO'}, "Can't place a point from this viewing angle")
             return
         lp = self._obj.matrix_world.inverted() @ hit_pt
-        if not point_in_polygon(lp.x, lp.y, _hull_local(self._obj)):
+        if not segment_geometry.point_in_polygon_concave(
+                lp.x, lp.y, _footprint_local(self._obj)):
             self.report({'INFO'}, "Point must be inside the segment's footprint")
             return
         self._pts_local.append((lp.x, lp.y, lp.z))
@@ -570,6 +629,231 @@ class HEXFINITY_OT_draw_segment_path(bpy.types.Operator):
 
 
 # ---------------------------------------------------------------------------
+# Define Corners — one-shot Add Corner modal, structurally distinct from
+# Draw Path's continuous multi-click session: pressing the button arms
+# placement, the very next click places exactly one corner and the
+# operator ends immediately, so the user re-presses the button for each
+# subsequent corner. Snapping is always against the auto-computed hull
+# (never the Corners polygon being built), plus a "sharp corner" hint —
+# an extra, distinctly-colored snap target at any hull vertex whose turn
+# exceeds scene.hexfinity_segments.sharp_corner_threshold_deg.
+
+def _mesh_min_z_local(obj):
+    """The whole mesh's minimum vertex Z, in local space — mirrors
+    flora._get_or_import_mesh's min_z scan, used as a newly-placed corner's
+    default Z (independent of where on the footprint it was clicked)."""
+    return min((v.co.z for v in obj.data.vertices), default=0.0)
+
+
+class HEXFINITY_OT_add_corner(bpy.types.Operator):
+    bl_idname = "hexfinity.add_corner"
+    bl_label = "Add Corner"
+    bl_description = ("Click once to place a corner of the segment's "
+                      "footprint polygon, snapped to the hull's edges/sharp "
+                      "corners when close. Esc cancels without adding")
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        return _resolve_workflow(context) is not None and not is_active()
+
+    def invoke(self, context, event):
+        if context.area is None or context.area.type != 'VIEW_3D':
+            self.report({'WARNING'}, "Add Corner must be started in the 3D viewport")
+            return {'CANCELLED'}
+        obj = _resolve_workflow(context)
+        if obj is None:
+            self.report({'ERROR'}, "No segment being authored.")
+            return {'CANCELLED'}
+        self._obj = obj
+        self._cursor = (event.mouse_region_x, event.mouse_region_y)
+        self._snap_hint = None
+        self._snap_is_sharp = False
+
+        global _CORNER_ACTIVE
+        _CORNER_ACTIVE = True
+
+        self._draw_handle = bpy.types.SpaceView3D.draw_handler_add(
+            self._draw, (context,), 'WINDOW', 'POST_PIXEL')
+        context.window_manager.modal_handler_add(self)
+        context.workspace.status_text_set(
+            "Add Corner:  LMB = place    Esc = cancel")
+        self._update_snap_hint(context)
+        if context.area is not None:
+            context.area.tag_redraw()
+        return {'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        if event.type in {'MIDDLEMOUSE', 'WHEELUPMOUSE', 'WHEELDOWNMOUSE'}:
+            return {'PASS_THROUGH'}
+
+        if event.type == 'MOUSEMOVE':
+            self._cursor = (event.mouse_region_x, event.mouse_region_y)
+            self._update_snap_hint(context)
+            if context.area is not None:
+                context.area.tag_redraw()
+            return {'RUNNING_MODAL'}
+
+        if event.type == 'LEFTMOUSE' and event.value == 'PRESS':
+            if context.region is None or context.region.type != 'WINDOW':
+                return {'PASS_THROUGH'}
+            placed = self._place(context, event)
+            self._finish(context)
+            if placed:
+                bpy.ops.ed.undo_push(message="HexFinity Add Corner")
+                return {'FINISHED'}
+            return {'CANCELLED'}
+
+        if event.type == 'ESC' and event.value == 'PRESS':
+            self._finish(context)
+            return {'CANCELLED'}
+
+        return {'RUNNING_MODAL'}
+
+    def _find_snap_target(self, context, coord):
+        region = context.region
+        rv3d = context.region_data
+        if region is None or rv3d is None:
+            return None, False
+        edge_snap = context.scene.hexfinity_segments.edge_snap
+        z_local = _draw_plane_z_local(self._obj)
+        sharp_indices = {
+            i for (_, _, i) in segment_geometry.sharp_hull_corner_points(
+                _hull_local(self._obj),
+                context.scene.hexfinity_segments.sharp_corner_threshold_deg)
+        }
+        best = None
+        best_dist = SNAP_RADIUS_PX
+        best_is_sharp = False
+        for w, edge_idx in _hull_snap_targets_world(self._obj, edge_snap, z_local):
+            s = view3d_utils.location_3d_to_region_2d(region, rv3d, w)
+            if s is None:
+                continue
+            dist = math.hypot(s.x - coord[0], s.y - coord[1])
+            if dist <= best_dist:
+                best_dist = dist
+                best = (w, edge_idx)
+                best_is_sharp = edge_idx in sharp_indices
+        return best, best_is_sharp
+
+    def _update_snap_hint(self, context):
+        self._snap_hint, self._snap_is_sharp = self._find_snap_target(context, self._cursor)
+
+    def _place(self, context, event):
+        coord = (event.mouse_region_x, event.mouse_region_y)
+        hit, is_sharp = self._find_snap_target(context, coord)
+        seg = self._obj.hexfinity_segment
+        min_z_local = _mesh_min_z_local(self._obj)
+
+        if hit is not None:
+            target, edge_idx = hit
+            lp = self._obj.matrix_world.inverted() @ target
+            origin = 'SHARP_CORNER' if is_sharp else 'HULL_EDGE'
+        else:
+            z_local = _draw_plane_z_local(self._obj)
+            z_world = (self._obj.matrix_world @ Vector((0.0, 0.0, z_local))).z
+            hit_pt = _mouse_on_plane(context, event, z_world)
+            if hit_pt is None:
+                self.report({'INFO'}, "Can't place a point from this viewing angle")
+                return False
+            lp = self._obj.matrix_world.inverted() @ hit_pt
+            if not segment_geometry.point_in_polygon_concave(lp.x, lp.y, _hull_local(self._obj)):
+                self.report({'INFO'}, "Point must be inside the segment's footprint")
+                return False
+            edge_idx = -1
+            origin = 'FREE'
+
+        c = seg.corners.add()
+        c.x, c.y, c.z = lp.x, lp.y, min_z_local
+        c.edge_idx = edge_idx
+        c.origin = origin
+        seg.active_corner_index = len(seg.corners) - 1
+        return True
+
+    def _finish(self, context):
+        global _CORNER_ACTIVE
+        _CORNER_ACTIVE = False
+        if self._draw_handle is not None:
+            bpy.types.SpaceView3D.draw_handler_remove(self._draw_handle, 'WINDOW')
+            self._draw_handle = None
+        context.workspace.status_text_set(None)
+        if context.area is not None:
+            context.area.tag_redraw()
+
+    def _draw(self, context):
+        region = context.region
+        rv3d = context.region_data
+        if region is None or rv3d is None:
+            return
+
+        tip = self._cursor
+        tip_color = _LINE_COLOR
+        if self._snap_hint is not None:
+            s = view3d_utils.location_3d_to_region_2d(region, rv3d, self._snap_hint[0])
+            if s is not None:
+                tip = (s.x, s.y)
+                tip_color = _SHARP_CORNER_COLOR if self._snap_is_sharp else _SNAP_COLOR
+
+        shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+        gpu.state.blend_set('ALPHA')
+        shader.bind()
+
+        gpu.state.point_size_set(9.0)
+        shader.uniform_float("color", tip_color)
+        batch_for_shader(shader, 'POINTS', {"pos": [tip]}).draw(shader)
+
+        gpu.state.point_size_set(1.0)
+        gpu.state.blend_set('NONE')
+
+
+class HEXFINITY_UL_segment_corners(bpy.types.UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data,
+                  active_propname, index):
+        origin_label = {
+            'FREE': "free", 'HULL_EDGE': "hull edge", 'SHARP_CORNER': "sharp corner",
+        }.get(item.origin, item.origin)
+        layout.label(
+            text=(f"C{index + 1}  ({origin_label})  "
+                  f"X:{item.x:.2f} Y:{item.y:.2f} Z:{item.z:.2f}"),
+            icon='SNAP_VERTEX')
+
+
+class HEXFINITY_OT_snap_corner_to_edge(bpy.types.Operator):
+    bl_idname = "hexfinity.snap_corner_to_edge"
+    bl_label = "Snap to Edge"
+    bl_description = ("Move the selected corner onto the nearest point of "
+                      "the segment's hull boundary (X/Y plane only) — "
+                      "locked axes are held fixed")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = _resolve_workflow(context)
+        if obj is None:
+            return False
+        seg = obj.hexfinity_segment
+        return 0 <= seg.active_corner_index < len(seg.corners)
+
+    def execute(self, context):
+        obj = _resolve_workflow(context)
+        seg = obj.hexfinity_segment
+        c = seg.corners[seg.active_corner_index]
+        if c.lock_x and c.lock_y:
+            self.report({'WARNING'}, "X and Y are both locked — nothing to move")
+            return {'CANCELLED'}
+
+        result = segment_geometry.nearest_point_on_hull_edge(
+            c.x, c.y, _hull_local(obj), lock_x=c.lock_x, lock_y=c.lock_y)
+        if result is None:
+            self.report({'WARNING'}, "No hull edge crosses the locked coordinate")
+            return {'CANCELLED'}
+
+        c.x, c.y, c.edge_idx = result
+        c.origin = 'HULL_EDGE'
+        return {'FINISHED'}
+
+
+# ---------------------------------------------------------------------------
 # Finish / Cancel.
 
 class HEXFINITY_OT_finish_add_segment(bpy.types.Operator):
@@ -581,7 +865,10 @@ class HEXFINITY_OT_finish_add_segment(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         obj = _resolve_workflow(context)
-        return obj is not None and obj.hexfinity_segment.has_drawn_path
+        if obj is None:
+            return False
+        seg = obj.hexfinity_segment
+        return seg.has_drawn_path and len(seg.corners) >= 3
 
     @staticmethod
     def _edge_waypoint_count(seg):
@@ -593,6 +880,9 @@ class HEXFINITY_OT_finish_add_segment(bpy.types.Operator):
             self.report({'ERROR'}, "No segment being authored.")
             return {'CANCELLED'}
         seg = obj.hexfinity_segment
+        if len(seg.corners) < 3:
+            self.report({'ERROR'}, "At least 3 corners must be defined.")
+            return {'CANCELLED'}
         edge_count = self._edge_waypoint_count(seg)
         if edge_count == 0:
             self.report({'ERROR'}, "At least one waypoint must be on the segment's edge.")
@@ -608,6 +898,9 @@ class HEXFINITY_OT_finish_add_segment(bpy.types.Operator):
             self.report({'ERROR'}, "No segment being authored.")
             return {'CANCELLED'}
         seg = obj.hexfinity_segment
+        if len(seg.corners) < 3:
+            self.report({'ERROR'}, "At least 3 corners must be defined.")
+            return {'CANCELLED'}
         edge_count = self._edge_waypoint_count(seg)
         if edge_count == 0:
             self.report({'ERROR'}, "At least one waypoint must be on the segment's edge.")
@@ -616,10 +909,11 @@ class HEXFINITY_OT_finish_add_segment(bpy.types.Operator):
         type_name = seg.type_name
         data = _load_settings()
         hull = [(p.x, p.y) for p in seg.hull]
+        corners = [(c.x, c.y) for c in seg.corners]
         waypoints = [(wp.x, wp.y, wp.z, wp.edge_idx) for wp in seg.waypoints]
         try:
             segment_settings.add_segment(
-                data, type_name, seg.source_filepath, hull, waypoints,
+                data, type_name, seg.source_filepath, hull, corners, waypoints,
                 is_end_segment=(edge_count == 1),
                 edge_snap=context.scene.hexfinity_segments.edge_snap,
             )
@@ -696,6 +990,132 @@ class HEXFINITY_OT_snap_waypoint_to_edge(bpy.types.Operator):
 
 
 # ---------------------------------------------------------------------------
+# Manage Segments — a popup dialog (invoke_popup, not invoke_props_dialog,
+# mirroring segment_path.HEXFINITY_OT_draw_segments_path_dialog's own choice
+# to avoid that method's fixed OK/Cancel footer) listing every segment type
+# in settings.json and, once one is picked, every segment registered under
+# it, with per-row delete/reorder buttons. Every action writes to
+# settings.json immediately (no separate "commit" step, matching
+# set_last_directory's existing immediate-write convention) and then
+# re-invokes the dialog so it always reflects the just-written state.
+
+def _type_enum_items(self, context):
+    data = _load_settings()
+    names = segment_settings.list_types(data)
+    if not names:
+        return [('NONE', "No segment types in settings.json", "")]
+    return [(name, name, "") for name in names]
+
+
+class HEXFINITY_OT_manage_segments(bpy.types.Operator):
+    bl_idname = "hexfinity.manage_segments"
+    bl_label = "Manage Segments"
+    bl_description = "Delete or reorder segments already registered in settings.json"
+    bl_options = {'INTERNAL'}
+
+    type_name: bpy.props.EnumProperty(items=_type_enum_items, name="Type")
+
+    @classmethod
+    def poll(cls, context):
+        return _resolve_workflow(context) is None
+
+    def invoke(self, context, event):
+        data = _load_settings()
+        if not segment_settings.list_types(data):
+            self.report({'WARNING'}, "No segment types in settings.json yet.")
+            return {'CANCELLED'}
+        return context.window_manager.invoke_popup(self, width=420)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "type_name", text="")
+        if self.type_name and self.type_name != 'NONE':
+            data = _load_settings()
+            segs = segment_settings.list_segments(data, self.type_name)
+            col = layout.column(align=True)
+            for i, entry in enumerate(segs):
+                row = col.row(align=True)
+                label = os.path.basename(entry.get("file", ""))
+                if entry.get("is_end_segment"):
+                    label += "  (end)"
+                row.label(text=label)
+
+                up_sub = row.row(align=True)
+                up_sub.enabled = i > 0
+                up = up_sub.operator("hexfinity.move_segment_entry", text="", icon='TRIA_UP')
+                up.type_name, up.index, up.direction = self.type_name, i, -1
+
+                down_sub = row.row(align=True)
+                down_sub.enabled = i < len(segs) - 1
+                down = down_sub.operator("hexfinity.move_segment_entry", text="", icon='TRIA_DOWN')
+                down.type_name, down.index, down.direction = self.type_name, i, 1
+
+                remove = row.operator("hexfinity.remove_segment_entry", text="", icon='X')
+                remove.type_name, remove.index = self.type_name, i
+        layout.separator()
+        layout.operator("hexfinity.close_manage_segments_dialog", text="Close")
+
+    def execute(self, context):
+        # Never actually reached via the popup's own buttons — every
+        # Operator needs one, mirroring
+        # HEXFINITY_OT_draw_segments_path_dialog.execute's own rationale.
+        return {'CANCELLED'}
+
+
+class HEXFINITY_OT_close_manage_segments_dialog(bpy.types.Operator):
+    """Inert "Close" button — mirrors HEXFINITY_OT_cancel_segments_path_dialog."""
+    bl_idname = "hexfinity.close_manage_segments_dialog"
+    bl_label = "Close"
+    bl_options = {'INTERNAL'}
+
+    def execute(self, context):
+        return {'CANCELLED'}
+
+
+class HEXFINITY_OT_remove_segment_entry(bpy.types.Operator):
+    bl_idname = "hexfinity.remove_segment_entry"
+    bl_label = "Remove Segment"
+    bl_description = "Delete this segment from settings.json"
+    bl_options = {'INTERNAL'}
+
+    type_name: bpy.props.StringProperty(options={'HIDDEN'})
+    index: bpy.props.IntProperty(options={'HIDDEN'})
+
+    def execute(self, context):
+        data = _load_settings()
+        try:
+            segment_settings.remove_segment(data, self.type_name, self.index)
+        except segment_settings.SettingsError as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        segment_settings.save_settings(_settings_path(), data)
+        bpy.ops.hexfinity.manage_segments('INVOKE_DEFAULT', type_name=self.type_name)
+        return {'FINISHED'}
+
+
+class HEXFINITY_OT_move_segment_entry(bpy.types.Operator):
+    bl_idname = "hexfinity.move_segment_entry"
+    bl_label = "Move Segment"
+    bl_description = "Reorder this segment within its type"
+    bl_options = {'INTERNAL'}
+
+    type_name: bpy.props.StringProperty(options={'HIDDEN'})
+    index: bpy.props.IntProperty(options={'HIDDEN'})
+    direction: bpy.props.IntProperty(options={'HIDDEN'})
+
+    def execute(self, context):
+        data = _load_settings()
+        try:
+            segment_settings.move_segment(data, self.type_name, self.index, self.direction)
+        except segment_settings.SettingsError as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        segment_settings.save_settings(_settings_path(), data)
+        bpy.ops.hexfinity.manage_segments('INVOKE_DEFAULT', type_name=self.type_name)
+        return {'FINISHED'}
+
+
+# ---------------------------------------------------------------------------
 # Persistent waypoint overlay — a SpaceView3D POST_PIXEL handler, separate
 # from HEXFINITY_OT_draw_segment_path's own _draw (which only runs while
 # that modal is live). Registered/unregistered from __init__.py's
@@ -727,7 +1147,7 @@ def _draw_committed_waypoints():
         return
     seg_props = getattr(scene, "hexfinity_segments", None)
     obj = seg_props.active_object if seg_props is not None else None
-    if obj is None or is_active():
+    if obj is None or is_active() or is_corner_active():
         return
     seg = obj.hexfinity_segment
     if not seg.has_drawn_path or len(seg.waypoints) == 0:
@@ -784,20 +1204,111 @@ def _draw_committed_waypoints():
         blf.disable(_FLAG_FONT_ID, blf.SHADOW)
 
 
-def register():
-    global _DRAW_HANDLE
-    if _DRAW_HANDLE is not None:
+# ---------------------------------------------------------------------------
+# Persistent corner overlay — a separate SpaceView3D POST_PIXEL handler from
+# the waypoint one above, using a distinct diamond-marker glyph/color so
+# corners and waypoints stay visually distinguishable when both are drawn
+# for the same segment at once. Same bail-out rule as the waypoint overlay:
+# any in-progress authoring modal (Draw Path OR Add Corner) owns the live
+# overlay for its own session, so both persistent overlays suppress
+# themselves while *either* is active, not just their own tool's modal.
+
+def _draw_corner_marker(shader, x, y, color, active):
+    r = _CORNER_MARKER_ACTIVE_PX if active else _CORNER_MARKER_PX
+    shader.uniform_float("color", color)
+    batch_for_shader(shader, 'TRIS', {"pos": [
+        (x, y + r), (x + r, y), (x, y - r),
+    ]}).draw(shader)
+    batch_for_shader(shader, 'TRIS', {"pos": [
+        (x, y + r), (x, y - r), (x - r, y),
+    ]}).draw(shader)
+
+
+def _draw_committed_corners():
+    context = bpy.context
+    scene = context.scene
+    if scene is None:
         return
-    _DRAW_HANDLE = bpy.types.SpaceView3D.draw_handler_add(
-        _draw_committed_waypoints, (), 'WINDOW', 'POST_PIXEL')
+    seg_props = getattr(scene, "hexfinity_segments", None)
+    obj = seg_props.active_object if seg_props is not None else None
+    if obj is None or is_active() or is_corner_active():
+        return
+    seg = obj.hexfinity_segment
+    if len(seg.corners) == 0:
+        return
+
+    region = context.region
+    rv3d = context.region_data
+    if region is None or rv3d is None:
+        return
+
+    mw = obj.matrix_world
+    active_idx = seg.active_corner_index
+    screen_pts = [
+        view3d_utils.location_3d_to_region_2d(
+            region, rv3d, mw @ Vector((c.x, c.y, c.z)))
+        for c in seg.corners
+    ]
+
+    shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+    gpu.state.blend_set('ALPHA')
+    gpu.state.line_width_set(2.0)
+    shader.bind()
+
+    line = [(s.x, s.y) for s in screen_pts if s is not None]
+    if len(line) >= 2:
+        closed = line + [line[0]]
+        shader.uniform_float("color", _CORNER_COLOR)
+        batch_for_shader(shader, 'LINE_STRIP', {"pos": closed}).draw(shader)
+
+    for i, s in enumerate(screen_pts):
+        if s is None:
+            continue
+        is_active_c = (i == active_idx)
+        _draw_corner_marker(shader, s.x, s.y,
+                             _CORNER_ACTIVE_COLOR if is_active_c else _CORNER_COLOR,
+                             is_active_c)
+
+    gpu.state.line_width_set(1.0)
+    gpu.state.blend_set('NONE')
+
+    blf.size(_FLAG_FONT_ID, _FLAG_FONT_SIZE)
+    blf.enable(_FLAG_FONT_ID, blf.SHADOW)
+    blf.shadow(_FLAG_FONT_ID, 3, *_FLAG_SHADOW_COLOR)
+    blf.shadow_offset(_FLAG_FONT_ID, 1, -1)
+    blf.color(_FLAG_FONT_ID, *_FLAG_TEXT_COLOR)
+    try:
+        for i, s in enumerate(screen_pts):
+            if s is None:
+                continue
+            r = _CORNER_MARKER_ACTIVE_PX if i == active_idx else _CORNER_MARKER_PX
+            blf.position(_FLAG_FONT_ID, s.x + r + 2.0, s.y + r + 2.0, 0.0)
+            blf.draw(_FLAG_FONT_ID, f"C{i + 1}")
+    finally:
+        blf.disable(_FLAG_FONT_ID, blf.SHADOW)
+
+
+def register():
+    global _DRAW_HANDLE, _CORNERS_DRAW_HANDLE
+    if _DRAW_HANDLE is None:
+        _DRAW_HANDLE = bpy.types.SpaceView3D.draw_handler_add(
+            _draw_committed_waypoints, (), 'WINDOW', 'POST_PIXEL')
+    if _CORNERS_DRAW_HANDLE is None:
+        _CORNERS_DRAW_HANDLE = bpy.types.SpaceView3D.draw_handler_add(
+            _draw_committed_corners, (), 'WINDOW', 'POST_PIXEL')
 
 
 def unregister():
-    global _DRAW_HANDLE
-    if _DRAW_HANDLE is None:
-        return
-    try:
-        bpy.types.SpaceView3D.draw_handler_remove(_DRAW_HANDLE, 'WINDOW')
-    except (ValueError, RuntimeError):
-        pass
-    _DRAW_HANDLE = None
+    global _DRAW_HANDLE, _CORNERS_DRAW_HANDLE
+    if _DRAW_HANDLE is not None:
+        try:
+            bpy.types.SpaceView3D.draw_handler_remove(_DRAW_HANDLE, 'WINDOW')
+        except (ValueError, RuntimeError):
+            pass
+        _DRAW_HANDLE = None
+    if _CORNERS_DRAW_HANDLE is not None:
+        try:
+            bpy.types.SpaceView3D.draw_handler_remove(_CORNERS_DRAW_HANDLE, 'WINDOW')
+        except (ValueError, RuntimeError):
+            pass
+        _CORNERS_DRAW_HANDLE = None

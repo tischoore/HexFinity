@@ -965,7 +965,9 @@ def _on_segment_waypoint_update(self, context):
     # plain property edit / list-selection change in the N-panel doesn't by
     # itself guarantee a VIEW_3D repaint — force one so an edited coordinate
     # or a newly-selected waypoint shows up immediately, not just on the
-    # next unrelated redraw.
+    # next unrelated redraw. Also backs HexFinitySegmentCorner's own x/y/z/
+    # active_corner_index fields (segments._draw_committed_corners), for
+    # the same reason.
     wm = getattr(context, "window_manager", None)
     if wm is None:
         return
@@ -1006,6 +1008,54 @@ class HexFinitySegmentWaypoint(bpy.types.PropertyGroup):
     )
 
 
+class HexFinitySegmentCorner(bpy.types.PropertyGroup):
+    """One point of a segment's user-authored Corners polygon (the Define
+    Corners workflow, segments.HEXFINITY_OT_add_corner) — a dedicated type
+    rather than a reuse of HexFinitySegmentWaypoint, since a corner's
+    edge_idx is only ever a *result* of a snap action (never an intrinsic
+    "on the footprint edge" flag the way a waypoint's is), and a corner
+    additionally wants the origin field below, which would be meaningless
+    clutter on a waypoint. Mirrors the existing precedent of
+    HexFinitySurfacePoint vs. HexFinitySegmentWaypoint already being two
+    separate but similarly-shaped types."""
+    x: bpy.props.FloatProperty(name="X", default=0.0, update=_on_segment_waypoint_update)
+    y: bpy.props.FloatProperty(name="Y", default=0.0, update=_on_segment_waypoint_update)
+    z: bpy.props.FloatProperty(name="Z", default=0.0, update=_on_segment_waypoint_update)
+    edge_idx: bpy.props.IntProperty(
+        name="Edge Index",
+        description="Which hull edge this corner currently sits on, or -1 "
+                    "for a free (interior) point",
+        default=-1,
+    )
+    lock_x: bpy.props.BoolProperty(
+        name="Lock X",
+        description="Keep X fixed when Snap to Edge runs for this corner",
+        default=False,
+    )
+    lock_y: bpy.props.BoolProperty(
+        name="Lock Y",
+        description="Keep Y fixed when Snap to Edge runs for this corner",
+        default=False,
+    )
+    lock_z: bpy.props.BoolProperty(
+        name="Lock Z",
+        description="Reserved for a future Z-aware snap; Snap to Edge "
+                    "itself never touches Z",
+        default=False,
+    )
+    origin: bpy.props.EnumProperty(
+        name="Origin",
+        description="How this corner was last placed — informational only",
+        items=[
+            ('FREE', "Free", "Placed on a free click inside the footprint"),
+            ('HULL_EDGE', "Hull Edge", "Snapped onto the convex hull's boundary"),
+            ('SHARP_CORNER', "Sharp Corner",
+             "Snapped onto a hull vertex flagged as a sharp corner"),
+        ],
+        default='FREE',
+    )
+
+
 class HexFinitySegmentAuthoring(bpy.types.PropertyGroup):
     """Per-Object workflow state for the temporary STL imported by the Add
     Path Segment Type flow. Lives on the real imported object (mirrors
@@ -1017,6 +1067,10 @@ class HexFinitySegmentAuthoring(bpy.types.PropertyGroup):
     source_filepath: bpy.props.StringProperty(options={'HIDDEN'})
     type_is_new: bpy.props.BoolProperty(options={'HIDDEN'})
     hull: bpy.props.CollectionProperty(type=HexFinitySurfacePoint)
+    corners: bpy.props.CollectionProperty(type=HexFinitySegmentCorner)
+    active_corner_index: bpy.props.IntProperty(
+        name="Active Corner", default=0, options={'HIDDEN'},
+        update=_on_segment_waypoint_update)
     waypoints: bpy.props.CollectionProperty(type=HexFinitySegmentWaypoint)
     active_waypoint_index: bpy.props.IntProperty(
         name="Active Waypoint", default=0, options={'HIDDEN'},
@@ -1041,4 +1095,14 @@ class HexFinitySegmentsProperties(bpy.types.PropertyGroup):
         default=3,
         min=2,
         soft_max=12,
+    )
+    sharp_corner_threshold_deg: bpy.props.FloatProperty(
+        name="Sharp Corner Threshold",
+        description="Minimum turn angle (degrees) for a convex-hull vertex "
+                    "to be offered as a sharp-corner snap hint while placing "
+                    "a corner — filters out the many near-straight vertices "
+                    "a rounded/filleted STL edge's own hull accumulates",
+        default=50.0,
+        min=0.0,
+        max=180.0,
     )

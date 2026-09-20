@@ -105,25 +105,79 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         if obj is None:
             box.operator("hexfinity.add_segment_type",
                          text="Add Path Segment Type", icon='IMPORT')
+            box.operator("hexfinity.manage_segments",
+                         text="Manage Segments", icon='PRESET')
             return
 
         seg = obj.hexfinity_segment
         box.label(text=f"Segment: {seg.type_name} — {obj.name}", icon='MESH_DATA')
         box.prop(seg_props, "edge_snap")
+        box.prop(seg_props, "sharp_corner_threshold_deg")
+
+        HEXFINITY_PT_panel._draw_segment_corners(box, seg)
+
         if segments.is_active():
             row = box.row()
             row.alert = True
             row.label(text="Draw Path active — Esc / RMB to close", icon='INFO')
         else:
-            box.operator("hexfinity.draw_segment_path", text="Draw Path",
+            row = box.row()
+            row.enabled = not segments.is_corner_active()
+            row.operator("hexfinity.draw_segment_path", text="Draw Path",
                          icon='MOD_CURVE')
             if seg.has_drawn_path and len(seg.waypoints) > 0:
                 HEXFINITY_PT_panel._draw_segment_waypoints(box, seg)
         row = box.row()
-        row.enabled = seg.has_drawn_path
+        row.enabled = seg.has_drawn_path and len(seg.corners) >= 3
         row.operator("hexfinity.finish_add_segment", text="Finish Add Segment",
                      icon='CHECKMARK')
         box.operator("hexfinity.cancel_add_segment", text="Cancel", icon='X')
+
+    @staticmethod
+    def _draw_segment_corners(box, seg):
+        box.label(text="Define Corners", icon='MESH_ICOSPHERE')
+        n = len(seg.corners)
+        info_row = box.row()
+        if n < 3:
+            info_row.alert = True
+            info_row.label(text=f"{n}/3 minimum corners defined", icon='ERROR')
+        else:
+            info_row.label(text=f"{n}/3 minimum corners defined", icon='INFO')
+
+        if segments.is_corner_active():
+            row = box.row()
+            row.alert = True
+            row.label(text="Add Corner active — click to place, Esc to cancel", icon='INFO')
+        else:
+            row = box.row()
+            row.enabled = not segments.is_active()
+            row.operator("hexfinity.add_corner", text="Add Corner", icon='ADD')
+
+        if n > 0:
+            box.template_list(
+                "HEXFINITY_UL_segment_corners", "",
+                seg, "corners",
+                seg, "active_corner_index",
+                rows=3,
+            )
+            idx = seg.active_corner_index
+            if 0 <= idx < len(seg.corners):
+                c = seg.corners[idx]
+                col = box.column(align=True)
+                for axis in ("x", "y", "z"):
+                    row = col.row(align=True)
+                    row.prop(c, axis)
+                    lock_attr = f"lock_{axis}"
+                    locked = getattr(c, lock_attr)
+                    row.prop(c, lock_attr, text="",
+                             icon='LOCKED' if locked else 'UNLOCKED', toggle=True)
+                box.operator("hexfinity.snap_corner_to_edge", text="Snap to Edge",
+                             icon='SNAP_ON')
+
+        if seg.has_drawn_path and len(seg.waypoints) > 0:
+            box.label(text="Editing corners after drawing a path may invalidate "
+                           "its waypoints — redraw the path if you change corners",
+                      icon='INFO')
 
     @staticmethod
     def _draw_segment_waypoints(box, seg):

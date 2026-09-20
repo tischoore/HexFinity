@@ -107,16 +107,18 @@ def test_has_type_false_for_unknown():
 # find_segment / add_segment dedup
 
 _HULL = [(-10.0, -5.0), (10.0, -5.0), (10.0, 5.0), (-10.0, 5.0)]
+_CORNERS = [(-10.0, -5.0), (10.0, -5.0), (10.0, 5.0), (-10.0, 5.0)]
 _WAYPOINTS = [(-10.0, 0.0, 12.0, 3), (10.0, 0.0, 12.0, 1)]
 
 
 def test_add_segment_creates_type_if_missing():
     data = ss.default_settings()
-    entry = ss.add_segment(data, "Bridge", "C:/segs/Bridge/a.stl", _HULL, _WAYPOINTS,
-                            is_end_segment=False, edge_snap=3)
+    entry = ss.add_segment(data, "Bridge", "C:/segs/Bridge/a.stl", _HULL, _CORNERS,
+                            _WAYPOINTS, is_end_segment=False, edge_snap=3)
     assert ss.has_type(data, "Bridge")
     assert entry["file"] == "C:/segs/Bridge/a.stl"
     assert entry["hull_local_mm"] == [list(p) for p in _HULL]
+    assert entry["corners_local_mm"] == [list(p) for p in _CORNERS]
     assert entry["waypoints"][0] == {"x_mm": -10.0, "y_mm": 0.0, "z_mm": 12.0, "edge_idx": 3}
     assert entry["man_height_mm"] == ss.DEFAULT_MAN_HEIGHT_MM
     assert "added_utc" in entry
@@ -124,8 +126,8 @@ def test_add_segment_creates_type_if_missing():
 
 def test_find_segment_matches_normalized_path():
     data = ss.default_settings()
-    ss.add_segment(data, "Bridge", "C:/segs/Bridge/a.stl", _HULL, _WAYPOINTS,
-                    False, 3)
+    ss.add_segment(data, "Bridge", "C:/segs/Bridge/a.stl", _HULL, _CORNERS,
+                    _WAYPOINTS, False, 3)
     found = ss.find_segment(data, "Bridge", "c:/SEGS/Bridge/A.STL")
     assert found is not None
     assert found["file"] == "C:/segs/Bridge/a.stl"
@@ -133,27 +135,27 @@ def test_find_segment_matches_normalized_path():
 
 def test_find_segment_none_for_different_type():
     data = ss.default_settings()
-    ss.add_segment(data, "Bridge", "C:/segs/Bridge/a.stl", _HULL, _WAYPOINTS,
-                    False, 3)
+    ss.add_segment(data, "Bridge", "C:/segs/Bridge/a.stl", _HULL, _CORNERS,
+                    _WAYPOINTS, False, 3)
     assert ss.find_segment(data, "Tunnel", "C:/segs/Bridge/a.stl") is None
 
 
 def test_add_segment_raises_on_duplicate():
     data = ss.default_settings()
-    ss.add_segment(data, "Bridge", "C:/segs/Bridge/a.stl", _HULL, _WAYPOINTS,
-                    False, 3)
+    ss.add_segment(data, "Bridge", "C:/segs/Bridge/a.stl", _HULL, _CORNERS,
+                    _WAYPOINTS, False, 3)
     with pytest.raises(ss.DuplicateSegmentError):
-        ss.add_segment(data, "Bridge", "c:/SEGS/bridge/A.stl", _HULL, _WAYPOINTS,
-                        False, 3)
+        ss.add_segment(data, "Bridge", "c:/SEGS/bridge/A.stl", _HULL, _CORNERS,
+                        _WAYPOINTS, False, 3)
 
 
 def test_add_segment_same_file_different_type_allowed():
     data = ss.default_settings()
-    ss.add_segment(data, "Bridge", "C:/segs/shared/a.stl", _HULL, _WAYPOINTS,
-                    False, 3)
+    ss.add_segment(data, "Bridge", "C:/segs/shared/a.stl", _HULL, _CORNERS,
+                    _WAYPOINTS, False, 3)
     # Not a duplicate: different type namespace.
-    entry = ss.add_segment(data, "Tunnel", "C:/segs/shared/a.stl", _HULL, _WAYPOINTS,
-                            False, 3)
+    entry = ss.add_segment(data, "Tunnel", "C:/segs/shared/a.stl", _HULL, _CORNERS,
+                            _WAYPOINTS, False, 3)
     assert entry["file"] == "C:/segs/shared/a.stl"
 
 
@@ -162,3 +164,93 @@ def test_last_directory_getter_setter():
     assert ss.get_last_directory(data) is None
     ss.set_last_directory(data, "C:/segs")
     assert ss.get_last_directory(data) == "C:/segs"
+
+
+# ---------------------------------------------------------------------------
+# list_types / list_segments
+
+def test_list_types_sorted():
+    data = ss.default_settings()
+    ss.add_type(data, "Tunnel")
+    ss.add_type(data, "Bridge")
+    assert ss.list_types(data) == ["Bridge", "Tunnel"]
+
+
+def test_list_segments_returns_entries_in_order():
+    data = ss.default_settings()
+    ss.add_segment(data, "Bridge", "C:/segs/a.stl", _HULL, _CORNERS, _WAYPOINTS, False, 3)
+    ss.add_segment(data, "Bridge", "C:/segs/b.stl", _HULL, _CORNERS, _WAYPOINTS, False, 3)
+    segs = ss.list_segments(data, "Bridge")
+    assert [s["file"] for s in segs] == ["C:/segs/a.stl", "C:/segs/b.stl"]
+
+
+def test_list_segments_unknown_type_returns_empty():
+    data = ss.default_settings()
+    assert ss.list_segments(data, "Nope") == []
+
+
+# ---------------------------------------------------------------------------
+# remove_segment
+
+def test_remove_segment_returns_entry_and_shrinks_list():
+    data = ss.default_settings()
+    ss.add_segment(data, "Bridge", "C:/segs/a.stl", _HULL, _CORNERS, _WAYPOINTS, False, 3)
+    ss.add_segment(data, "Bridge", "C:/segs/b.stl", _HULL, _CORNERS, _WAYPOINTS, False, 3)
+    removed = ss.remove_segment(data, "Bridge", 0)
+    assert removed["file"] == "C:/segs/a.stl"
+    assert [s["file"] for s in ss.list_segments(data, "Bridge")] == ["C:/segs/b.stl"]
+
+
+def test_remove_segment_leaves_empty_type_present():
+    data = ss.default_settings()
+    ss.add_segment(data, "Bridge", "C:/segs/a.stl", _HULL, _CORNERS, _WAYPOINTS, False, 3)
+    ss.remove_segment(data, "Bridge", 0)
+    assert ss.has_type(data, "Bridge")
+    assert ss.list_segments(data, "Bridge") == []
+
+
+def test_remove_segment_unknown_type_raises():
+    data = ss.default_settings()
+    with pytest.raises(ss.SettingsError):
+        ss.remove_segment(data, "Nope", 0)
+
+
+def test_remove_segment_out_of_range_index_raises():
+    data = ss.default_settings()
+    ss.add_segment(data, "Bridge", "C:/segs/a.stl", _HULL, _CORNERS, _WAYPOINTS, False, 3)
+    with pytest.raises(ss.SettingsError):
+        ss.remove_segment(data, "Bridge", 5)
+
+
+# ---------------------------------------------------------------------------
+# move_segment
+
+def test_move_segment_swaps_neighbours():
+    data = ss.default_settings()
+    ss.add_segment(data, "Bridge", "C:/segs/a.stl", _HULL, _CORNERS, _WAYPOINTS, False, 3)
+    ss.add_segment(data, "Bridge", "C:/segs/b.stl", _HULL, _CORNERS, _WAYPOINTS, False, 3)
+    assert ss.move_segment(data, "Bridge", 0, 1) is True
+    assert [s["file"] for s in ss.list_segments(data, "Bridge")] == [
+        "C:/segs/b.stl", "C:/segs/a.stl"]
+
+
+def test_move_segment_boundary_is_noop():
+    data = ss.default_settings()
+    ss.add_segment(data, "Bridge", "C:/segs/a.stl", _HULL, _CORNERS, _WAYPOINTS, False, 3)
+    ss.add_segment(data, "Bridge", "C:/segs/b.stl", _HULL, _CORNERS, _WAYPOINTS, False, 3)
+    assert ss.move_segment(data, "Bridge", 0, -1) is False
+    assert [s["file"] for s in ss.list_segments(data, "Bridge")] == [
+        "C:/segs/a.stl", "C:/segs/b.stl"]
+
+
+def test_move_segment_unknown_type_raises():
+    data = ss.default_settings()
+    with pytest.raises(ss.SettingsError):
+        ss.move_segment(data, "Nope", 0, 1)
+
+
+def test_move_segment_out_of_range_index_raises():
+    data = ss.default_settings()
+    ss.add_segment(data, "Bridge", "C:/segs/a.stl", _HULL, _CORNERS, _WAYPOINTS, False, 3)
+    with pytest.raises(ss.SettingsError):
+        ss.move_segment(data, "Bridge", 5, 1)

@@ -79,6 +79,14 @@ def make_square_segment(name, source_filepath, type_name):
     for (x, y) in hull:
         p = seg.hull.add()
         p.x, p.y = x, y
+    # finish_add_segment now also requires >= 3 corners; reuse the same
+    # square as the Corners polygon (a real authoring session would place
+    # these via Add Corner, but for this non-interactive script the exact
+    # geometry doesn't matter, only that the >= 3 gate is satisfied).
+    seg.corners.clear()
+    for (x, y) in hull:
+        c = seg.corners.add()
+        c.x, c.y = x, y
     seg.waypoints.clear()
     seg.has_drawn_path = False
     return obj
@@ -130,9 +138,10 @@ assert entry is not None
 assert entry["is_end_segment"] is True, entry
 assert entry["man_height_mm"] == segment_settings.DEFAULT_MAN_HEIGHT_MM
 assert len(entry["hull_local_mm"]) == 4
+assert len(entry["corners_local_mm"]) == 4
 assert entry["waypoints"] == [
-    {"x_mm": -10.0, "y_mm": 0.0, "edge_idx": 3},
-    {"x_mm": 0.0, "y_mm": 0.0, "edge_idx": -1},
+    {"x_mm": -10.0, "y_mm": 0.0, "z_mm": 0.0, "edge_idx": 3},
+    {"x_mm": 0.0, "y_mm": 0.0, "z_mm": 0.0, "edge_idx": -1},
 ]
 print("settings.json entry shape OK:", entry["file"], "is_end_segment =", entry["is_end_segment"])
 

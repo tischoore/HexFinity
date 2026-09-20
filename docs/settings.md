@@ -49,6 +49,7 @@ it for you).
             "file": "C:/Users/andre/HexSegments/Bridge/bridge_01.stl",
             "man_height_mm": 10.0,
             "hull_local_mm": [[-40.0, -12.5], [40.0, -12.5], [40.0, 12.5], [-40.0, 12.5]],
+            "corners_local_mm": [[-40.0, -12.5], [40.0, -12.5], [40.0, 12.5], [-40.0, 12.5]],
             "waypoints": [
               {"x_mm": -40.0, "y_mm": 0.0, "z_mm": 12.0, "edge_idx": 3},
               {"x_mm": 0.0,   "y_mm": 0.0, "z_mm": 12.0, "edge_idx": -1},
@@ -89,6 +90,7 @@ This is a deliberate simplification, not a validated constraint.
 | `file` | Absolute path to the original STL. The file is **referenced**, not copied — HexFinity does not duplicate it into its own storage, so moving/renaming/deleting the source file breaks this entry. |
 | `man_height_mm` | Always `10.0`. A fixed documentation label recording the scale assumption every segment is authored under — **not enforced or auto-rescaled** by HexFinity. If your STL wasn't modeled at 10 mm man-height, its geometry will be wrong relative to a hex tile's own scale; there is no correction applied. |
 | `hull_local_mm` | The convex hull of the STL's footprint (its vertices projected to XY), in the segment's own local mm space, ordered counter-clockwise. Captured once at authoring time so a future consumer never needs to recompute it from the mesh. |
+| `corners_local_mm` | The user-authored **Define Corners** polygon (see the README's Settings section), same `[[x, y], ...]` shape as `hull_local_mm` but placed by hand via the "Add Corner" tool rather than computed from the mesh — may be concave, unlike `hull_local_mm`. Like `hull_local_mm`, this is write-only today: nothing reads it back out of a loaded `settings.json` yet (a future reader should use `.get("corners_local_mm", [])`, since segments saved before this field existed won't have it). |
 | `waypoints` | The drawn connector path: a list of `{x_mm, y_mm, z_mm, edge_idx}` points in the same local mm space as `hull_local_mm`. `z_mm` starts out at the draw tool's click-plane height (the segment's tallest vertex plus clearance) and is only ever refined by hand-editing it in the authoring panel's waypoint list — nothing currently reads it back (the Draw Segments Path consumer only matches connectors by `x_mm`/`y_mm`/`edge_idx`). |
 | `is_end_segment` | `true` if exactly one waypoint has `edge_idx >= 0` (see below) — a segment with only one connection point, e.g. a dead end or terminus, rather than a through-piece. |
 | `edge_snap` | The Edge Snap density (points per hull edge) the waypoints were drawn with — kept for reference/reproducibility, not re-validated against `hull_local_mm` later. |
@@ -101,7 +103,7 @@ Each waypoint is tagged with which hull edge (if any) it snapped to:
 - `edge_idx >= 0` — the waypoint sits on hull edge `edge_idx` (indexing into `hull_local_mm`: edge `i` runs from vertex `i` to vertex `(i+1) % len(hull_local_mm)`). This marks a **connection point** — where this segment is meant to join another piece or continue a path.
 - `edge_idx == -1` — an interior point (not on the footprint's edge), just part of the path's shape.
 
-**At least one waypoint must have `edge_idx >= 0`** — the authoring tool refuses to finish a segment with no edge connection at all, since a segment that connects to nothing has no way to be spliced into anything later.
+**At least one waypoint must have `edge_idx >= 0`, and `corners_local_mm` must have at least 3 points** — the authoring tool refuses to finish a segment missing either: a segment that connects to nothing has no way to be spliced into anything later, and a footprint polygon needs at least 3 points to be a polygon at all.
 
 ## Duplicate detection
 

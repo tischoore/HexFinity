@@ -133,3 +133,84 @@ def test_nearest_point_on_hull_edge_both_locked_returns_none():
 def test_nearest_point_on_hull_edge_degenerate_hull_returns_none():
     assert sg.nearest_point_on_hull_edge(0.0, 0.0, [(0.0, 0.0)]) is None
     assert sg.nearest_point_on_hull_edge(0.0, 0.0, []) is None
+
+
+# ---------------------------------------------------------------------------
+# sharp_hull_corner_points
+
+def test_sharp_hull_corner_points_square_all_corners_sharp_at_default():
+    sharp = sg.sharp_hull_corner_points(_SQUARE, 50.0)
+    assert {i for (_, _, i) in sharp} == {0, 1, 2, 3}
+    assert {(x, y) for (x, y, _) in sharp} == set(_SQUARE)
+
+
+def test_sharp_hull_corner_points_square_not_sharp_above_90():
+    # A square's corners turn exactly 90 degrees, so a 100-degree threshold
+    # should flag none of them.
+    assert sg.sharp_hull_corner_points(_SQUARE, 100.0) == []
+
+
+def test_sharp_hull_corner_points_degenerate_returns_empty():
+    assert sg.sharp_hull_corner_points([], 50.0) == []
+    assert sg.sharp_hull_corner_points([(0.0, 0.0), (1.0, 0.0)], 50.0) == []
+
+
+def test_sharp_hull_corner_points_collinear_vertex_never_sharp():
+    # A point sitting exactly on a straight run between its neighbours has
+    # a turn of 0 degrees, so it must never be flagged, even at a very low
+    # threshold.
+    poly = [(-10.0, -10.0), (0.0, -10.0), (10.0, -10.0), (10.0, 10.0), (-10.0, 10.0)]
+    sharp = sg.sharp_hull_corner_points(poly, 1.0)
+    assert 1 not in {i for (_, _, i) in sharp}  # (0.0, -10.0) is collinear
+
+
+def test_sharp_hull_corner_points_skips_zero_length_edge():
+    poly = [(-10.0, -10.0), (-10.0, -10.0), (10.0, -10.0), (10.0, 10.0), (-10.0, 10.0)]
+    # Should not raise despite the duplicated vertex creating a zero-length edge.
+    sg.sharp_hull_corner_points(poly, 50.0)
+
+
+# ---------------------------------------------------------------------------
+# polygon_edge_midpoints
+
+def test_polygon_edge_midpoints_square_includes_wraparound_edge():
+    mids = sg.polygon_edge_midpoints(_SQUARE)
+    assert len(mids) == len(_SQUARE)
+    for i in range(len(_SQUARE)):
+        a = _SQUARE[i]
+        b = _SQUARE[(i + 1) % len(_SQUARE)]
+        expected = ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
+        x, y, edge_idx = mids[i]
+        assert (x, y) == pytest.approx(expected)
+        assert edge_idx == i
+
+
+def test_polygon_edge_midpoints_degenerate_returns_empty():
+    assert sg.polygon_edge_midpoints([]) == []
+    assert sg.polygon_edge_midpoints([(0.0, 0.0)]) == []
+
+
+# ---------------------------------------------------------------------------
+# point_in_polygon_concave
+
+def test_point_in_polygon_concave_matches_convex_case():
+    from map import point_in_polygon
+    assert sg.point_in_polygon_concave(0.0, 0.0, _SQUARE) == point_in_polygon(
+        0.0, 0.0, _SQUARE)
+    assert sg.point_in_polygon_concave(50.0, 0.0, _SQUARE) == point_in_polygon(
+        50.0, 0.0, _SQUARE)
+
+
+def test_point_in_polygon_concave_handles_l_shape():
+    # An L-shaped polygon: a 20x20 square with the top-right 10x10 quadrant
+    # notched out.
+    l_shape = [
+        (0.0, 0.0), (20.0, 0.0), (20.0, 10.0),
+        (10.0, 10.0), (10.0, 20.0), (0.0, 20.0),
+    ]
+    assert sg.point_in_polygon_concave(5.0, 5.0, l_shape) is True  # solid arm
+    assert sg.point_in_polygon_concave(15.0, 15.0, l_shape) is False  # in the notch
+
+
+def test_point_in_polygon_concave_degenerate_returns_false():
+    assert sg.point_in_polygon_concave(0.0, 0.0, [(0.0, 0.0), (1.0, 0.0)]) is False
