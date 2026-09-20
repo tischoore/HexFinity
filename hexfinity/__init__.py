@@ -9,7 +9,7 @@ remain importable from plain CPython for unit tests.
 
 def _classes():
     from . import (properties, operators, panel, gizmo, brush, regions,
-                   scatter, flora, path_features, terrain_lock)
+                   scatter, flora, path_features, terrain_lock, segments)
     return (
         properties.HexFinityMapProperties,
         properties.HexFinitySurfacePoint,
@@ -22,6 +22,9 @@ def _classes():
         properties.HexFinityTerrainProperties,
         properties.HexFinityPathFeatureProperties,
         properties.HexFinityFloodFillProperties,
+        properties.HexFinitySegmentWaypoint,
+        properties.HexFinitySegmentAuthoring,
+        properties.HexFinitySegmentsProperties,
         operators.HEXFINITY_OT_generate_map,
         operators.HEXFINITY_OT_clear_map,
         operators.HEXFINITY_OT_add_adjacent_hex,
@@ -50,6 +53,12 @@ def _classes():
         path_features.HEXFINITY_OT_link_connected_paths,
         path_features.HEXFINITY_UL_path_features,
         scatter.HEXFINITY_OT_merge_scatter,
+        segments.HEXFINITY_OT_add_segment_type,
+        segments.HEXFINITY_OT_confirm_add_segment_type,
+        segments.HEXFINITY_OT_segment_type_info,
+        segments.HEXFINITY_OT_draw_segment_path,
+        segments.HEXFINITY_OT_finish_add_segment,
+        segments.HEXFINITY_OT_cancel_add_segment,
         panel.HEXFINITY_PT_panel,
         gizmo.HEXFINITY_GT_center_sphere,
         gizmo.HEXFINITY_GGT_center,
@@ -60,7 +69,7 @@ def _classes():
 
 def register():
     import bpy
-    from . import properties, overlay
+    from . import properties, overlay, segments
     for cls in _classes():
         bpy.utils.register_class(cls)
     bpy.types.Scene.hexfinity_map = bpy.props.PointerProperty(
@@ -78,23 +87,43 @@ def register():
     bpy.types.Scene.hexfinity_flood_fill = bpy.props.PointerProperty(
         type=properties.HexFinityFloodFillProperties
     )
+    bpy.types.Scene.hexfinity_segments = bpy.props.PointerProperty(
+        type=properties.HexFinitySegmentsProperties
+    )
     bpy.types.Object.hexfinity_tile = bpy.props.PointerProperty(
         type=properties.HexFinityProperties
     )
     bpy.types.Object.hexfinity_terrain = bpy.props.PointerProperty(
         type=properties.HexFinityTerrainProperties
     )
+    bpy.types.Object.hexfinity_segment = bpy.props.PointerProperty(
+        type=properties.HexFinitySegmentAuthoring
+    )
     overlay.register()
+    try:
+        segments.ensure_settings_file()
+    except Exception as exc:
+        # Never let a settings.json resolution/creation failure (e.g. an
+        # unusual load context where bpy.utils.extension_path_user can't
+        # resolve this package's name, or a permissions error) block the
+        # rest of the extension from registering — the Add Path Segment
+        # Type workflow degrades gracefully (its own operators still raise
+        # normally if actually invoked), everything else is unaffected.
+        print(f"HexFinity: could not initialize settings.json: {exc}")
 
 
 def unregister():
     import bpy
     from . import overlay
     overlay.unregister()
+    if hasattr(bpy.types.Object, "hexfinity_segment"):
+        del bpy.types.Object.hexfinity_segment
     if hasattr(bpy.types.Object, "hexfinity_terrain"):
         del bpy.types.Object.hexfinity_terrain
     if hasattr(bpy.types.Object, "hexfinity_tile"):
         del bpy.types.Object.hexfinity_tile
+    if hasattr(bpy.types.Scene, "hexfinity_segments"):
+        del bpy.types.Scene.hexfinity_segments
     if hasattr(bpy.types.Scene, "hexfinity_flood_fill"):
         del bpy.types.Scene.hexfinity_flood_fill
     if hasattr(bpy.types.Scene, "hexfinity_path_features"):

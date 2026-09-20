@@ -159,36 +159,46 @@ def corner_xy(i, diameter_mm):
     return (R * math.cos(angle), R * math.sin(angle))
 
 
-def edge_snap_points(diameter_mm, edge_snap):
-    """Tile-local (x, y) snap points around the hex rim.
+def polygon_edge_snap_points(vertices, edge_snap):
+    """Tile-local (x, y) snap points around the rim of an arbitrary convex
+    polygon given as an ordered list of (x, y) vertices (e.g. corner_xy()'s
+    six hex corners, or a convex hull from segment_geometry.convex_hull()).
 
     `edge_snap` (>= 2) is the number of evenly-spaced points per edge,
-    including both endpoints — e.g. 3 = the two P corners plus the exact
-    midpoint. Corners are shared between adjacent edges, so the returned
-    list has 6 * (edge_snap - 1) unique points, ordered corner-by-corner
-    (each corner followed by that edge's interior subdivisions before the
-    next corner)."""
+    including both endpoints — e.g. 3 = the two vertices plus the exact
+    midpoint. Vertices are shared between adjacent edges, so the returned
+    list has len(vertices) * (edge_snap - 1) unique points, ordered
+    edge-by-edge (each vertex followed by that edge's interior subdivisions
+    before the next vertex)."""
     n = max(2, edge_snap)
+    count = len(vertices)
     pts = []
-    for i in range(6):
-        a = corner_xy(i, diameter_mm)
-        b = corner_xy((i + 1) % 6, diameter_mm)
+    for i in range(count):
+        a = vertices[i]
+        b = vertices[(i + 1) % count]
         for k in range(n - 1):
             t = k / (n - 1)
             pts.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
     return pts
 
 
-def point_in_hex(x, y, diameter_mm):
-    """True if tile-local (x, y) lies inside (or on the boundary of) the hex
-    with the given point-to-point diameter — a convex-polygon test over the
-    six corner_xy() points, boundary-inclusive so a click that lands exactly
-    on a P corner/rim still counts as inside."""
+def edge_snap_points(diameter_mm, edge_snap):
+    """Tile-local (x, y) snap points around the hex rim — see
+    polygon_edge_snap_points() for the generic algorithm this wraps."""
     corners = [corner_xy(i, diameter_mm) for i in range(6)]
+    return polygon_edge_snap_points(corners, edge_snap)
+
+
+def point_in_polygon(x, y, vertices):
+    """True if (x, y) lies inside (or on the boundary of) the convex polygon
+    given as an ordered list of (x, y) vertices — a sign-consistency test,
+    boundary-inclusive so a point that lands exactly on a vertex/edge still
+    counts as inside."""
+    count = len(vertices)
     sign = 0
-    for i in range(6):
-        ax, ay = corners[i]
-        bx, by = corners[(i + 1) % 6]
+    for i in range(count):
+        ax, ay = vertices[i]
+        bx, by = vertices[(i + 1) % count]
         cross = (bx - ax) * (y - ay) - (by - ay) * (x - ax)
         if cross > 1e-9:
             if sign < 0:
@@ -199,6 +209,14 @@ def point_in_hex(x, y, diameter_mm):
                 return False
             sign = -1
     return True
+
+
+def point_in_hex(x, y, diameter_mm):
+    """True if tile-local (x, y) lies inside (or on the boundary of) the hex
+    with the given point-to-point diameter — see point_in_polygon() for the
+    generic algorithm this wraps."""
+    corners = [corner_xy(i, diameter_mm) for i in range(6)]
+    return point_in_polygon(x, y, corners)
 
 
 def hex_prism_verts_faces(diameter_mm, z_min, z_max):

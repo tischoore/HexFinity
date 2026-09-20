@@ -430,6 +430,53 @@ def test_hex_prism_outward_normals():
 
 
 # ---------------------------------------------------------------------------
+# polygon_edge_snap_points / point_in_polygon (generic convex-polygon cores)
+
+_SQUARE = [(-10.0, -10.0), (10.0, -10.0), (10.0, 10.0), (-10.0, 10.0)]
+_TRIANGLE = [(0.0, 0.0), (10.0, 0.0), (0.0, 10.0)]
+
+
+@pytest.mark.parametrize("vertices", [_SQUARE, _TRIANGLE])
+@pytest.mark.parametrize("edge_snap", [2, 3, 5])
+def test_polygon_edge_snap_points_count(vertices, edge_snap):
+    pts = hm.polygon_edge_snap_points(vertices, edge_snap)
+    assert len(pts) == len(vertices) * (edge_snap - 1)
+
+
+def test_polygon_edge_snap_points_includes_vertices():
+    pts = hm.polygon_edge_snap_points(_SQUARE, 3)
+    rounded_pts = {(round(x, 6), round(y, 6)) for (x, y) in pts}
+    for vx, vy in _SQUARE:
+        assert (round(vx, 6), round(vy, 6)) in rounded_pts
+
+
+def test_polygon_edge_snap_points_matches_hex_wrapper():
+    diameter = 100.0
+    corners = [hm.corner_xy(i, diameter) for i in range(6)]
+    assert hm.polygon_edge_snap_points(corners, 3) == hm.edge_snap_points(diameter, 3)
+
+
+def test_point_in_polygon_center_is_inside():
+    assert hm.point_in_polygon(0.0, 0.0, _SQUARE)
+
+
+def test_point_in_polygon_vertices_are_inside():
+    for vx, vy in _SQUARE:
+        assert hm.point_in_polygon(vx, vy, _SQUARE)
+
+
+def test_point_in_polygon_far_outside_is_false():
+    assert not hm.point_in_polygon(1000.0, 1000.0, _SQUARE)
+
+
+def test_point_in_polygon_matches_hex_wrapper():
+    diameter = 100.0
+    corners = [hm.corner_xy(i, diameter) for i in range(6)]
+    for x, y in [(0.0, 0.0), (49.0, 0.0), (1000.0, 1000.0)]:
+        assert hm.point_in_polygon(x, y, corners) == hm.point_in_hex(x, y, diameter)
+
+
+# ---------------------------------------------------------------------------
 # point_in_hex
 
 def test_point_in_hex_center_is_inside():

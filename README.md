@@ -32,6 +32,7 @@ All linear inputs are expressed in **millimeters**, and mesh vertices are emitte
 - [Slice to G-code (Bambu Studio)](#slice-to-g-code-bambu-studio)
 - [Scripts](#scripts)
 - [UI](#ui)
+  - [Settings](#settings)
 - [Project layout](#project-layout)
 - [Install (development)](#install-development)
   - [Running the unit tests](#running-the-unit-tests)
@@ -472,10 +473,15 @@ Before a map exists, the panel shows the **generation menu**: the editable **Map
 
 ![HexFinity generation menu](docs/main_menu.jpg)
 
+### Settings
+
+A collapsed **Settings** box sits at the very top of the panel, above the generation menu — visible whether or not a map currently exists. It currently holds one tool: **Add Path Segment Type**, an authoring workflow for pre-built path-segment STLs (bridges, junctions, etc.) that draws and records their own connector waypoints for a future path-splicing feature to consume. Pressing it opens a file browser (defaulting to the last directory used), then a confirm dialog showing the chosen file's folder (= type name, assumed unique) and filename, plus a note that segments are assumed modeled at 10 mm man-height. Confirming imports the STL, frames the viewport top-down on it, and expands the Settings box into **Draw Path** / **Finish Add Segment** / **Cancel**: Draw Path places waypoints that snap to the imported mesh's convex-hull footprint edges (mirroring how Path Feature lines snap to a hex's own edges); Finish Add Segment requires at least one edge-snapped waypoint (warns "This is an end segment." if exactly one) and writes the type + segment + waypoints into `settings.json`; Cancel discards everything in-scene without writing anything (nothing is written to `settings.json` until Finish succeeds). See **[docs/settings.md](docs/settings.md)** for the `settings.json` schema and type/segment documentation.
+
 ### Branch A — before any map exists
 
 ```
 HexFinity
+├─ ▸ Settings                   (collapsed; see Settings above)
 ├─ Map Globals
 │   ├─ Diameter (mm)
 │   ├─ Level height (mm)
@@ -497,6 +503,7 @@ Every per-tile section below (Editing, Terrain Objects, Flora, Surface Texture, 
 
 ```
 HexFinity
+├─ ▸ Settings                   (collapsed; see Settings above)
 ├─ [ Clear Map ]                (invoke_confirm prompt; destructive delete)
 ├─ ▸ Map Settings (read-only)   (collapsed by default; expand to view, fields disabled)
 │   ├─ Map Globals              (Diameter / Level / Base thickness / Smoothness / Resample / Man Height)

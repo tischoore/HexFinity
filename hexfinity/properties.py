@@ -926,3 +926,55 @@ class HexFinityTerrainProperties(bpy.types.PropertyGroup):
                     "vertical warp. See lattice_res_u.",
         min=2, max=8, default=2,
     )
+
+
+# ---------------------------------------------------------------------------
+# Path Segment authoring tool (settings.json Add Path Segment Type workflow —
+# see segments.py). A drawn waypoint here reuses HexFinitySurfacePoint's
+# plain x/y shape for the hull, but needs its own type (with an extra
+# edge_idx field) for waypoints since -1 marks an interior point.
+
+class HexFinitySegmentWaypoint(bpy.types.PropertyGroup):
+    x: bpy.props.FloatProperty(name="X", default=0.0)
+    y: bpy.props.FloatProperty(name="Y", default=0.0)
+    edge_idx: bpy.props.IntProperty(
+        name="Edge Index",
+        description="Hull-edge index this waypoint is snapped to, or -1 for "
+                    "an interior (non-edge-snapped) point",
+        default=-1,
+    )
+
+
+class HexFinitySegmentAuthoring(bpy.types.PropertyGroup):
+    """Per-Object workflow state for the temporary STL imported by the Add
+    Path Segment Type flow. Lives on the real imported object (mirrors
+    HexFinityTerrainProperties.has_conform_lattice's "state lives on the
+    real object" convention) rather than on the operator instance, so it
+    survives across the separate Draw Path / Finish / Cancel button
+    presses."""
+    type_name: bpy.props.StringProperty(options={'HIDDEN'})
+    source_filepath: bpy.props.StringProperty(options={'HIDDEN'})
+    type_is_new: bpy.props.BoolProperty(options={'HIDDEN'})
+    hull: bpy.props.CollectionProperty(type=HexFinitySurfacePoint)
+    waypoints: bpy.props.CollectionProperty(type=HexFinitySegmentWaypoint)
+    has_drawn_path: bpy.props.BoolProperty(default=False, options={'HIDDEN'})
+
+
+class HexFinitySegmentsProperties(bpy.types.PropertyGroup):
+    """Scene-level: which object (if any) is the current Add Path Segment
+    Type workflow subject, plus the edge-snap density for its Draw Path
+    tool. Mirrors HexFinityPathFeatureProperties.edge_snap."""
+    active_object: bpy.props.PointerProperty(
+        type=bpy.types.Object,
+        options={'HIDDEN'},
+    )
+    edge_snap: bpy.props.IntProperty(
+        name="Edge Snap",
+        description="Number of evenly-spaced snap points per hull edge, "
+                    "including both endpoints — e.g. 3 = the two hull "
+                    "vertices plus the exact midpoint. A drawn waypoint "
+                    "snaps to these points at the segment's footprint edge",
+        default=3,
+        min=2,
+        soft_max=12,
+    )

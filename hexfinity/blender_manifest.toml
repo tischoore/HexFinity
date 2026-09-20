@@ -9,3 +9,6 @@ type = "add-on"
 blender_version_min = "5.1.0"
 license = ["SPDX:MIT"]
 tags = ["Mesh", "Add Mesh"]
+
+[permissions]
+files = "Reads and writes settings.json (the Path Segment authoring tool's type/segment library) in the extension's per-user data directory"

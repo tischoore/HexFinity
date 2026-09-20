@@ -2,7 +2,7 @@ import math
 
 import bpy
 
-from . import flora
+from . import flora, segments
 from .mesh_builder import effective_resample, top_vertex_count
 
 
@@ -17,6 +17,9 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         layout = self.layout
         scene = context.scene
         map_props = scene.hexfinity_map
+
+        # ---- Settings (collapsed, visible with or without a map) ----------
+        self._draw_settings_section(context, layout, scene)
 
         # ---- Pre-map: editable globals + grid + Generate ------------------
         if not map_props.is_generated:
@@ -85,6 +88,40 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         col.prop(map_props, "base_level")
         col.label(text="Base Level applies on generate (wipes edits).",
                   icon='INFO')
+
+    @staticmethod
+    def _draw_settings_section(context, layout, scene):
+        # Collapsed Settings box, always at the very top of the panel
+        # (rendered before both the pre-map and post-map branches) so the
+        # Add Path Segment Type workflow is reachable regardless of whether
+        # a hex map currently exists.
+        header, box = layout.panel("hexfinity_settings", default_closed=True)
+        header.label(text="Settings", icon='PREFERENCES')
+        if not box:
+            return
+
+        seg_props = scene.hexfinity_segments
+        obj = seg_props.active_object
+        if obj is None:
+            box.operator("hexfinity.add_segment_type",
+                         text="Add Path Segment Type", icon='IMPORT')
+            return
+
+        seg = obj.hexfinity_segment
+        box.label(text=f"Segment: {seg.type_name} — {obj.name}", icon='MESH_DATA')
+        box.prop(seg_props, "edge_snap")
+        if segments.is_active():
+            row = box.row()
+            row.alert = True
+            row.label(text="Draw Path active — Esc / RMB to close", icon='INFO')
+        else:
+            box.operator("hexfinity.draw_segment_path", text="Draw Path",
+                         icon='MOD_CURVE')
+        row = box.row()
+        row.enabled = seg.has_drawn_path
+        row.operator("hexfinity.finish_add_segment", text="Finish Add Segment",
+                     icon='CHECKMARK')
+        box.operator("hexfinity.cancel_add_segment", text="Cancel", icon='X')
 
     def _draw_tile_section(self, context, layout, scene, map_props):
         # ---- Per-tile section (only when a HexFinity tile is active) -----
