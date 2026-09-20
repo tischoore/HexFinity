@@ -9,7 +9,8 @@ remain importable from plain CPython for unit tests.
 
 def _classes():
     from . import (properties, operators, panel, gizmo, brush, regions,
-                   scatter, flora, path_features, terrain_lock, segments)
+                   scatter, flora, path_features, terrain_lock, segments,
+                   segment_path)
     return (
         properties.HexFinityMapProperties,
         properties.HexFinitySurfacePoint,
@@ -59,6 +60,9 @@ def _classes():
         segments.HEXFINITY_OT_draw_segment_path,
         segments.HEXFINITY_OT_finish_add_segment,
         segments.HEXFINITY_OT_cancel_add_segment,
+        segment_path.HEXFINITY_OT_cancel_segments_path_dialog,
+        segment_path.HEXFINITY_OT_draw_segments_path_dialog,
+        segment_path.HEXFINITY_OT_start_segments_path_draw,
         panel.HEXFINITY_PT_panel,
         gizmo.HEXFINITY_GT_center_sphere,
         gizmo.HEXFINITY_GGT_center,

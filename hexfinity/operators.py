@@ -1252,24 +1252,33 @@ def _terrain_children(obj):
 
 
 def _terrain_objects(tile):
-    """`_terrain_children(tile)` minus scatter boulder objects — the actual
-    imported terrain-object meshes carrying `hexfinity_terrain` snap settings,
-    the ones `terrain_pad_specs` builds plateau pads for."""
-    from . import scatter
-    return [c for c in _terrain_children(tile) if c.get(scatter.SCATTER_OF) is None]
+    """`_terrain_children(tile)` minus scatter boulder objects and placed
+    path-segment pieces — the actual imported terrain-object meshes carrying
+    `hexfinity_terrain` snap settings, the ones `terrain_pad_specs` builds
+    plateau pads for. A segment piece (see segment_path.py) is just another
+    plain mesh child of the tile, same as a terrain object, so it must be
+    excluded explicitly here or it would falsely count toward "this hex has
+    terrain objects" (e.g. panel.py's "Regenerate Plateau" button)."""
+    from . import scatter, segment_path
+    return [c for c in _terrain_children(tile)
+           if c.get(scatter.SCATTER_OF) is None
+           and not c.get(segment_path.SEGMENT_PIECE_TAG)]
 
 
 def _is_terrain_object(o):
     """True if `o` is an imported terrain-object mesh (not a tile, not a
-    planted tree/pin, not a scatter boulder) — the same eligibility
-    `_terrain_objects` filters a tile's children down to, but usable directly
-    on a candidate object from the current selection."""
+    planted tree/pin, not a scatter boulder, not a placed path-segment
+    piece) — the same eligibility `_terrain_objects` filters a tile's
+    children down to, but usable directly on a candidate object from the
+    current selection."""
     if o.type != 'MESH' or o.hexfinity_tile.is_generated:
         return False
-    from . import flora, scatter
+    from . import flora, scatter, segment_path
     if o.get(flora.FLORA_OF) or o.get(flora.FLORA_PIN_OF):
         return False
     if o.get(scatter.SCATTER_OF) is not None:
+        return False
+    if o.get(segment_path.SEGMENT_PIECE_TAG):
         return False
     return True
 

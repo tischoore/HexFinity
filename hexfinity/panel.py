@@ -434,8 +434,11 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         if not box:
             return
         box.prop(tool, "edge_snap")
-        box.operator("hexfinity.draw_path_feature", text="Draw Feature",
+        row = box.row(align=True)
+        row.operator("hexfinity.draw_path_feature", text="Draw Feature",
                      icon='GREASEPENCIL')
+        row.operator("hexfinity.draw_segments_path_dialog",
+                     text="Draw Segments Path", icon='MESH_DATA')
         box.label(text="Select every hex a line should span first — an edge "
                         "click then continues onto a selected neighbour "
                         "instead of ending there.", icon='INFO')
@@ -455,6 +458,12 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
             feature = tile.path_features[idx]
             sub = box.column(align=True)
             sub.prop(feature, "name")
+            if feature.feature_type == 'SEGMENT':
+                # A placed segment is a real mesh object (see
+                # segment_path.py), not a carved groove — no parameters to
+                # draw beyond the editable name above, and "Link Connected
+                # Paths" (settings propagation for a carve) doesn't apply.
+                return
             sub.prop(feature, "feature_type")
             sub.prop(feature, "width_mm")
             if feature.feature_type == 'RIVER':

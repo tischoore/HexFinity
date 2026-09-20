@@ -5,8 +5,11 @@ file: `settings.json`, the library backing the **Add Path Segment Type**
 authoring tool (see the [Settings section of the README](../README.md#settings)).
 It records externally-authored path-segment STLs (bridges, junctions,
 etc.), grouped by type, each with the connector waypoints drawn for it —
-for a future path-splicing feature to consume. This document is the
-schema reference; it does not describe that future consumer.
+consumed by the **Draw Segments Path** tool (see the
+[Draw Segments Path section of the README](../README.md#draw-segments-path))
+to place them onto the map. This document is the schema reference; it
+does not describe that consumer's own placement/snapping/boolean-clipping
+behaviour.
 
 ## Where it lives
 

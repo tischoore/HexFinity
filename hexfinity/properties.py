@@ -585,6 +585,14 @@ def _on_path_feature_type_update(self, context):
     # sole trigger _commit_feature relies on, so a freshly drawn line gets
     # correctly scaled even though its type equals the property's own
     # default (Blender's update= still fires on a same-value assignment).
+    #
+    # SEGMENT carries no width/depth/texture/etc. — a placed segment is a
+    # real mesh object (see segment_path.py), not a heightmap-carved groove
+    # — so it skips apply_type_defaults()/the default-name fill entirely;
+    # segment_path.py sets `name` itself when it creates the entry.
+    if self.feature_type == 'SEGMENT':
+        _on_path_feature_update(self, context)
+        return
     global _PATH_FEATURE_FILLING
     from . import path_features as pf
     man_height_mm = context.scene.hexfinity_map.man_height_mm
@@ -620,6 +628,10 @@ class HexFinityPathFeature(bpy.types.PropertyGroup):
             ('PAVED_ROAD', "Paved Road", "A stone-paved road"),
             ('RIVER', "River", "A carved river channel with sloped, "
                                 "irregular embankments and no texture"),
+            ('SEGMENT', "Segment", "A placed path-segment mesh piece (see "
+                                   "Draw Segments Path) — no carve "
+                                   "parameters; the geometry is a real "
+                                   "object referenced by segment_piece"),
         ],
         default='SIMPLE',
         update=_on_path_feature_type_update,
@@ -730,6 +742,19 @@ class HexFinityPathFeature(bpy.types.PropertyGroup):
         update=_on_path_feature_update,
     )
     points: bpy.props.CollectionProperty(type=HexFinitySurfacePoint)
+
+    # SEGMENT only (see segment_path.py). segment_run_id groups every hex's
+    # entry belonging to one continuous multi-hex "Draw Segments Path"
+    # placement, mirroring the coincident-waypoint-only linkage a regular
+    # multi-hex Path Feature line already uses (no other cross-tile data
+    # link). segment_piece points at the actual placed/clipped mesh Object
+    # for THIS hex, parented under it like a terrain object or scatter
+    # boulder — the per-piece metadata (source type/file, local waypoints)
+    # lives as plain custom id-properties on that object itself, the same
+    # "state lives on the real object" convention segments.py already uses
+    # for HexFinitySegmentAuthoring, rather than more RNA here.
+    segment_run_id: bpy.props.StringProperty(options={'HIDDEN'})
+    segment_piece: bpy.props.PointerProperty(type=bpy.types.Object)
 
 
 class HexFinityProperties(bpy.types.PropertyGroup):

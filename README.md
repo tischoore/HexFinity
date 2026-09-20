@@ -391,6 +391,22 @@ Drawing across multiple hexes (above) already keeps a multi-hex line's settings 
 
 The **Name** of each path is left untouched — only the propagated settings above are overwritten (absolute values, not a delta), mirroring how Surface Texture's Copy/Apply buttons also leave `name` alone. Waypoints/geometry are never touched by this button, only settings. Because the underlying "which paths are connected" graph can legitimately branch and loop (nothing stops several lines from meeting at the same waypoint, or a set of lines forming a cycle across a ring of hexes), the traversal is a plain breadth-first search over a `visited` set — every path feature is only ever processed once, so a cycle simply closes instead of looping forever.
 
+### Draw Segments Path
+
+**Draw Segments Path**, next to Draw Feature, places pre-built segment meshes — bridges, junctions, etc. — registered under Settings' **Add Path Segment Type** (see [Settings](#settings)) instead of carving a heightmap groove. Pressing it opens a small popup listing every type currently in `settings.json`; **Draw** starts the placement tool, **Cancel** abandons it.
+
+Select every hex the chain should span first, same rule as Draw Feature. While placing:
+
+- Moving the mouse slides the current (not-yet-placed) segment across whichever selected hex is under the cursor, shown as a translucent preview.
+- **Scroll wheel** rotates it around the vertical axis.
+- **+ / -** cycles to the next/previous segment registered under the chosen type.
+- **Left-click** places it — refused unless it's the very first piece of the chain, or one of its own connector waypoints (the edge-tagged points recorded when the segment was authored) has snapped onto the previous piece's still-open connector, a hex's own edge point, or another already-placed piece's connector.
+- **Right-click** or **Esc** ends the tool — every piece placed so far is already committed (its own undo step), so there's nothing left to finish.
+
+A segment straddling a hex boundary is boolean-clipped into one piece per hex — the same INTERSECT-against-the-hex's-own-prism operation used to split an overhanging terrain object (see *Terrain objects*) — with a waypoint recorded at the crossing so the two pieces stay linked, and the view glides onto the new hex exactly as a multi-hex Path Feature line does.
+
+Unlike a carved Path Feature, a placed segment is a real, separate mesh object parented under its tile (like a terrain object or a scatter boulder), not fused into the tile's own generated surface. It still appears in the Path Feature list (as a `Segment N` entry) purely for renaming/removal — removing it also deletes the underlying object — but has no carve parameters, since there's nothing to carve.
+
 ## Export STLs
 
 The **Export Tiles to STL** button at the bottom of the panel writes one `.stl`
@@ -475,7 +491,7 @@ Before a map exists, the panel shows the **generation menu**: the editable **Map
 
 ### Settings
 
-A collapsed **Settings** box sits at the very top of the panel, above the generation menu — visible whether or not a map currently exists. It currently holds one tool: **Add Path Segment Type**, an authoring workflow for pre-built path-segment STLs (bridges, junctions, etc.) that draws and records their own connector waypoints for a future path-splicing feature to consume. Pressing it opens a file browser (defaulting to the last directory used), then a confirm dialog showing the chosen file's folder (= type name, assumed unique) and filename, plus a note that segments are assumed modeled at 10 mm man-height. Confirming imports the STL, frames the viewport top-down on it, and expands the Settings box into **Draw Path** / **Finish Add Segment** / **Cancel**: Draw Path places waypoints that snap to the imported mesh's convex-hull footprint edges (mirroring how Path Feature lines snap to a hex's own edges); Finish Add Segment requires at least one edge-snapped waypoint (warns "This is an end segment." if exactly one) and writes the type + segment + waypoints into `settings.json`; Cancel discards everything in-scene without writing anything (nothing is written to `settings.json` until Finish succeeds). See **[docs/settings.md](docs/settings.md)** for the `settings.json` schema and type/segment documentation.
+A collapsed **Settings** box sits at the very top of the panel, above the generation menu — visible whether or not a map currently exists. It currently holds one tool: **Add Path Segment Type**, an authoring workflow for pre-built path-segment STLs (bridges, junctions, etc.) that draws and records their own connector waypoints for the Path Feature box's **Draw Segments Path** tool (see [Draw Segments Path](#draw-segments-path)) to place onto the map later. Pressing it opens a file browser (defaulting to the last directory used), then a confirm dialog showing the chosen file's folder (= type name, assumed unique) and filename, plus a note that segments are assumed modeled at 10 mm man-height. Confirming imports the STL, frames the viewport top-down on it, and expands the Settings box into **Draw Path** / **Finish Add Segment** / **Cancel**: Draw Path places waypoints that snap to the imported mesh's convex-hull footprint edges (mirroring how Path Feature lines snap to a hex's own edges); Finish Add Segment requires at least one edge-snapped waypoint (warns "This is an end segment." if exactly one) and writes the type + segment + waypoints into `settings.json`; Cancel discards everything in-scene without writing anything (nothing is written to `settings.json` until Finish succeeds). See **[docs/settings.md](docs/settings.md)** for the `settings.json` schema and type/segment documentation.
 
 ### Branch A — before any map exists
 

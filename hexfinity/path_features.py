@@ -805,6 +805,17 @@ class HEXFINITY_OT_remove_path_feature(bpy.types.Operator):
         tile = obj.hexfinity_tile
         idx = tile.active_path_feature_index
         if 0 <= idx < len(tile.path_features):
+            feature = tile.path_features[idx]
+            if feature.feature_type == 'SEGMENT' and feature.segment_piece is not None:
+                # Unlike a carved groove (which disappears on the next
+                # rebuild once its points are gone), a placed segment is a
+                # real parented Object — removing the list entry alone
+                # would leave it orphaned in the scene.
+                piece = feature.segment_piece
+                mesh = piece.data
+                bpy.data.objects.remove(piece, do_unlink=True)
+                if mesh is not None and mesh.users == 0:
+                    bpy.data.meshes.remove(mesh)
             tile.path_features.remove(idx)
             tile.active_path_feature_index = min(idx, len(tile.path_features) - 1)
             from . import operators
