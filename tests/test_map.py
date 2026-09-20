@@ -255,6 +255,53 @@ def test_resolve_new_tile_corners_pulls_from_two_neighbours_at_once():
 
 
 # ---------------------------------------------------------------------------
+# EDGE_DIRECTIONS
+
+def test_edge_directions_shape():
+    assert len(hm.EDGE_DIRECTIONS) == 6
+    for direction in hm.EDGE_DIRECTIONS:
+        assert direction in hm.DIRECTIONS
+
+
+def test_edge_directions_consistent_with_shared_corners():
+    # Edge i (corner i -> corner (i+1)%6) must border exactly the one
+    # neighbour direction common to both corners' SHARED_CORNERS entries --
+    # this is the geometric fact EDGE_DIRECTIONS hand-encodes, so recompute
+    # it here independently and compare, guarding against the two tables
+    # ever being edited out of sync.
+    for i in range(6):
+        dirs_a = {d for (d, _) in hm.SHARED_CORNERS[i]}
+        dirs_b = {d for (d, _) in hm.SHARED_CORNERS[(i + 1) % 6]}
+        common = dirs_a & dirs_b
+        assert len(common) == 1, (i, dirs_a, dirs_b)
+        assert hm.EDGE_DIRECTIONS[i] == next(iter(common))
+
+
+def test_edge_direction_midpoints_coincide_on_neighbour():
+    # Geometric soundness check mirroring test_shared_corner_world_positions_
+    # coincide: an edge's midpoint in world space must equal the midpoint of
+    # the mirrored edge on the neighbour tile across that direction.
+    diameter = 100.0
+    for (q, r) in [(0, 0), (1, 0), (1, 1), (2, 2), (-1, -1), (3, -2)]:
+        tx, ty = hm.tile_world_xy(q, r, diameter)
+        for i, direction in enumerate(hm.EDGE_DIRECTIONS):
+            a = hm.corner_xy(i, diameter)
+            b = hm.corner_xy((i + 1) % 6, diameter)
+            mid_x, mid_y = tx + (a[0] + b[0]) / 2.0, ty + (a[1] + b[1]) / 2.0
+
+            nq, nr = hm.neighbour_coord(q, r, direction)
+            nx, ny = hm.tile_world_xy(nq, nr, diameter)
+            mirror_i = hm.EDGE_DIRECTIONS.index(hm.OPPOSITE[direction])
+            na = hm.corner_xy(mirror_i, diameter)
+            nb = hm.corner_xy((mirror_i + 1) % 6, diameter)
+            their_mid_x = nx + (na[0] + nb[0]) / 2.0
+            their_mid_y = ny + (na[1] + nb[1]) / 2.0
+
+            assert their_mid_x == pytest.approx(mid_x, abs=1e-9), (q, r, direction)
+            assert their_mid_y == pytest.approx(mid_y, abs=1e-9), (q, r, direction)
+
+
+# ---------------------------------------------------------------------------
 # corner_xy / edge_snap_points
 
 def test_corner_xy_matches_known_formula():

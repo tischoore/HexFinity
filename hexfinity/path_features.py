@@ -5,13 +5,27 @@ A feature is an open polyline (tile-local mm) stored in the tile's
 `path_features` CollectionProperty, plus a type. This module contains both
 the bpy authoring UI — a modal waypoint picker (mirrors `regions.py`'s
 point picker, but places points on a flat "man height" plane above the tile
-instead of raycasting onto the mesh, and terminates the line automatically
-when a click snaps to the tile's hex-edge points or to another already-drawn
-line's waypoint) plus a remove operator and the list UI — and the bpy
-texture-asset pipeline (`PATH_TEXTURES`/`_get_or_load_heightmap`) that turns
-a line into `mesh_builder.build_hex_tile`'s `path_features` kwarg via
-`path_specs()`. The actual curvilinear-sampling math is bpy-free, in
+instead of raycasting onto the mesh) plus a remove operator and the list UI
+— and the bpy texture-asset pipeline (`PATH_TEXTURES`/`_get_or_load_heightmap`)
+that turns a line into `mesh_builder.build_hex_tile`'s `path_features` kwarg
+via `path_specs()`. The actual curvilinear-sampling math is bpy-free, in
 `tree_pads.refine_and_displace_along_path`.
+
+A click that snaps to an existing line's waypoint (on the same tile) always
+ends the line there, same as ever. A click that snaps to one of the tile's
+own hex-edge points (`map.edge_snap_points`) either ends the line there
+(if the neighbour tile across that edge isn't selected, or doesn't exist) or
+*continues the line onto that neighbour tile* (if it is selected) — the
+line's current segment is committed to the tile being left, and a brand-new
+segment, seeded with the shared edge point and the just-committed segment's
+settings, starts on the neighbour. This is how a single drawing gesture
+spans multiple hexes: select every hex the path should cross (normal
+multi-select) before starting Draw Feature. Each spanned hex ends up owning
+its own independent path feature, sharing only a coincident waypoint with
+its neighbour's feature — the same "each hex is self-contained" model
+`HEXFINITY_OT_link_connected_paths` already assumes when syncing settings
+across a shared endpoint. Crossing recentres the viewport on the new hex,
+keeping the camera's rotation/distance unchanged.
 
 Every edit (drawing a line, changing its type/width/depth/repeat/texture,
 removing it) auto-rebuilds the tile — there is no manual "Generate" step,
@@ -46,7 +60,8 @@ from gpu_extras.batch import batch_for_shader
 from bpy_extras import view3d_utils
 from mathutils import Vector
 
-from .map import edge_snap_points, point_in_hex, find_connected_component
+from .map import (edge_snap_points, point_in_hex, find_connected_component,
+                  EDGE_DIRECTIONS, neighbour_coord, find_tile)
 
 
 SNAP_RADIUS_PX = 18.0
@@ -423,42 +438,81 @@ def _mouse_on_plane(context, event, z_world):
 
 
 def _snap_targets_world(obj, map_props, edge_snap):
-    """World positions of every valid snap target for a line drawn on `obj`:
-    this tile's hex-edge snap points, plus every waypoint of its already-
-    committed path features (the in-progress line isn't in this list yet,
-    so nothing extra needs excluding)."""
+    """[(Vector, edge_idx_or_None), ...] of every valid snap target for a
+    line drawn on `obj`: this tile's hex-edge snap points (tagged with which
+    of the 6 edges they belong to, per edge_snap_points' documented
+    edge-by-edge ordering — `path_features._resolve_crossing_neighbour` uses
+    this to know which neighbour a crossing click borders) plus every
+    waypoint of its already-committed path features (tagged None — a same-
+    tile join, never a boundary crossing). The in-progress line isn't in
+    this list yet, so nothing extra needs excluding."""
     tile = obj.hexfinity_tile
     z_local = _feature_plane_z_local(tile, map_props)
     mw = obj.matrix_world
-    pts = [mw @ Vector((x, y, z_local))
-           for (x, y) in edge_snap_points(map_props.diameter_mm, edge_snap)]
+    n = max(2, edge_snap)
+    per_edge = n - 1
+    targets = []
+    for i, (x, y) in enumerate(edge_snap_points(map_props.diameter_mm, edge_snap)):
+        targets.append((mw @ Vector((x, y, z_local)), i // per_edge))
     for feature in tile.path_features:
         for p in feature.points:
-            pts.append(mw @ Vector((p.x, p.y, z_local)))
-    return pts
+            targets.append((mw @ Vector((p.x, p.y, z_local)), None))
+    return targets
 
 
-def _commit_feature(context, obj, pts_local, feature_type='SIMPLE'):
+def _commit_feature(context, obj, pts_local, feature_type='SIMPLE', seed_settings=None):
     """Append a feature with `pts_local` (list of (x, y) tile-local mm) to
     `obj` and make it active. Setting feature_type fires the property
     callback that auto-fills width/depth/repeat/texture + a default name
     and rebuilds the tile — the points are already in place so the carve
-    renders correctly (mirrors regions._commit_region)."""
+    renders correctly (mirrors regions._commit_region).
+
+    `seed_settings`, when given, is a {field: value} dict over
+    `_PATH_FEATURE_LINK_FIELDS` (the just-crossed-from segment's own
+    settings) — used instead of the plain `feature_type` default when a
+    multi-hex draw continues onto this tile, so the new segment reads as a
+    continuation of the same road/path/river rather than a fresh SIMPLE
+    line. Applied with the same guarded-overwrite shape
+    `HEXFINITY_OT_link_connected_paths.execute()` uses: feature_type is set
+    first (unguarded, since its own update callback always fires a
+    transient type-defaulted rebuild), then every other field is written
+    under `_PATH_FEATURE_FILLING` so those type defaults get overwritten by
+    the actually-inherited values before the final rebuild."""
     tile = obj.hexfinity_tile
     feature = tile.path_features.add()
     for (x, y) in pts_local:
         p = feature.points.add()
         p.x, p.y = x, y
     tile.active_path_feature_index = len(tile.path_features) - 1
-    feature.feature_type = feature_type
+    feature.feature_type = seed_settings["feature_type"] if seed_settings else feature_type
+    if seed_settings:
+        from . import properties
+        from . import operators
+        properties._PATH_FEATURE_FILLING = True
+        try:
+            for f in _PATH_FEATURE_LINK_FIELDS:
+                if f == "feature_type":
+                    continue
+                setattr(feature, f, seed_settings[f])
+        finally:
+            properties._PATH_FEATURE_FILLING = False
+        # The guarded overwrites above deliberately don't trigger their own
+        # per-field rebuild (that's the point of the guard) -- the
+        # feature_type assignment already rebuilt once with type-defaulted
+        # values, so rebuild once more now the actually-inherited values are
+        # in place. Same two-rebuilds-per-write shape as
+        # HEXFINITY_OT_link_connected_paths.execute()/apply_surface_texture.
+        operators.rebuild_tile(obj)
 
 
 class HEXFINITY_OT_draw_path_feature(bpy.types.Operator):
     bl_idname = "hexfinity.draw_path_feature"
     bl_label = "Draw Path Feature"
     bl_description = ("Click points above the active tile to draw a line. "
-                      "Clicking near the hex edge or another line's waypoint "
-                      "snaps to it and ends the line. Enter/RMB finishes "
+                      "Clicking near another line's waypoint snaps to it and "
+                      "ends the line. Clicking near a hex edge point ends the "
+                      "line there, or continues it onto the neighbouring hex "
+                      "if that hex is also selected. Enter/RMB finishes "
                       "early, Backspace removes the last point, Esc cancels.")
     bl_options = {'REGISTER'}
 
@@ -476,13 +530,15 @@ class HEXFINITY_OT_draw_path_feature(bpy.types.Operator):
         self._pts_local = []     # [(x, y)] tile-local mm — committed to the line
         self._pts_world = []     # [Vector] world positions for drawing the line
         self._cursor = (event.mouse_region_x, event.mouse_region_y)
-        self._snap_hint = None   # world Vector of the currently-hovered snap target
+        self._snap_hint = None   # (world Vector, edge_idx_or_None) of the hovered snap target
+        self._pending_seed_settings = None  # settings to inherit on this tile's next commit
         self._draw_handle = bpy.types.SpaceView3D.draw_handler_add(
             self._draw, (context,), 'WINDOW', 'POST_PIXEL')
         context.window_manager.modal_handler_add(self)
         context.workspace.status_text_set(
             "Draw Path Feature:  LMB = add point    "
-            "snap to edge/line = finish    Enter/RMB = finish (2+ pts)    "
+            "snap to line = finish    snap to selected-neighbour edge = "
+            "continue there    Enter/RMB = finish (2+ pts)    "
             "Backspace = undo point    Esc = cancel")
         self._update_snap_hint(context)
         if context.area is not None:
@@ -535,14 +591,14 @@ class HEXFINITY_OT_draw_path_feature(bpy.types.Operator):
         edge_snap = context.scene.hexfinity_path_features.edge_snap
         best = None
         best_dist = SNAP_RADIUS_PX
-        for w in _snap_targets_world(self._tile, map_props, edge_snap):
+        for w, edge_idx in _snap_targets_world(self._tile, map_props, edge_snap):
             s = view3d_utils.location_3d_to_region_2d(region, rv3d, w)
             if s is None:
                 continue
             dist = math.hypot(s.x - coord[0], s.y - coord[1])
             if dist <= best_dist:
                 best_dist = dist
-                best = w
+                best = (w, edge_idx)
         return best
 
     def _update_snap_hint(self, context):
@@ -550,15 +606,17 @@ class HEXFINITY_OT_draw_path_feature(bpy.types.Operator):
 
     def _add_point(self, context, event):
         coord = (event.mouse_region_x, event.mouse_region_y)
-        target = self._find_snap_target(context, coord)
-        if target is not None:
+        hit = self._find_snap_target(context, coord)
+        if hit is not None:
+            target, edge_idx = hit
             lp = self._tile.matrix_world.inverted() @ target
             was_empty = not self._pts_local
             self._pts_local.append((lp.x, lp.y))
             self._pts_world.append(target.copy())
             if was_empty:
                 return None
-            return self._close(context)
+            return self._close(context, crossing_edge_idx=edge_idx,
+                               crossing_point_world=target)
 
         map_props = context.scene.hexfinity_map
         z_local = _feature_plane_z_local(self._tile.hexfinity_tile, map_props)
@@ -575,14 +633,63 @@ class HEXFINITY_OT_draw_path_feature(bpy.types.Operator):
         self._pts_world.append(hit.copy())
         return None
 
-    def _close(self, context):
+    def _close(self, context, crossing_edge_idx=None, crossing_point_world=None):
         if len(self._pts_local) < 2:
             self.report({'WARNING'}, "A line needs at least 2 points")
             return {'RUNNING_MODAL'}
-        _commit_feature(context, self._tile, self._pts_local)
+        _commit_feature(context, self._tile, self._pts_local,
+                        seed_settings=self._pending_seed_settings)
         bpy.ops.ed.undo_push(message="HexFinity Draw Path Feature")
+
+        neighbour = self._resolve_crossing_neighbour(context, crossing_edge_idx)
+        if neighbour is not None:
+            self._continue_onto(context, neighbour, crossing_point_world)
+            return {'RUNNING_MODAL'}
+
         self._finish(context)
         return {'FINISHED'}
+
+    def _resolve_crossing_neighbour(self, context, edge_idx):
+        """The neighbour tile across `self._tile`'s edge `edge_idx`, or None
+        if there's nothing to continue onto: `edge_idx` is None (the snap was
+        an existing waypoint, not a hex-edge point), there's no generated
+        tile there (a real map edge), or that tile isn't currently selected
+        — selection is the sole gate on whether an edge-point click
+        continues the line or ends it, per the tool's multi-hex workflow:
+        select every hex a path should span before drawing."""
+        if edge_idx is None:
+            return None
+        tile_props = self._tile.hexfinity_tile
+        direction = EDGE_DIRECTIONS[edge_idx]
+        nq, nr = neighbour_coord(tile_props.coord_q, tile_props.coord_r, direction)
+        neighbour = find_tile(context.scene, nq, nr)
+        if neighbour is None or neighbour not in context.selected_objects:
+            return None
+        return neighbour
+
+    def _continue_onto(self, context, neighbour, world_point):
+        """Start a new segment on `neighbour`, seeded with the shared
+        `world_point` and the just-committed segment's settings, and
+        recentre the view on it."""
+        prev_tile = self._tile.hexfinity_tile
+        prev_feature = prev_tile.path_features[prev_tile.active_path_feature_index]
+        self._pending_seed_settings = {
+            f: getattr(prev_feature, f) for f in _PATH_FEATURE_LINK_FIELDS}
+
+        self._tile = neighbour
+        lp = neighbour.matrix_world.inverted() @ world_point
+        self._pts_local = [(lp.x, lp.y)]
+        self._pts_world = [world_point.copy()]
+        context.view_layer.objects.active = neighbour
+        self._recenter_view(context, neighbour)
+
+    def _recenter_view(self, context, tile_obj):
+        """Pan the 3D viewport to centre on `tile_obj` without touching its
+        rotation/distance/perspective, so a multi-hex draw keeps the same
+        viewing angle as it crosses each boundary."""
+        rv3d = context.region_data
+        if rv3d is not None:
+            rv3d.view_location = tile_obj.matrix_world.translation.copy()
 
     def _finish(self, context):
         if self._draw_handle is not None:
@@ -606,7 +713,7 @@ class HEXFINITY_OT_draw_path_feature(bpy.types.Operator):
         tip = self._cursor
         tip_color = _LINE_COLOR
         if self._snap_hint is not None:
-            s = view3d_utils.location_3d_to_region_2d(region, rv3d, self._snap_hint)
+            s = view3d_utils.location_3d_to_region_2d(region, rv3d, self._snap_hint[0])
             if s is not None:
                 tip = (s.x, s.y)
                 tip_color = _SNAP_COLOR

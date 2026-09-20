@@ -44,6 +44,19 @@ SHARED_CORNERS = (
 )
 
 
+# Edge i runs from corner_xy(i) to corner_xy((i+1)%6). Exactly one neighbour
+# direction is common to SHARED_CORNERS[i] and SHARED_CORNERS[(i+1)%6] --
+# that's the single tile bordering this edge (a corner touches two
+# neighbours, but an edge, being shared by only two tiles total, touches
+# just one). Derived by hand from SHARED_CORNERS; consumed by
+# path_features.py to resolve which tile a Path Feature line crosses into
+# when a click snaps onto one of this tile's own edge_snap_points().
+# test_edge_directions_consistent_with_shared_corners in test_map.py
+# verifies this against SHARED_CORNERS directly so the two tables can't
+# silently drift apart.
+EDGE_DIRECTIONS = (NE, SE, S, SW, NW, N)
+
+
 def clamp_level(v, min_level=0):
     """Floor a corner level at `min_level`. Mirrors the IntProperty(min=0)
     constraint on the per-tile pN properties; kept bpy-free so the multi-select

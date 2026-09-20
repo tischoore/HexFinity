@@ -7,6 +7,7 @@ import os
 import sys
 
 import bpy
+from mathutils import Vector
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO not in sys.path:
@@ -52,9 +53,10 @@ tile.is_generated = True
 bpy.context.view_layer.objects.active = obj
 obj.select_set(True)
 
-from hexfinity.map import point_in_hex
+from hexfinity.map import point_in_hex, NE, EDGE_DIRECTIONS, neighbour_coord, tile_world_xy, corner_xy
 from hexfinity.path_features import (
-    _commit_feature, _snap_targets_world, apply_type_defaults, PATH_TEXTURES)
+    _commit_feature, _snap_targets_world, apply_type_defaults, PATH_TEXTURES,
+    _feature_plane_z_local, _PATH_FEATURE_LINK_FIELDS, HEXFINITY_OT_draw_path_feature)
 from hexfinity import operators
 
 # A free waypoint outside the tile's own hex must be rejected (not clamped) —
@@ -133,6 +135,108 @@ tile.active_path_feature_index = 0
 bpy.ops.hexfinity.remove_path_feature()
 assert len(tile.path_features) == 1, len(tile.path_features)
 print("remove OK, remaining:", len(tile.path_features))
+
+# ---------------------------------------------------------------------------
+# Multi-hex crossing: a second, NE-neighbour tile selected alongside tile0,
+# exercising _resolve_crossing_neighbour / _continue_onto / _commit_feature's
+# seed_settings inheritance directly. The modal operator itself can't be
+# driven headlessly (no real mouse events) -- mirrors the same
+# "call the underlying helpers directly" approach
+# tests/_headless_link_paths_check.py already uses for hexfinity.
+import types
+
+mesh2 = bpy.data.meshes.new("HexTile_test_2")
+obj2 = bpy.data.objects.new("HexTile_test_2", mesh2)
+coll.objects.link(obj2)
+tile2 = obj2.hexfinity_tile
+nq, nr = neighbour_coord(tile.coord_q, tile.coord_r, NE)
+tile2.coord_q, tile2.coord_r = nq, nr
+for n in ("p1", "p2", "p3", "p4", "p5", "p6"):
+    setattr(tile2, n, 2)
+tile2.is_generated = True
+obj2.location.x, obj2.location.y = tile_world_xy(nq, nr, mp.diameter_mm)
+# A freshly created+positioned object's matrix_world isn't guaranteed to
+# reflect the new location until the next depsgraph evaluation -- force one
+# now, since _continue_onto (below) reads obj2.matrix_world directly. Real
+# interactive use never needs this: Blender's own event loop keeps
+# already-existing tiles' transforms in sync between clicks.
+bpy.context.view_layer.update()
+
+# The edge of tile0 bordering its NE neighbour, and that edge's midpoint in
+# tile0-local mm -- the crossing waypoint a real click would snap to.
+edge_idx = EDGE_DIRECTIONS.index(NE)
+a = corner_xy(edge_idx, mp.diameter_mm)
+b = corner_xy((edge_idx + 1) % 6, mp.diameter_mm)
+mid_local_t0 = ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
+z_local = _feature_plane_z_local(tile, mp)
+world_mid = Vector((obj.location.x + mid_local_t0[0],
+                    obj.location.y + mid_local_t0[1], z_local))
+
+before_count_t0 = len(tile.path_features)
+_commit_feature(bpy.context, obj, [(0.0, 0.0), mid_local_t0])
+assert len(tile.path_features) == before_count_t0 + 1
+crossing_feature = tile.path_features[tile.active_path_feature_index]
+crossing_feature.feature_type = 'PAVED_ROAD'
+crossing_feature.width_mm = 12.0
+crossing_feature.depth_mm = 2.0
+print("tile0 segment ending at shared edge point committed OK:",
+      crossing_feature.feature_type, crossing_feature.width_mm)
+
+obj2.select_set(True)
+obj.select_set(True)
+bpy.context.view_layer.objects.active = obj
+
+# A plain object standing in for the modal operator's `self` -- only
+# _resolve_crossing_neighbour/_continue_onto are exercised (pure state
+# manipulation, no event/UI access), with _recenter_view bound on so
+# _continue_onto's internal self._recenter_view(...) call resolves; it's a
+# no-op in background mode since context.region_data is None there.
+state = types.SimpleNamespace()
+state._tile = obj
+state._recenter_view = types.MethodType(
+    HEXFINITY_OT_draw_path_feature._recenter_view, state)
+
+neighbour = HEXFINITY_OT_draw_path_feature._resolve_crossing_neighbour(
+    state, bpy.context, edge_idx)
+assert neighbour is obj2, (neighbour, obj2)
+print("crossing neighbour resolved via selected+generated NE tile OK")
+
+assert HEXFINITY_OT_draw_path_feature._resolve_crossing_neighbour(
+    state, bpy.context, None) is None
+print("existing-waypoint snap (edge_idx=None) never crosses OK")
+
+HEXFINITY_OT_draw_path_feature._continue_onto(state, bpy.context, neighbour, world_mid)
+assert state._tile is obj2
+assert len(state._pts_local) == 1
+assert state._pending_seed_settings["feature_type"] == 'PAVED_ROAD'
+assert state._pending_seed_settings["width_mm"] == 12.0
+print("continue_onto seeded neighbour segment + carried settings OK")
+
+state._pts_local.append((0.0, 0.0))
+before_count_t1 = len(tile2.path_features)
+_commit_feature(bpy.context, state._tile, state._pts_local,
+                seed_settings=state._pending_seed_settings)
+assert len(tile2.path_features) == before_count_t1 + 1
+new_feat = tile2.path_features[tile2.active_path_feature_index]
+assert new_feat.feature_type == 'PAVED_ROAD', new_feat.feature_type
+assert new_feat.width_mm == 12.0, new_feat.width_mm
+assert new_feat.depth_mm == 2.0, new_feat.depth_mm
+print("neighbour segment inherited crossing settings OK:",
+      new_feat.feature_type, new_feat.width_mm, new_feat.depth_mm)
+
+w0 = (obj.location.x + mid_local_t0[0], obj.location.y + mid_local_t0[1])
+w1 = (obj2.location.x + new_feat.points[0].x, obj2.location.y + new_feat.points[0].y)
+assert abs(w0[0] - w1[0]) < 1e-6 and abs(w0[1] - w1[1]) < 1e-6, (w0, w1)
+print("shared waypoint coincides across tiles OK")
+
+# Deselecting the neighbour must block the crossing -- it falls back to
+# today's exact single-hex behaviour (the caller would then just finish the
+# line there instead of continuing).
+obj2.select_set(False)
+state._tile = obj
+assert HEXFINITY_OT_draw_path_feature._resolve_crossing_neighbour(
+    state, bpy.context, edge_idx) is None
+print("deselected neighbour correctly blocks crossing OK")
 
 hexfinity.unregister()
 print("unregister() OK")

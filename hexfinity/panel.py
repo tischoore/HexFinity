@@ -399,6 +399,9 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         box.prop(tool, "edge_snap")
         box.operator("hexfinity.draw_path_feature", text="Draw Feature",
                      icon='GREASEPENCIL')
+        box.label(text="Select every hex a line should span first — an edge "
+                        "click then continues onto a selected neighbour "
+                        "instead of ending there.", icon='INFO')
 
         row = box.row()
         row.template_list(
@@ -430,9 +433,11 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
                                     "the crossing edge to at least Depth.",
                               icon='INFO')
                 else:
-                    box.label(text="Edge not preserved: draw a matching "
-                                    "River on the neighbouring tile at the "
-                                    "same edge point to continue it.",
+                    box.label(text="Edge not preserved: select the "
+                                    "neighbouring tile and continue drawing "
+                                    "across the edge (or draw a matching "
+                                    "River there at the same edge point) to "
+                                    "continue it.",
                               icon='INFO')
             else:
                 sub.prop(feature, "depth_mm")
