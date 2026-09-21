@@ -108,7 +108,16 @@ def _get_or_import_mesh(tree_type, filename):
     """
     mesh = _mesh_cache.get(filename)
     if mesh is not None:
-        if mesh.name in bpy.data.meshes:
+        # An undo/redo elsewhere in the session can swap out Blender's
+        # entire bpy.data state, leaving this cached reference pointing at
+        # a freed ID -- accessing *any* attribute on it then raises
+        # ReferenceError rather than behaving like a normal stale lookup,
+        # so the validity check itself must be guarded.
+        try:
+            still_valid = mesh.name in bpy.data.meshes
+        except ReferenceError:
+            still_valid = False
+        if still_valid:
             return (mesh, _mesh_min_z[filename], *_mesh_footprint_xy[filename],
                     _mesh_base_radius[filename])
         # Stale reference (e.g. a different .blend loaded, or a reload) —
@@ -393,8 +402,13 @@ def _get_or_build_pin_mesh():
     needed) since the shape is fixed and trivial.
     """
     global _pin_mesh_cache
-    if _pin_mesh_cache is not None and _pin_mesh_cache.name in bpy.data.meshes:
-        return _pin_mesh_cache
+    if _pin_mesh_cache is not None:
+        try:
+            still_valid = _pin_mesh_cache.name in bpy.data.meshes
+        except ReferenceError:
+            still_valid = False
+        if still_valid:
+            return _pin_mesh_cache
 
     r = FLORA_PIN_RADIUS_MM
     h = FLORA_PIN_LENGTH_MM

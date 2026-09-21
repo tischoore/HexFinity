@@ -22,14 +22,73 @@ list UI / Remove button work unchanged; `path_features.path_specs()`
 never sees these entries carve anything, since a SEGMENT feature's
 `points` collection is always left empty.
 
-Design decision (flagged in the implementation plan for review): a placed
-piece stays rigid/horizontal — its Z is set once from wherever it was
-snapped/dropped, with no per-vertex pitch/roll auto-tilt-to-terrain.
-terrain_lock.py already tried and abandoned a single-planar-tilt auto-solve
-for whole terrain objects as unreliable on real, non-planar scans; the same
-judgement is reused here rather than reintroducing it for a smaller rigid
-prefab piece. If a visibly-tilted fit across sloped corners turns out to
-matter, that's a follow-up, not part of this pass.
+A placed piece is a single rigid body — its own mesh geometry is never
+touched, only its position/rotation — but it is not purely horizontal:
+`_fit_placement` tilts it (pitch/roll, on top of the user's own yaw) so
+it *rests* on the hovered tile's live surface under its authored Corners
+footprint (see segments.py's "Define Corners" workflow, `corners_local_mm`
+in settings.json), the same way a rigid flat object settles onto an
+uneven floor — touching at whichever corners are locally highest
+(generically 3 of them; 3 points always determine a plane) and never
+sinking below the surface anywhere, via `segment_geometry.fit_resting_plane`.
+A 4+ corner footprint over genuinely non-planar (hilly/saddle) terrain
+will generically leave one or more corners floating a small, minimized
+gap above the surface rather than touching it too — a rigid body only has
+enough freedom to satisfy 3 independent height constraints at once, the
+same reason a 4-legged table wobbles on an uneven floor — but critically,
+no corner is ever placed *below* the surface (visibly buried into the
+terrain), unlike a plain least-squares fit. `fit_resting_plane` itself
+solves a *linear* plane model, though, and the rotation actually applied
+is a true 3D rotation, which — for a non-trivial tilt — shifts each
+corner's real world X/Y slightly off the flat position the fit's own
+samples were taken at (a second-order effect the linear model can't see);
+`_fit_placement` catches this with one more raycast per corner at each
+corner's *true* final position, and lifts the whole piece straight up
+(tilt untouched) by whatever tiny amount clears the worst case if any
+corner would otherwise still end up sinking in — so the "never below the
+surface" guarantee holds for the real applied geometry, not just the
+linear model it was derived from. That floating gap is accepted as-is,
+not papered over with a mesh deformation: a placed segment is meant to
+stay exactly the rigid prefab it was authored as, so it always
+prints/exports as the same solid piece regardless of where it was placed.
+If a specific placement needs its corners to match the surface exactly,
+that's a separate, explicit, user-driven step — terrain_lock.py's existing
+"Edit Lattice" Conform workflow already does precisely this (bend an
+object's own mesh by hand via a Lattice modifier to match its hex's
+generated surface); it currently only targets true terrain objects
+(`operators._is_terrain_object` excludes a `SEGMENT_PIECE_TAG`-tagged
+piece), so using it on a placed segment is a possible future extension,
+not something this module does on its own. When the piece is chaining
+onto a previous piece (or a hex edge) via a snapped connector, the
+resting fit is additionally pinned to pass exactly through that
+connector's target Z (even if that means a slightly larger floating gap
+elsewhere, and skipping the lift-correction above entirely, since a
+uniform lift would break that exact alignment), so a chained joint never
+gets a gap. A segment authored before this feature existed (no
+`corners_local_mm` in settings.json) or with fewer than 3 corners falls
+back to the old flat/yaw-only placement.
+
+This is a deliberately narrow generalization of the old fully-rigid model,
+not the free-form auto-tilt-to-terrain terrain_lock.py already tried and
+abandoned as unreliable for a whole terrain object: the fit here is driven
+entirely by the Corners polygon the user explicitly authored, never solved
+from scratch off a single picked anchor.
+
+Performance: the live hover/ghost pipeline (everything `_update_hover`
+does on `MOUSEMOVE`) is throttled to `HOVER_UPDATE_INTERVAL_S` (~30/sec)
+rather than recomputed on every single event, shares one
+`evaluated_depsgraph_get()` across all of a single update's raycasts, and
+caches the hovered tile's own hex-edge snap points
+(`_tile_edge_snap_targets`) across mouse-moves that stay over the same
+tile -- the same "only re-extract when the hovered tile changes" idiom
+`regions.py`'s flood-fill modal already uses. The ghost itself
+(`_draw`/`_local_triangles`) never touches the segment's real (often very
+high-poly) imported STL geometry at all -- it renders a small prism built
+from the segment's own authored convex hull (`hull_local_mm`, captured
+once at authoring time) instead, via `segment_geometry.hull_prism_triangles`,
+so drag responsiveness no longer scales with how detailed the underlying
+model is. The final committed piece always uses the real geometry
+regardless, unmodified.
 """
 
 import math
@@ -41,19 +100,31 @@ import bpy
 import gpu
 from gpu_extras.batch import batch_for_shader
 from bpy_extras import view3d_utils
-from mathutils import Vector
+from mathutils import Vector, Matrix
 
 from .map import (edge_snap_points, corner_xy, EDGE_DIRECTIONS,
                   neighbour_coord, hex_prism_verts_faces, point_in_hex)
+from . import segment_geometry
 
 
 SNAP_RADIUS_PX = 18.0
 ROTATION_STEP_DEG = 15.0
 VIEW_PAN_DURATION_S = 1.2
+# Caps the pitch/roll _fit_placement derives from a segment's authored
+# Corners -- a safety valve against one bad/missed surface raycast sample
+# (e.g. a corner that lands past the tile's own rim before boolean
+# clipping) producing a wildly tilted placement.
+MAX_TILT_DEG = 30.0
 # Generous vs. operators.SPLIT_PRISM_MARGIN_MM (5 mm) -- a bridge/junction
 # segment can rise well above a flat terrain object's own bbox, and the
 # boolean tool prism just needs to fully contain the piece being clipped.
 SPLIT_PRISM_MARGIN_MM = 50.0
+# Caps how often a MOUSEMOVE event actually triggers a hover recompute
+# (raycasts + tilt fit + ghost rebuild) -- decouples that cost from
+# however fast the OS/input device delivers MOUSEMOVE events, which can
+# be far higher than this. ~30/sec is smooth enough for a drag preview
+# without redoing the full hover pipeline on every single event.
+HOVER_UPDATE_INTERVAL_S = 1.0 / 30.0
 
 _GHOST_COLOR = (0.3, 0.7, 1.0, 0.35)
 _GHOST_SNAP_COLOR = (0.35, 1.0, 0.55, 0.55)
@@ -90,7 +161,16 @@ _mesh_cache = {}   # filepath -> bpy.types.Mesh (shared, use_fake_user=True)
 def _get_or_import_segment_mesh(filepath):
     mesh = _mesh_cache.get(filepath)
     if mesh is not None:
-        if mesh.name in bpy.data.meshes:
+        # An undo/redo elsewhere in the session can swap out Blender's
+        # entire bpy.data state, leaving this cached reference pointing at
+        # a freed ID -- accessing *any* attribute on it then raises
+        # ReferenceError rather than behaving like a normal stale lookup,
+        # so the validity check itself must be guarded.
+        try:
+            still_valid = mesh.name in bpy.data.meshes
+        except ReferenceError:
+            still_valid = False
+        if still_valid:
             return mesh
         del _mesh_cache[filepath]
 
@@ -121,6 +201,17 @@ def _connector_locals(seg):
     """[(x_mm, y_mm), ...] of `seg`'s edge-tagged (edge_idx >= 0) waypoints
     -- its connection points, in the segment's own local mm space."""
     return [(wp["x_mm"], wp["y_mm"]) for wp in seg["waypoints"] if wp["edge_idx"] >= 0]
+
+
+def _corners_local(seg):
+    """[(x_mm, y_mm), ...] of `seg`'s authored Corners footprint (see
+    segments.py's "Define Corners" workflow), or [] for a segment entry
+    written before that feature existed -- settings.json's
+    corners_local_mm is a plain list of [x, y] pairs (segment_settings.
+    add_segment's own docstring: "a future reader must use
+    .get('corners_local_mm', [])"). _fit_placement falls back to a flat
+    placement whenever this has fewer than 3 points."""
+    return [(x, y) for (x, y) in seg.get("corners_local_mm", [])]
 
 
 # ---------------------------------------------------------------------------
@@ -216,13 +307,16 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
 
         self._hover_tile = None
         self._hover_world = None
-        self._transform = None          # (translation Vector, rotation_z float) or None
+        self._transform = None          # (translation Vector, rotation Matrix 3x3) or None
         self._snap_world = None
         self._snap_meta = None
         self._prev_open_world = None    # Vector or None -- open end of the running chain
         self._open_connectors = []      # [{"world": Vector, "tile": Object}, ...]
 
         self._ghost_tri_cache = {}      # filepath -> [(v0, v1, v2), ...] local verts
+        self._edge_snap_cache_tile = None
+        self._edge_snap_cache_targets = []
+        self._last_hover_update_time = 0.0
         self._pan_timer = None
         self._pan_start = None
         self._pan_target = None
@@ -250,8 +344,11 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
 
         if event.type == 'MOUSEMOVE':
             self._cursor = (event.mouse_region_x, event.mouse_region_y)
-            self._update_hover(context, event)
-            self._tag_redraw(context)
+            now = time.monotonic()
+            if now - self._last_hover_update_time >= HOVER_UPDATE_INTERVAL_S:
+                self._last_hover_update_time = now
+                self._update_hover(context, event)
+                self._tag_redraw(context)
             return {'RUNNING_MODAL'}
 
         if event.type == 'WHEELUPMOUSE' and event.value == 'PRESS':
@@ -318,14 +415,15 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
             return []
         return [o for o in coll.objects if o.hexfinity_tile.is_generated]
 
-    def _raycast_generated_tile(self, context, coord):
+    def _raycast_generated_tile(self, context, coord, depsgraph=None):
         region = context.region
         rv3d = context.region_data
         if region is None or rv3d is None:
             return None, None
         origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
         direction = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
-        depsgraph = context.evaluated_depsgraph_get()
+        if depsgraph is None:
+            depsgraph = context.evaluated_depsgraph_get()
         hit, location, _n, _i, hit_obj, _m = context.scene.ray_cast(
             depsgraph, origin, direction)
         if not hit or hit_obj is None:
@@ -336,13 +434,18 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
         return tile, location.copy()
 
     @staticmethod
-    def _surface_z_at(context, tile, x, y):
+    def _surface_z_at(context, tile, x, y, depsgraph=None):
         """Straight-down raycast onto `tile`'s own current surface at world
         (x, y) -- unlike path_features.py's floating "man height above the
         hex" draw plane, a segment is a physical object that must sit ON
         the tile, so every snap target needs a real surface Z, not a
-        constant offset one."""
-        depsgraph = context.evaluated_depsgraph_get()
+        constant offset one. `depsgraph`, when given, is reused as-is
+        instead of fetched fresh -- callers doing several of these per
+        hover update (`_tile_edge_snap_targets`, `_fit_placement`) share
+        one `context.evaluated_depsgraph_get()` rather than paying for it
+        again on every single raycast."""
+        if depsgraph is None:
+            depsgraph = context.evaluated_depsgraph_get()
         origin = Vector((x, y, tile.matrix_world.translation.z + 100000.0))
         direction = Vector((0.0, 0.0, -1.0))
         hit, location, _n, _i, hit_obj, _m = context.scene.ray_cast(
@@ -351,9 +454,21 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
             return location.z
         return tile.matrix_world.translation.z
 
-    def _tile_edge_snap_targets(self, context, tile):
+    def _tile_edge_snap_targets(self, context, tile, depsgraph=None):
         """[(Vector, ('edge', edge_idx, tile)), ...] for `tile`'s own
-        hex-edge points, Z resolved on the real surface."""
+        hex-edge points, Z resolved on the real surface.
+
+        These points are intrinsic to `tile` itself, not to wherever the
+        piece being placed currently is -- so, mirroring
+        regions.HEXFINITY_OT_flood_fill_region._update_hover's own "only
+        re-extract when the hovered tile changes" idiom, they're cached
+        per tile (`self._edge_snap_cache_tile`/`_targets`) and only
+        recomputed (12 raycasts, at the default edge_snap=3) when the
+        hovered tile actually changes, instead of on every hover update
+        for however long the mouse stays over the same tile."""
+        if tile is self._edge_snap_cache_tile:
+            return self._edge_snap_cache_targets
+
         map_props = context.scene.hexfinity_map
         mw = tile.matrix_world
         edge_snap = 3
@@ -362,21 +477,128 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
         out = []
         for i, (x, y) in enumerate(edge_snap_points(map_props.diameter_mm, edge_snap)):
             world_xy = mw @ Vector((x, y, 0.0))
-            z = self._surface_z_at(context, tile, world_xy.x, world_xy.y)
+            z = self._surface_z_at(context, tile, world_xy.x, world_xy.y, depsgraph)
             out.append((Vector((world_xy.x, world_xy.y, z)), ('edge', i, tile)))
+
+        self._edge_snap_cache_tile = tile
+        self._edge_snap_cache_targets = out
         return out
 
-    def _snap_targets(self, context, tile):
+    def _snap_targets(self, context, tile, depsgraph=None):
         targets = []
         if tile is not None:
-            targets.extend(self._tile_edge_snap_targets(context, tile))
+            targets.extend(self._tile_edge_snap_targets(context, tile, depsgraph))
         for oc in self._open_connectors:
             targets.append((oc["world"], ('open', oc)))
         return targets
 
+    def _fit_placement(self, context, tile, seg, translation, yaw,
+                        anchor_local, anchor_world_z, depsgraph=None):
+        """Returns (translation: Vector, rotation: Matrix 3x3): `seg`
+        placed at `translation`'s X/Y with yaw `yaw`, tilted (see the
+        module docstring) as a single rigid body so it *rests* on
+        `tile`'s live surface -- touching at whichever authored Corners
+        are locally highest, any others left floating a small, minimized
+        gap above the surface, but never sinking below it anywhere --
+        pinned exactly through anchor_local/anchor_world_z (a snapped
+        connector's local X/Y and target world Z) when given.
+
+        A rigid tilt can only ever touch at most 3 independent corners
+        exactly (see fit_resting_plane's own docstring for why); a 4+
+        corner footprint over non-planar (hilly/saddle) terrain generically
+        leaves one or more corners floating above the surface rather than
+        touching it. That's accepted as-is: the segment's own mesh is
+        never deformed to chase an exact fit for every corner (see the
+        module docstring for why) -- but unlike a plain least-squares fit,
+        no corner is ever placed *below* the surface (visibly buried into
+        the terrain).
+
+        Falls back to a flat, yaw-only placement at `translation`'s own Z
+        (the flat raycast/snap fallback the caller already resolved) when
+        `tile` is None, `seg` has fewer than 3 authored corners, or no
+        resting (or, failing that, least-squares) fit can be found at all
+        (e.g. every corner collinear in X/Y)."""
+        yaw_matrix = Matrix.Rotation(yaw, 3, 'Z')
+        flat = (translation.copy(), yaw_matrix)
+
+        corners = _corners_local(seg)
+        if tile is None or len(corners) < 3:
+            return flat
+
+        samples = []
+        for (x, y) in corners:
+            rotated_xy = yaw_matrix @ Vector((x, y, 0.0))
+            wx = translation.x + rotated_xy.x
+            wy = translation.y + rotated_xy.y
+            samples.append((x, y, self._surface_z_at(context, tile, wx, wy, depsgraph)))
+
+        fit = segment_geometry.fit_resting_plane(samples, anchor_local, anchor_world_z)
+        if fit is None:
+            # Fully degenerate resting-plane search (e.g. every corner
+            # collinear) -- fall back to the least-squares fit rather than
+            # giving up on tilting altogether.
+            fit = segment_geometry.fit_tilt_plane(samples, anchor_local, anchor_world_z)
+        if fit is None:
+            return flat
+
+        pivot_x, pivot_y, pivot_z, slope_x, slope_y = fit
+        slope_x, slope_y = segment_geometry.clamp_tilt_slopes(
+            slope_x, slope_y, MAX_TILT_DEG)
+
+        # Minimal-angle rotation taking the piece's own local +Z onto the
+        # fitted plane's normal, applied in local space *before* yaw --
+        # yaw only ever rotates around world Z, so it never changes a
+        # vector's Z component, meaning this tilt (solved against the
+        # un-yawed local corners) stays valid however self._rotation_z
+        # is currently set.
+        normal_local = Vector((-slope_x, -slope_y, 1.0)).normalized()
+        tilt_matrix = Vector((0.0, 0.0, 1.0)).rotation_difference(normal_local).to_matrix()
+        rotation = yaw_matrix @ tilt_matrix
+
+        pivot_after_tilt = tilt_matrix @ Vector((pivot_x, pivot_y, 0.0))
+        origin_z = pivot_z - pivot_after_tilt.z
+        result_translation = Vector((translation.x, translation.y, origin_z))
+
+        if anchor_local is None:
+            # fit_resting_plane solves a *linear* plane model against
+            # samples taken at each corner's flat (pre-tilt) world X/Y.
+            # The rotation actually applied is a true 3D rotation, though,
+            # which -- for a non-trivial tilt -- shifts each corner's real
+            # world X/Y slightly off that flat position too (not just its
+            # Z), a second-order effect the linear model can't see. For a
+            # steep enough tilt this can leave a corner just barely
+            # sinking below the *real* surface at its own true final
+            # position, even though the linear fit guaranteed it wouldn't.
+            # One more raycast per corner, at each corner's true final
+            # world X/Y, catches this; if any corner still comes out
+            # below the surface there, the whole piece is lifted straight
+            # up (tilt/rotation untouched) by whatever tiny amount clears
+            # the worst case, so no corner ever visibly penetrates the
+            # terrain. Skipped when pinned to a connector (anchor_local is
+            # not None) -- a uniform lift would break that exact joint
+            # alignment, which takes priority there over this safety
+            # margin.
+            worst = 0.0
+            for (cx, cy, _) in samples:
+                w = rotation @ Vector((cx, cy, 0.0))
+                wx = result_translation.x + w.x
+                wy = result_translation.y + w.y
+                wz = result_translation.z + w.z
+                real_z = self._surface_z_at(context, tile, wx, wy, depsgraph)
+                worst = min(worst, wz - real_z)
+            if worst < 0.0:
+                result_translation.z += -worst + 1e-4
+
+        return result_translation, rotation
+
     def _update_hover(self, context, event):
         coord = (event.mouse_region_x, event.mouse_region_y)
-        tile, hit_world = self._raycast_generated_tile(context, coord)
+        # One depsgraph fetch shared by every raycast this hover update
+        # needs (the hover pick, the tile's own edge points when its
+        # cache misses, and each authored-corner sample) instead of each
+        # of those fetching its own.
+        depsgraph = context.evaluated_depsgraph_get()
+        tile, hit_world = self._raycast_generated_tile(context, coord, depsgraph)
         self._hover_tile = tile
         self._hover_world = hit_world
         self._snap_world = None
@@ -397,7 +619,7 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
 
         region = context.region
         rv3d = context.region_data
-        targets = self._snap_targets(context, tile)
+        targets = self._snap_targets(context, tile, depsgraph)
         best = None
         best_dist = SNAP_RADIUS_PX
         for local_xy in connectors:
@@ -414,13 +636,17 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
                     best_dist = dist
                     best = (local_xy, target_world, meta)
 
+        anchor_local, anchor_world_z = None, None
         if best is not None:
             local_xy, target_world, meta = best
             translation = target_world - rotated(local_xy)
             self._snap_world = target_world
             self._snap_meta = meta
+            anchor_local, anchor_world_z = local_xy, target_world.z
 
-        self._transform = (translation, self._rotation_z)
+        self._transform = self._fit_placement(
+            context, tile, seg, translation, self._rotation_z,
+            anchor_local, anchor_world_z, depsgraph)
 
     def _connects_to_prev(self):
         if self._prev_open_world is None:
@@ -442,8 +668,8 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
                         "open end before placing")
             return
         seg = self._current_segment()
-        translation, rot = self._transform
-        self._commit_piece(context, seg, translation, rot)
+        translation, rotation = self._transform
+        self._commit_piece(context, seg, translation, rotation)
 
     @staticmethod
     def _world_bbox(obj):
@@ -550,7 +776,7 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
         lp = tile.matrix_world.inverted() @ world_point
         return point_in_hex(lp.x, lp.y, diameter_mm)
 
-    def _commit_piece(self, context, seg, translation, rot):
+    def _commit_piece(self, context, seg, translation, rotation):
         mesh = _get_or_import_segment_mesh(seg["file"])
         if mesh is None:
             self.report({'ERROR'}, f"Could not import {seg['file']!r}")
@@ -560,13 +786,12 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
         coll = map_props.root_collection
         obj = bpy.data.objects.new("HF_SegmentPiece", mesh)
         coll.objects.link(obj)
-        obj.rotation_euler = (0.0, 0.0, rot)
+        obj.rotation_euler = rotation.to_euler('XYZ')
         obj.location = translation
         context.view_layer.update()
 
-        cos_a, sin_a = math.cos(rot), math.sin(rot)
         connectors_world = [
-            translation + Vector((x * cos_a - y * sin_a, x * sin_a + y * cos_a, 0.0))
+            translation + rotation @ Vector((x, y, 0.0))
             for (x, y) in _connector_locals(seg)
         ]
         consumed = self._prev_open_world
@@ -685,34 +910,58 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
         context.workspace.status_text_set(None)
         self._tag_redraw(context)
 
-    def _local_triangles(self, filepath):
+    def _local_triangles(self, seg):
+        """Cached-per-filepath local-space triangle list for the ghost
+        preview. Built from `seg`'s own authored hull (`hull_local_mm`,
+        captured once at authoring time -- see docs/settings.md) via
+        `segment_geometry.hull_prism_triangles`, spanning the real
+        imported mesh's own Z range (read once, not re-derived every
+        frame) -- a couple dozen triangles regardless of how high-poly
+        the actual STL is, since the live drag preview only needs to
+        convey position/orientation/footprint, not exact shape (the
+        committed piece always uses the real geometry; this only ever
+        backs `_draw`). Falls back to the real mesh's own triangles for a
+        pre-hull settings.json entry or a degenerate hull."""
+        filepath = seg["file"]
         cached = self._ghost_tri_cache.get(filepath)
         if cached is not None:
             return cached
-        mesh = _get_or_import_segment_mesh(filepath)
-        tris = []
-        if mesh is not None:
-            mesh.calc_loop_triangles()
-            for lt in mesh.loop_triangles:
-                tris.append(tuple(mesh.vertices[i].co.copy() for i in lt.vertices))
+
+        tris = None
+        hull = seg.get("hull_local_mm") or []
+        if len(hull) >= 3:
+            mesh = _get_or_import_segment_mesh(filepath)
+            if mesh is not None and len(mesh.vertices) > 0:
+                z_min = min(v.co.z for v in mesh.vertices)
+                z_max = max(v.co.z for v in mesh.vertices)
+                hull_tris = segment_geometry.hull_prism_triangles(
+                    [(x, y) for (x, y) in hull], z_min, z_max)
+                if hull_tris:
+                    tris = [tuple(Vector(v) for v in tri) for tri in hull_tris]
+
+        if tris is None:
+            mesh = _get_or_import_segment_mesh(filepath)
+            tris = []
+            if mesh is not None:
+                mesh.calc_loop_triangles()
+                for lt in mesh.loop_triangles:
+                    tris.append(tuple(mesh.vertices[i].co.copy() for i in lt.vertices))
+
         self._ghost_tri_cache[filepath] = tris
         return tris
 
     def _draw(self, context):
         if self._transform is None:
             return
-        translation, rot = self._transform
+        translation, rotation = self._transform
         seg = self._current_segment()
-        tris = self._local_triangles(seg["file"])
+        tris = self._local_triangles(seg)
         if not tris:
             return
 
-        cos_a, sin_a = math.cos(rot), math.sin(rot)
-
         def to_world(v):
-            x = v.x * cos_a - v.y * sin_a
-            y = v.x * sin_a + v.y * cos_a
-            return (translation.x + x, translation.y + y, translation.z + v.z)
+            w = translation + rotation @ v
+            return (w.x, w.y, w.z)
 
         positions = []
         for tri in tris:

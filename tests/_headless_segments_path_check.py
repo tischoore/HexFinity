@@ -21,7 +21,7 @@ import sys
 import types
 
 import bpy
-from mathutils import Vector
+from mathutils import Vector, Matrix
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO not in sys.path:
@@ -111,6 +111,9 @@ def new_state(hover_tile, prev_open_world=None, run_id="run1"):
     state._run_id = run_id
     state.type_name = "Bridge"
     state.report = lambda level, msg: print("report:", level, msg)
+    state._edge_snap_cache_tile = None
+    state._edge_snap_cache_targets = []
+    state._ghost_tri_cache = {}
     cls = segment_path.HEXFINITY_OT_start_segments_path_draw
     # staticmethods take no implicit self -- bind those as plain functions,
     # everything else as a bound method on `state`.
@@ -120,9 +123,13 @@ def new_state(hover_tile, prev_open_world=None, run_id="run1"):
     for name in static_names:
         setattr(state, name, getattr(cls, name))
     for name in ("_clip_to_hexes", "_edge_endpoints_world", "_commit_piece",
-                "_start_view_pan", "_connects_to_prev"):
+                "_start_view_pan", "_connects_to_prev", "_fit_placement",
+                "_tile_edge_snap_targets", "_local_triangles"):
         setattr(state, name, types.MethodType(cls.__dict__[name], state))
     return state
+
+
+IDENTITY_ROTATION = Matrix.Rotation(0.0, 3, 'Z')
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +149,7 @@ seg_short = {
 }
 state = new_state(tile0)
 before = len(tile0.hexfinity_tile.path_features)
-state._commit_piece(bpy.context, seg_short, Vector((0.0, 0.0, surface_z)), 0.0)
+state._commit_piece(bpy.context, seg_short, Vector((0.0, 0.0, surface_z)), IDENTITY_ROTATION)
 tile0_features = tile0.hexfinity_tile.path_features
 assert len(tile0_features) == before + 1, len(tile0_features)
 feat = tile0_features[before]
@@ -178,7 +185,7 @@ midpoint_world.z = surface_z
 state = new_state(tile0)
 before0 = len(tile0.hexfinity_tile.path_features)
 before1 = len(tile1.hexfinity_tile.path_features)
-state._commit_piece(bpy.context, seg_long, midpoint_world, 0.0)
+state._commit_piece(bpy.context, seg_long, midpoint_world, IDENTITY_ROTATION)
 
 f0 = tile0.hexfinity_tile.path_features
 f1 = tile1.hexfinity_tile.path_features
@@ -193,6 +200,196 @@ assert tile1.select_get(), "crossing neighbour should be auto-selected"
 print("crossing neighbour auto-selected despite no pre-selection OK")
 print("cross-hex placement: boolean-split into two parented pieces OK ->",
       f0[before0].name, "/", f1[before1].name)
+
+# ---------------------------------------------------------------------------
+# Case C: _fit_placement tilts a piece so its authored Corners land close
+# to a sloped tile's real surface -- and closer than a flat (untilted)
+# placement at the same XY would.
+
+tile2 = make_tile("HexTile_seg_2", 5, 5)
+t2 = tile2.hexfinity_tile
+t2.p1, t2.p2, t2.p3, t2.p4, t2.p5, t2.p6 = 0, 2, 4, 1, 3, 5
+bpy.context.view_layer.update()
+operators.rebuild_tile(tile2)
+
+seg_tilt = {
+    "file": "short.stl",
+    "waypoints": [
+        {"x_mm": -20.0, "y_mm": 0.0, "edge_idx": -1},
+        {"x_mm": 20.0, "y_mm": 0.0, "edge_idx": -1},
+    ],
+    "corners_local_mm": [[-15.0, -15.0], [15.0, -15.0], [0.0, 15.0]],
+}
+state = new_state(tile2)
+flat_translation = Vector((tile2.location.x, tile2.location.y, surface_z))
+translation, rotation = state._fit_placement(
+    bpy.context, tile2, seg_tilt, flat_translation, 0.0, None, None)
+
+assert rotation != IDENTITY_ROTATION, "expected a non-flat (tilted) rotation"
+
+flat_errors, tilt_errors, signed_tilt_errors = [], [], []
+for (x, y) in seg_tilt["corners_local_mm"]:
+    world = translation + rotation @ Vector((x, y, 0.0))
+    real_z = state._surface_z_at(bpy.context, tile2, world.x, world.y)
+    signed_tilt_errors.append(world.z - real_z)
+    tilt_errors.append(abs(world.z - real_z))
+    flat_errors.append(abs(flat_translation.z - real_z))
+
+print("Case C corner errors -- flat:", flat_errors, "tilted:", tilt_errors)
+assert sum(tilt_errors) < sum(flat_errors), (flat_errors, tilt_errors)
+assert max(tilt_errors) < 3.0, tilt_errors
+assert all(e >= -1e-3 for e in signed_tilt_errors), (
+    "expected no corner to sink below the surface", signed_tilt_errors)
+print("corner-fit tilt places corners closer to the sloped surface, "
+      "never below it, OK")
+
+# A segment authored before Corners existed (no corners_local_mm key) must
+# fall back to the old flat/yaw-only placement rather than raising.
+seg_no_corners = dict(seg_tilt)
+del seg_no_corners["corners_local_mm"]
+fallback_translation, fallback_rotation = state._fit_placement(
+    bpy.context, tile2, seg_no_corners, flat_translation, 0.0, None, None)
+assert fallback_translation == flat_translation
+assert fallback_rotation == IDENTITY_ROTATION
+print("segment with no authored corners falls back to a flat placement OK")
+
+# ---------------------------------------------------------------------------
+# Case D: a 4-corner footprint on genuinely hilly (non-planar) terrain. A
+# rigid tilt alone can touch at most 3 corners exactly (fit_resting_plane),
+# so it generically leaves one corner floating a small gap above the
+# surface -- an accepted trade-off, not something this module corrects
+# with a mesh deformation (see the module docstring): the segment's own
+# mesh must stay exactly the rigid prefab it was authored as. What must
+# never happen is a corner sinking *below* the surface (visibly buried
+# into the terrain) -- unlike a least-squares fit, which would split the
+# error both ways.
+
+tile3 = make_tile("HexTile_seg_3", 7, 7)
+t3 = tile3.hexfinity_tile
+t3.p1, t3.p2, t3.p3, t3.p4, t3.p5, t3.p6 = 0, 6, 0, 6, 0, 6
+bpy.context.view_layer.update()
+operators.rebuild_tile(tile3)
+
+seg_saddle = {
+    "file": "short.stl",
+    "waypoints": [
+        {"x_mm": -20.0, "y_mm": 0.0, "edge_idx": -1},
+        {"x_mm": 20.0, "y_mm": 0.0, "edge_idx": -1},
+    ],
+    "corners_local_mm": [[-40.0, -40.0], [40.0, -40.0], [40.0, 40.0], [-40.0, 40.0]],
+}
+state = new_state(tile3)
+flat_translation3 = Vector((tile3.location.x, tile3.location.y, surface_z))
+translation3, rotation3 = state._fit_placement(
+    bpy.context, tile3, seg_saddle, flat_translation3, 0.0, None, None)
+
+flat_errors3, tilt_errors3 = [], []
+for (x, y) in seg_saddle["corners_local_mm"]:
+    world = translation3 + rotation3 @ Vector((x, y, 0.0))
+    real_z = state._surface_z_at(bpy.context, tile3, world.x, world.y)
+    tilt_errors3.append(world.z - real_z)
+    flat_errors3.append(flat_translation3.z - real_z)
+
+print("Case D corner errors (mm) -- flat:", flat_errors3, "tilted:", tilt_errors3)
+# Tight tolerance: this checks the corners' *true* final world position
+# (including the tilt's own second-order effect on X/Y, not just Z) --
+# exactly what _fit_placement's own verification-and-lift pass guards, so
+# it should never go negative beyond floating-point noise.
+assert all(e >= -1e-3 for e in tilt_errors3), (
+    "expected the resting-plane tilt to never sink a corner below the "
+    "surface at its own true final position", tilt_errors3)
+assert any(e > 0.05 for e in tilt_errors3), (
+    "expected at least one corner to still float above the surface on a "
+    "4-corner saddle footprint -- raise the p1..p6 level spread in this "
+    "test if it doesn't", tilt_errors3)
+assert sum(abs(e) for e in tilt_errors3) < sum(abs(e) for e in flat_errors3)
+print("4-corner rigid tilt on hilly terrain never sinks a corner below the "
+      "surface, only floats one above, and improves on flat OK")
+
+# ---------------------------------------------------------------------------
+# Case E: _tile_edge_snap_targets caches per hovered tile -- a repeat call
+# for the same tile must add zero further _surface_z_at raycasts, and a
+# hovered-tile change must invalidate the cache (mirrors regions.py's own
+# "only re-extract when the hovered tile changes" idiom).
+
+state = new_state(tile0)
+call_count = {"n": 0}
+real_surface_z_at = state._surface_z_at
+
+
+def counting_surface_z_at(context, tile, x, y, depsgraph=None):
+    call_count["n"] += 1
+    return real_surface_z_at(context, tile, x, y, depsgraph)
+
+
+state._surface_z_at = counting_surface_z_at
+
+first = state._tile_edge_snap_targets(bpy.context, tile0)
+first_count = call_count["n"]
+assert first_count == 12, first_count  # edge_snap=3 -> 6*(3-1)=12 points
+second = state._tile_edge_snap_targets(bpy.context, tile0)
+assert call_count["n"] == first_count, (
+    "expected a repeat call for the same tile to add zero raycasts", call_count["n"])
+assert second is first, "expected the exact cached list object back, not a recompute"
+print(f"_tile_edge_snap_targets caches per hovered tile OK -> "
+      f"{first_count} raycasts once, 0 more on repeat")
+
+state._tile_edge_snap_targets(bpy.context, tile1)
+assert call_count["n"] == first_count + 12, (
+    "expected a hovered-tile change to recompute", call_count["n"])
+print("cache invalidates when the hovered tile changes OK")
+
+# ---------------------------------------------------------------------------
+# Case F: the ghost preview's triangle count is driven by the segment's
+# authored hull, not by how many triangles the real imported STL has.
+
+def make_big_grid_mesh(name, size_mm=40.0, subdivisions=30):
+    """A flat, densely subdivided grid -- stands in for a genuinely
+    high-poly authored STL (subdivisions**2 * 2 triangles)."""
+    n = subdivisions
+    step = size_mm / n
+    verts = [
+        (i * step - size_mm / 2.0, j * step - size_mm / 2.0, 0.0)
+        for j in range(n + 1) for i in range(n + 1)
+    ]
+    faces = []
+    for j in range(n):
+        for i in range(n):
+            a = j * (n + 1) + i
+            b, c, d = a + 1, a + (n + 1), a + (n + 1) + 1
+            faces.append((a, b, d, c))
+    mesh = bpy.data.meshes.new(name)
+    mesh.from_pydata(verts, [], faces)
+    mesh.update(calc_edges=True)
+    return mesh
+
+
+_fake_meshes["big.stl"] = make_big_grid_mesh("HF_Segment_big")
+seg_big = {
+    "file": "big.stl",
+    "waypoints": [
+        {"x_mm": -20.0, "y_mm": 0.0, "edge_idx": -1},
+        {"x_mm": 20.0, "y_mm": 0.0, "edge_idx": -1},
+    ],
+    "hull_local_mm": [[-20.0, -20.0], [20.0, -20.0], [20.0, 20.0], [-20.0, 20.0]],
+}
+real_triangle_count = 2 * 30 * 30
+state = new_state(tile0)
+ghost_tris = state._local_triangles(seg_big)
+print("Case F ghost triangle count:", len(ghost_tris),
+      "vs real mesh triangles:", real_triangle_count)
+assert len(ghost_tris) < 50, (
+    "expected a small hull-prism ghost regardless of the real mesh's size",
+    len(ghost_tris))
+assert len(ghost_tris) < real_triangle_count
+print("ghost preview triangle count is driven by the authored hull, not mesh size OK")
+
+# A segment with no authored hull must still fall back to the real mesh's
+# own triangles (backward compatible with a pre-hull settings.json entry).
+state2 = new_state(tile0)
+fallback_tris = state2._local_triangles(seg_short)
+assert len(fallback_tris) == 12, len(fallback_tris)  # make_box_mesh's 6 quads -> 12 tris
+print("segment with no authored hull falls back to the real mesh's triangles OK")
 
 # ---------------------------------------------------------------------------
 # Remove: tearing down a SEGMENT feature must also delete its piece object.

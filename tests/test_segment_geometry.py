@@ -214,3 +214,197 @@ def test_point_in_polygon_concave_handles_l_shape():
 
 def test_point_in_polygon_concave_degenerate_returns_false():
     assert sg.point_in_polygon_concave(0.0, 0.0, [(0.0, 0.0), (1.0, 0.0)]) is False
+
+
+# ---------------------------------------------------------------------------
+# fit_tilt_plane
+
+def test_fit_tilt_plane_exact_through_three_points():
+    # z = 2 + 0.5*x - 0.25*y, sampled at 3 non-collinear (x, y).
+    def plane(x, y):
+        return 2.0 + 0.5 * x - 0.25 * y
+
+    pts = [(0.0, 0.0), (10.0, 0.0), (0.0, 10.0)]
+    samples = [(x, y, plane(x, y)) for (x, y) in pts]
+    result = sg.fit_tilt_plane(samples)
+    assert result is not None
+    px, py, pz, slope_x, slope_y = result
+    assert slope_x == pytest.approx(0.5)
+    assert slope_y == pytest.approx(-0.25)
+    # The unconstrained fit's pivot is the samples' centroid/mean.
+    assert (px, py) == pytest.approx((10.0 / 3.0, 10.0 / 3.0))
+    assert pz == pytest.approx(sum(plane(x, y) for (x, y) in pts) / 3.0)
+
+
+def test_fit_tilt_plane_least_squares_four_points():
+    # A perfect plane plus one point bumped off it -- the fit should land
+    # near, but not exactly on, the underlying plane's slope.
+    def plane(x, y):
+        return 1.0 + 0.2 * x + 0.1 * y
+
+    pts = [(-10.0, -10.0), (10.0, -10.0), (10.0, 10.0), (-10.0, 10.0)]
+    samples = [(x, y, plane(x, y)) for (x, y) in pts]
+    samples[0] = (samples[0][0], samples[0][1], samples[0][2] + 4.0)
+    result = sg.fit_tilt_plane(samples)
+    assert result is not None
+    _, _, _, slope_x, slope_y = result
+    assert slope_x == pytest.approx(0.2, abs=0.15)
+    assert slope_y == pytest.approx(0.1, abs=0.15)
+
+
+def test_fit_tilt_plane_pinned_pivot_passes_through_exactly():
+    pts = [(0.0, 0.0), (10.0, 0.0), (0.0, 10.0), (10.0, 10.0)]
+    samples = [(x, y, x - y) for (x, y) in pts]  # not perfectly planar-free of noise here, but linear anyway
+    pivot_xy = (0.0, 0.0)
+    pivot_z = 5.0  # deliberately NOT samples[0]'s actual sampled z (0.0)
+    result = sg.fit_tilt_plane(samples, pivot_xy, pivot_z)
+    assert result is not None
+    px, py, pz, slope_x, slope_y = result
+    assert (px, py, pz) == pytest.approx((0.0, 0.0, 5.0))
+
+
+def test_fit_tilt_plane_fewer_than_three_samples_returns_none():
+    assert sg.fit_tilt_plane([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]) is None
+    assert sg.fit_tilt_plane([]) is None
+
+
+def test_fit_tilt_plane_collinear_samples_returns_none():
+    samples = [(0.0, 0.0, 0.0), (5.0, 0.0, 1.0), (10.0, 0.0, 2.0)]
+    assert sg.fit_tilt_plane(samples) is None
+
+
+# ---------------------------------------------------------------------------
+# fit_resting_plane
+
+def _plane_height(fit, x, y):
+    px, py, pz, slope_x, slope_y = fit
+    return pz + slope_x * (x - px) + slope_y * (y - py)
+
+
+def test_fit_resting_plane_exact_for_three_points():
+    samples = [(0.0, 0.0, 1.0), (10.0, 0.0, 3.0), (0.0, 10.0, -2.0)]
+    fit = sg.fit_resting_plane(samples)
+    assert fit is not None
+    for (x, y, z) in samples:
+        assert _plane_height(fit, x, y) == pytest.approx(z, abs=1e-9)
+
+
+def test_fit_resting_plane_never_goes_below_any_sample():
+    samples = [(-10.0, -10.0, 1.0), (10.0, -10.0, 4.0), (10.0, 10.0, 0.0),
+               (-10.0, 10.0, 2.0), (0.0, 0.0, 3.0)]
+    fit = sg.fit_resting_plane(samples)
+    assert fit is not None
+    for (x, y, z) in samples:
+        assert _plane_height(fit, x, y) >= z - 1e-6
+
+
+def test_fit_resting_plane_touches_at_least_three_samples():
+    samples = [(-10.0, -10.0, 2.0), (10.0, -10.0, -2.0), (10.0, 10.0, 2.0),
+               (-10.0, 10.0, -2.0)]
+    fit = sg.fit_resting_plane(samples)
+    assert fit is not None
+    touching = [1 for (x, y, z) in samples
+               if abs(_plane_height(fit, x, y) - z) < 1e-6]
+    assert sum(touching) >= 3, touching
+
+
+def test_fit_resting_plane_coplanar_samples_exact_everywhere():
+    def plane(x, y):
+        return 2.0 + 0.5 * x - 0.3 * y
+
+    samples = [(x, y, plane(x, y)) for (x, y) in
+              [(-10.0, -10.0), (10.0, -10.0), (10.0, 10.0), (-10.0, 10.0)]]
+    fit = sg.fit_resting_plane(samples)
+    assert fit is not None
+    for (x, y, z) in samples:
+        assert _plane_height(fit, x, y) == pytest.approx(z, abs=1e-6)
+
+
+def test_fit_resting_plane_pinned_anchor_exact():
+    samples = [(-10.0, -10.0, 1.0), (10.0, -10.0, 4.0), (10.0, 10.0, 0.0),
+               (-10.0, 10.0, 2.0)]
+    anchor_xy, anchor_z = (0.0, 0.0), 5.0  # deliberately not on any sample's plane
+    fit = sg.fit_resting_plane(samples, anchor_xy, anchor_z)
+    assert fit is not None
+    assert _plane_height(fit, anchor_xy[0], anchor_xy[1]) == pytest.approx(anchor_z, abs=1e-6)
+    for (x, y, z) in samples:
+        assert _plane_height(fit, x, y) >= z - 1e-6
+
+
+def test_fit_resting_plane_table_wobble_known_case():
+    # A rigid square with 3 corners flat (z=0) and one corner (D) raised
+    # to z=5. A flat plane through A/B/C would have D poking through it
+    # (invalid -- the object would need to clip through the raised
+    # corner), so the resting plane must tilt, touching 3 of the 4
+    # corners with the 4th floating a gap above -- hand-verified: the
+    # valid resting planes both have a max gap of exactly 5mm.
+    a, b, c, d = (0.0, 0.0, 0.0), (10.0, 0.0, 0.0), (10.0, 10.0, 0.0), (0.0, 10.0, 5.0)
+    samples = [a, b, c, d]
+    fit = sg.fit_resting_plane(samples)
+    assert fit is not None
+    gaps = {(x, y): _plane_height(fit, x, y) - z for (x, y, z) in samples}
+    assert all(g >= -1e-6 for g in gaps.values()), gaps
+    assert max(gaps.values()) == pytest.approx(5.0, abs=1e-6)
+    touching = [pt for pt, g in gaps.items() if abs(g) < 1e-6]
+    assert len(touching) == 3, touching
+
+
+def test_fit_resting_plane_degenerate_collinear_returns_none():
+    samples = [(0.0, 0.0, 0.0), (5.0, 0.0, 1.0), (10.0, 0.0, 2.0)]
+    assert sg.fit_resting_plane(samples) is None
+
+
+def test_fit_resting_plane_fewer_than_three_samples_returns_none():
+    assert sg.fit_resting_plane([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]) is None
+    assert sg.fit_resting_plane([]) is None
+
+
+# ---------------------------------------------------------------------------
+# clamp_tilt_slopes
+
+def test_clamp_tilt_slopes_within_range_unchanged():
+    assert sg.clamp_tilt_slopes(0.1, -0.05, 30.0) == (0.1, -0.05)
+
+
+def test_clamp_tilt_slopes_scales_down_preserving_direction():
+    import math
+    slope_x, slope_y = 5.0, 0.0  # atan(5) ~= 78.7 degrees, well over 30
+    cx, cy = sg.clamp_tilt_slopes(slope_x, slope_y, 30.0)
+    assert cx == pytest.approx(math.tan(math.radians(30.0)))
+    assert cy == pytest.approx(0.0)
+    angle = math.degrees(math.atan(math.hypot(cx, cy)))
+    assert angle == pytest.approx(30.0)
+
+
+def test_clamp_tilt_slopes_zero_slope_unchanged():
+    assert sg.clamp_tilt_slopes(0.0, 0.0, 30.0) == (0.0, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# hull_prism_triangles
+
+def test_hull_prism_triangles_count_and_z_range():
+    tris = sg.hull_prism_triangles(_SQUARE, 0.0, 10.0)
+    # 4-vertex hull: (4-2)*2 = 4 cap triangles + 4*2 = 8 side triangles.
+    assert len(tris) == 12
+    zs = {v[2] for tri in tris for v in tri}
+    assert zs == {0.0, 10.0}
+
+
+def test_hull_prism_triangles_degenerate_returns_empty():
+    assert sg.hull_prism_triangles([], 0.0, 10.0) == []
+    assert sg.hull_prism_triangles([(0.0, 0.0), (1.0, 0.0)], 0.0, 10.0) == []
+
+
+def test_hull_prism_triangles_caps_wound_outward():
+    # Top cap triangles use hull_vertices' own (CCW) order -> a positive
+    # signed 2D area, mirroring how the source hull itself winds CCW.
+    tris = sg.hull_prism_triangles(_SQUARE, 0.0, 10.0)
+    top_tris = [tri for tri in tris if all(v[2] == 10.0 for v in tri)]
+    for (a, b, c) in top_tris:
+        area2 = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])
+        assert area2 > 0.0
+    bottom_tris = [tri for tri in tris if all(v[2] == 0.0 for v in tri)]
+    for (a, b, c) in bottom_tris:
+        area2 = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])
+        assert area2 < 0.0

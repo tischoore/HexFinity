@@ -221,6 +221,224 @@ def polygon_edge_midpoints(vertices):
     return [(x, y, i) for i, (x, y) in enumerate(pts[1::2])]
 
 
+def fit_tilt_plane(samples, pivot_xy=None, pivot_z=None):
+    """Least-squares plane z = pivot_z + slope_x*(x-pivot_x) +
+    slope_y*(y-pivot_y) through `samples` ([(x, y, z), ...], >= 3 points)
+    -- backs segment_path.py's "tilt a placed segment so its authored
+    Corners land on the hex surface" fit: `samples` are a segment's
+    Corners polygon in its own local X/Y, each paired with the *world*
+    surface Z sampled under that corner once placed.
+
+    If `pivot_xy`/`pivot_z` are both given, the plane is pinned to pass
+    through that exact point (used to keep a snapped connector joint
+    exact while the rest of the footprint only approximately follows the
+    surface) and the remaining samples are least-squares fit around it.
+    If omitted, `pivot_xy` defaults to the samples' centroid and
+    `pivot_z` to their mean Z -- the standard unconstrained least-squares
+    plane fit, reduced to the same 2-unknown solve once centered on that
+    pivot.
+
+    Returns (pivot_x, pivot_y, pivot_z, slope_x, slope_y), or None if
+    there are fewer than 3 samples or they're degenerate (collinear in
+    X/Y, making the 2x2 normal-equations matrix singular) -- the caller
+    should fall back to a flat, un-tilted placement in that case."""
+    n = len(samples)
+    if n < 3:
+        return None
+
+    if pivot_xy is None or pivot_z is None:
+        px = sum(x for (x, y, z) in samples) / n
+        py = sum(y for (x, y, z) in samples) / n
+        pz = sum(z for (x, y, z) in samples) / n
+    else:
+        px, py = pivot_xy
+        pz = pivot_z
+
+    suu = svv = suv = suw = svw = 0.0
+    for (x, y, z) in samples:
+        u, v, w = x - px, y - py, z - pz
+        suu += u * u
+        svv += v * v
+        suv += u * v
+        suw += u * w
+        svw += v * w
+
+    det = suu * svv - suv * suv
+    if abs(det) < 1e-9:
+        return None
+
+    slope_x = (suw * svv - svw * suv) / det
+    slope_y = (suu * svw - suv * suw) / det
+    return (px, py, pz, slope_x, slope_y)
+
+
+def _plane_through_three(p0, p1, p2):
+    """(slope_x, slope_y, intercept) for the plane z = slope_x*x +
+    slope_y*y + intercept passing exactly through 3 (x, y, z) points, or
+    None if their X/Y positions are collinear (no unique plane)."""
+    x0, y0, z0 = p0
+    x1, y1, z1 = p1
+    x2, y2, z2 = p2
+    ax, ay = x1 - x0, y1 - y0
+    bx, by = x2 - x0, y2 - y0
+    det = ax * by - ay * bx
+    if abs(det) < 1e-9:
+        return None
+    dz1, dz2 = z1 - z0, z2 - z0
+    slope_x = (dz1 * by - dz2 * ay) / det
+    slope_y = (ax * dz2 - bx * dz1) / det
+    intercept = z0 - slope_x * x0 - slope_y * y0
+    return slope_x, slope_y, intercept
+
+
+def fit_resting_plane(samples, anchor_xy=None, anchor_z=None, eps=1e-6):
+    """The lowest plane lying on or above every one of `samples`
+    ([(x, y, z), ...], >= 3 points, in the segment's own local X/Y paired
+    with the *world* surface Z sampled under that point once placed) --
+    the plane a perfectly rigid, flat-bottomed object would physically
+    come to rest on if lowered straight down onto N uneven point
+    supports: touching at whichever (generically 3) points are locally
+    highest, with every other point left floating a small, minimized gap
+    above the surface, and *never* sinking below it anywhere. This is the
+    rigid-body-only analogue of fit_tilt_plane's least-squares fit, which
+    instead lets the error split both ways (some points floating, others
+    poking through the surface) -- deliberately different here: a placed
+    segment must never visibly penetrate the terrain, only rest on it,
+    like a table settling onto an uneven floor and (generically) wobbling
+    on 3 legs rather than 4.
+
+    If `anchor_xy`/`anchor_z` are both given, the plane is additionally
+    forced to pass through that exact point (used to keep a snapped
+    connector joint exact — see segment_path.py's own pinning) while
+    still resting on top of (never through) every one of `samples`.
+
+    Implemented by brute-force search over every combination of 3 points
+    that could define the resting plane (2 of `samples` plus the anchor,
+    when given; otherwise 3 of `samples`) — correct because a "never
+    sinks below" supporting plane for a whole point set is always exactly
+    a facet of that set's own upper convex hull, i.e. defined by some
+    triple of the points themselves; this codebase's segments have few
+    enough authored corners (single digits) that checking every triple is
+    trivial rather than needing a real 3D convex-hull algorithm. Among
+    every *valid* triple (a plane with every sample on or below it,
+    within `eps`), the one minimizing the worst-case (maximum) gap to
+    whichever samples don't touch it is chosen — the "settles as low as
+    possible" tie-break.
+
+    Returns (pivot_x, pivot_y, pivot_z, slope_x, slope_y) — matching
+    fit_tilt_plane's own return shape, so callers can swap between the
+    two fits without changing how the result is consumed; `pivot` is the
+    anchor when given, else the samples' own centroid (evaluated on the
+    resting plane, purely so a later `clamp_tilt_slopes` has a sensible
+    point to re-anchor the plane through) — or None if fewer than 3
+    samples are given or no valid resting plane could be found (fully
+    degenerate input, e.g. every sample exactly collinear in X/Y)."""
+    pts = [(x, y, z) for (x, y, z) in samples]
+    if len(pts) < 3:
+        return None
+
+    if anchor_xy is not None and anchor_z is not None:
+        required = (anchor_xy[0], anchor_xy[1], anchor_z)
+        triples = [
+            (required, pts[i], pts[j])
+            for i in range(len(pts)) for j in range(i + 1, len(pts))
+        ]
+    else:
+        n = len(pts)
+        triples = [
+            (pts[i], pts[j], pts[k])
+            for i in range(n) for j in range(i + 1, n) for k in range(j + 1, n)
+        ]
+
+    best_plane = None
+    best_gap = None
+    for (p0, p1, p2) in triples:
+        plane = _plane_through_three(p0, p1, p2)
+        if plane is None:
+            continue
+        slope_x, slope_y, intercept = plane
+        max_gap = 0.0
+        valid = True
+        for (x, y, z) in pts:
+            gap = (slope_x * x + slope_y * y + intercept) - z
+            if gap < -eps:
+                valid = False
+                break
+            if gap > max_gap:
+                max_gap = gap
+        if not valid:
+            continue
+        if best_gap is None or max_gap < best_gap - eps:
+            best_gap = max_gap
+            best_plane = (slope_x, slope_y, intercept)
+
+    if best_plane is None:
+        return None
+    slope_x, slope_y, intercept = best_plane
+
+    if anchor_xy is not None and anchor_z is not None:
+        pivot_x, pivot_y, pivot_z = anchor_xy[0], anchor_xy[1], anchor_z
+    else:
+        pivot_x = sum(x for (x, _, _) in pts) / len(pts)
+        pivot_y = sum(y for (_, y, _) in pts) / len(pts)
+        pivot_z = slope_x * pivot_x + slope_y * pivot_y + intercept
+
+    return (pivot_x, pivot_y, pivot_z, slope_x, slope_y)
+
+
+def clamp_tilt_slopes(slope_x, slope_y, max_tilt_deg):
+    """Scales (slope_x, slope_y) down -- preserving direction -- so the
+    plane's tilt off horizontal never exceeds max_tilt_deg. A safety
+    valve against one bad/missed surface sample (fit_tilt_plane has no
+    way to know a sample is bad) producing a wild slope. Returns the
+    slopes unchanged if already within range."""
+    mag = math.hypot(slope_x, slope_y)
+    if mag < 1e-12:
+        return slope_x, slope_y
+    max_mag = math.tan(math.radians(max_tilt_deg))
+    if mag <= max_mag:
+        return slope_x, slope_y
+    scale = max_mag / mag
+    return slope_x * scale, slope_y * scale
+
+
+def hull_prism_triangles(hull_vertices, z_min, z_max):
+    """Triangle list for a closed prism extruding the convex polygon
+    `hull_vertices` (ordered CCW, e.g. convex_hull()'s output) from
+    `z_min` to `z_max` -- a flat-triangle-list sibling of
+    map.hex_prism_verts_faces (the same "extrude a closed 2D polygon into
+    a solid" shape, generalized from a fixed hexagon to an arbitrary
+    convex polygon), except returning triangles directly (fan-triangulated
+    top/bottom caps, 2 triangles per side quad) since this backs a GPU
+    'TRIS' draw call rather than from_pydata's quad/ngon faces --
+    segment_path.py's Draw Segments Path ghost preview uses it as a cheap
+    stand-in for a segment's full (potentially very high-poly) imported
+    STL geometry, built once from the segment's own authored hull
+    (`hull_local_mm`, captured at authoring time -- see docs/settings.md)
+    instead of re-deriving anything from the mesh every frame.
+
+    Returns [(v0, v1, v2), ...], each vi an (x, y, z) tuple -- top cap
+    wound the same order as `hull_vertices` (outward/+Z normal), bottom
+    cap reversed (outward/-Z normal), sides in between -- or `[]` for a
+    degenerate hull (fewer than 3 vertices)."""
+    n = len(hull_vertices)
+    if n < 3:
+        return []
+
+    bottom = [(x, y, z_min) for (x, y) in hull_vertices]
+    top = [(x, y, z_max) for (x, y) in hull_vertices]
+
+    tris = []
+    for i in range(1, n - 1):
+        tris.append((top[0], top[i], top[i + 1]))
+        tris.append((bottom[0], bottom[i + 1], bottom[i]))
+    for i in range(n):
+        j = (i + 1) % n
+        tris.append((bottom[i], bottom[j], top[j]))
+        tris.append((bottom[i], top[j], top[i]))
+    return tris
+
+
 def point_in_polygon_concave(x, y, vertices):
     """Standard even-odd (crossing-number) ray-cast point-in-polygon test
     over the closed polygon `vertices`, boundary treatment aside agnostic to
