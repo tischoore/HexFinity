@@ -101,13 +101,20 @@ def fake_get_or_import_segment_mesh(filepath):
 segment_path._get_or_import_segment_mesh = fake_get_or_import_segment_mesh
 
 
-def new_state(hover_tile, prev_open_world=None, run_id="run1"):
+def new_state(hover_tile, open_connectors=None, snap_meta=None, run_id="run1"):
     """No `selected_tiles` parameter any more -- `_clip_to_hexes` now scans
     every generated tile in the map itself (`_generated_tiles`), so a run
-    is no longer restricted to a pre-selected set."""
+    is no longer restricted to a pre-selected set.
+
+    `open_connectors`/`snap_meta` stand in for what a real hover/snap
+    (_update_hover) would have left on `self` -- `_commit_piece` reads
+    `self._snap_meta` to know which specific open connector this
+    placement consumed, and `_connects_to_prev` checks it against
+    `self._open_connectors`."""
     state = types.SimpleNamespace()
     state._hover_tile = hover_tile
-    state._prev_open_world = prev_open_world
+    state._open_connectors = open_connectors if open_connectors is not None else []
+    state._snap_meta = snap_meta
     state._run_id = run_id
     state.type_name = "Bridge"
     state.report = lambda level, msg: print("report:", level, msg)
@@ -307,7 +314,59 @@ print("4-corner rigid tilt on hilly terrain never sinks a corner below the "
       "surface, only floats one above, and improves on flat OK")
 
 # ---------------------------------------------------------------------------
-# Case E: _tile_edge_snap_targets caches per hovered tile -- a repeat call
+# Case E: a piece can leave *more than one* end open at once -- the very
+# first piece of a run, before either end has been consumed by a join. Every
+# one of them must be a valid target for continuing the chain, not just
+# whichever one happened to be tracked -- regression test for a bug where
+# only a single arbitrarily-chosen open connector was ever honoured, so
+# snapping onto the *other* legitimate open end looked fine (the ghost
+# turned green) but was silently rejected at placement time.
+
+tile4 = make_tile("HexTile_seg_4", 9, 9)
+bpy.context.view_layer.update()
+operators.rebuild_tile(tile4)
+
+_fake_meshes["chain.stl"] = make_box_mesh("HF_Segment_chain", 40.0)
+seg_chain = {
+    "file": "chain.stl",
+    "waypoints": [
+        {"x_mm": -20.0, "y_mm": 0.0, "edge_idx": 0},
+        {"x_mm": 20.0, "y_mm": 0.0, "edge_idx": 0},
+    ],
+}
+
+state = new_state(tile4)
+flat_translation4 = Vector((tile4.location.x, tile4.location.y, surface_z))
+state._commit_piece(bpy.context, seg_chain, flat_translation4, IDENTITY_ROTATION)
+
+assert len(state._open_connectors) == 2, (
+    "expected both ends of the first (as yet unconsumed) piece to stay open",
+    len(state._open_connectors))
+first_open, second_open = state._open_connectors[0], state._open_connectors[1]
+
+state._snap_meta = ('open', first_open)
+assert state._connects_to_prev() is True, (
+    "expected the first open connector to be a valid continuation target")
+state._snap_meta = ('open', second_open)
+assert state._connects_to_prev() is True, (
+    "expected the second open connector to be a valid continuation target too")
+
+# Continue the chain by snapping onto the *first* open connector
+# specifically -- the one an implementation that only ever tracks "the
+# last" open connector would wrongly reject.
+state._snap_meta = ('open', first_open)
+next_translation = first_open["world"] + Vector((20.0, 0.0, 0.0))
+state._commit_piece(bpy.context, seg_chain, next_translation, IDENTITY_ROTATION)
+
+remaining_worlds = [oc["world"] for oc in state._open_connectors]
+assert all((w - first_open["world"]).length > 1e-3 for w in remaining_worlds), (
+    "expected the connector actually snapped onto (first_open) to be "
+    "consumed, not left dangling", remaining_worlds)
+print("continuing a chain from any open connector of the previous piece "
+      "(not just a single tracked one) OK")
+
+# ---------------------------------------------------------------------------
+# Case F: _tile_edge_snap_targets caches per hovered tile -- a repeat call
 # for the same tile must add zero further _surface_z_at raycasts, and a
 # hovered-tile change must invalidate the cache (mirrors regions.py's own
 # "only re-extract when the hovered tile changes" idiom).
@@ -340,7 +399,7 @@ assert call_count["n"] == first_count + 12, (
 print("cache invalidates when the hovered tile changes OK")
 
 # ---------------------------------------------------------------------------
-# Case F: the ghost preview's triangle count is driven by the segment's
+# Case G: the ghost preview's triangle count is driven by the segment's
 # authored hull, not by how many triangles the real imported STL has.
 
 def make_big_grid_mesh(name, size_mm=40.0, subdivisions=30):
@@ -376,7 +435,7 @@ seg_big = {
 real_triangle_count = 2 * 30 * 30
 state = new_state(tile0)
 ghost_tris = state._local_triangles(seg_big)
-print("Case F ghost triangle count:", len(ghost_tris),
+print("Case G ghost triangle count:", len(ghost_tris),
       "vs real mesh triangles:", real_triangle_count)
 assert len(ghost_tris) < 50, (
     "expected a small hull-prism ghost regardless of the real mesh's size",
@@ -390,6 +449,36 @@ state2 = new_state(tile0)
 fallback_tris = state2._local_triangles(seg_short)
 assert len(fallback_tris) == 12, len(fallback_tris)  # make_box_mesh's 6 quads -> 12 tris
 print("segment with no authored hull falls back to the real mesh's triangles OK")
+
+# ---------------------------------------------------------------------------
+# Case H: _snap_effective_dist -- the pixel-radius/world-floor snap
+# qualification rule _update_hover relies on. Plain floats in, no bpy
+# dependency, so this is checked directly without any viewport machinery.
+
+RADIUS_PX = 26.0
+FLOOR_MM = 2.0
+
+# Comfortably within the pixel radius -> qualifies at its own pixel distance.
+assert segment_path._snap_effective_dist(10.0, 50.0, RADIUS_PX, FLOOR_MM) == 10.0
+
+# Beyond the pixel radius and beyond the world floor -> disqualified.
+assert segment_path._snap_effective_dist(100.0, 50.0, RADIUS_PX, FLOOR_MM) is None
+
+# Beyond the pixel radius (e.g. zoomed in close, so a small world distance
+# projects to a large pixel distance) but within the world floor -> still
+# qualifies, clamped to radius_px so it can't out-rank a genuinely
+# pixel-closer candidate.
+assert segment_path._snap_effective_dist(999.0, 1.0, RADIUS_PX, FLOOR_MM) == RADIUS_PX
+
+# Exactly at the world floor boundary -> qualifies (inclusive).
+assert segment_path._snap_effective_dist(999.0, FLOOR_MM, RADIUS_PX, FLOOR_MM) == RADIUS_PX
+
+# A candidate already within the pixel radius (and also within the world
+# floor) keeps its own true (smaller) pixel distance -- the clamp only ever
+# lowers an out-of-pixel-radius distance down to radius_px, never raises an
+# already-close one up to it.
+assert segment_path._snap_effective_dist(5.0, 1.0, RADIUS_PX, FLOOR_MM) == 5.0
+print("_snap_effective_dist qualification rule OK")
 
 # ---------------------------------------------------------------------------
 # Remove: tearing down a SEGMENT feature must also delete its piece object.

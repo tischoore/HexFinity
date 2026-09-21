@@ -107,7 +107,30 @@ from .map import (edge_snap_points, corner_xy, EDGE_DIRECTIONS,
 from . import segment_geometry
 
 
-SNAP_RADIUS_PX = 18.0
+SNAP_RADIUS_PX = 26.0
+# A segment's own connector waypoints move/rotate with the piece as the user
+# drags/scrolls, so landing one within SNAP_RADIUS_PX of a target is a
+# harder two-point aiming task than path_features.py's plain
+# cursor-to-target snap -- hence a wider radius here than that module's own
+# (separate) SNAP_RADIUS_PX = 18.0.
+#
+# Continuing a chain requires snapping onto one of the still-open
+# connectors left by the piece(s) placed so far (self._open_connectors,
+# enforced after the fact by _connects_to_prev) -- a piece can leave more
+# than one end open (the very first piece of a run, before either end is
+# consumed; or a 3+-way junction piece with only one end consumed), and any
+# of them is a valid continuation, so all of them get this even more
+# generous, prioritized catch radius. Any other candidate within it is
+# irrelevant anyway, since only an open connector can ever result in a
+# valid placement while a chain is in progress.
+REQUIRED_CONNECTOR_SNAP_RADIUS_PX = 42.0
+# A floor on real-world catch distance, so the effective snap tolerance
+# never shrinks below this many mm no matter how far the view is zoomed in
+# -- SNAP_RADIUS_PX/REQUIRED_CONNECTOR_SNAP_RADIUS_PX are pure screen-pixel
+# radii, so at high zoom (likely while fitting a piece precisely) their
+# real-world equivalent otherwise keeps shrinking. See
+# _snap_effective_dist.
+MIN_SNAP_WORLD_MM = 2.0
 ROTATION_STEP_DEG = 15.0
 VIEW_PAN_DURATION_S = 1.2
 # Caps the pitch/roll _fit_placement derives from a segment's authored
@@ -128,6 +151,15 @@ HOVER_UPDATE_INTERVAL_S = 1.0 / 30.0
 
 _GHOST_COLOR = (0.3, 0.7, 1.0, 0.35)
 _GHOST_SNAP_COLOR = (0.35, 1.0, 0.55, 0.55)
+# Every available-but-unsnapped snap target (hex-edge points + this run's
+# open connectors), drawn dim and small so the user can see at a glance
+# where there is something to aim for, before they've gotten close to any
+# of it.
+_SNAP_CANDIDATE_COLOR = (1.0, 1.0, 1.0, 0.35)
+# The one target currently engaged (self._snap_world) -- drawn bright and
+# larger, on top of the candidate dots, so the exact point a connector will
+# land on is unambiguous. Reuses _GHOST_SNAP_COLOR's hue for consistency.
+_SNAP_ACTIVE_COLOR = (0.35, 1.0, 0.55, 1.0)
 
 # Custom id-properties stamped on every placed/clipped piece Object -- the
 # "state lives on the real object" convention segments.py's own docstring
@@ -195,6 +227,26 @@ def _get_or_import_segment_mesh(filepath):
 
     _mesh_cache[filepath] = mesh
     return mesh
+
+
+def _snap_effective_dist(pixel_dist, world_dist, radius_px, min_world_mm):
+    """None if a snap candidate doesn't qualify at all; otherwise a
+    pixel-space distance usable for ranking it against other candidates.
+
+    A candidate whose real-world distance is within `min_world_mm` always
+    qualifies -- clamped to `radius_px` so it can never out-rank a
+    genuinely pixel-closer candidate -- even when its projected pixel
+    distance exceeds `radius_px`. That's what keeps the catch zone from
+    shrinking to an impractically small real-world size the further the
+    view is zoomed in (see MIN_SNAP_WORLD_MM's own comment). Otherwise,
+    ordinary screen-pixel-radius qualification applies. Plain floats in,
+    float-or-None out -- no bpy/3D-viewport dependency, so this is
+    directly unit-testable."""
+    if world_dist <= min_world_mm:
+        return min(pixel_dist, radius_px)
+    if pixel_dist <= radius_px:
+        return pixel_dist
+    return None
 
 
 def _connector_locals(seg):
@@ -310,8 +362,10 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
         self._transform = None          # (translation Vector, rotation Matrix 3x3) or None
         self._snap_world = None
         self._snap_meta = None
-        self._prev_open_world = None    # Vector or None -- open end of the running chain
-        self._open_connectors = []      # [{"world": Vector, "tile": Object}, ...]
+        self._hover_targets = []        # [(Vector, meta), ...] -- every snap candidate this hover
+        self._open_connectors = []      # [{"world": Vector, "tile": Object}, ...] -- every
+                                        # still-open end of the running chain; empty means the
+                                        # very next piece placed needs no connection (first of the run)
 
         self._ghost_tri_cache = {}      # filepath -> [(v0, v1, v2), ...] local verts
         self._edge_snap_cache_tile = None
@@ -604,6 +658,7 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
         self._snap_world = None
         self._snap_meta = None
         self._transform = None
+        self._hover_targets = []
         if hit_world is None:
             return
 
@@ -620,21 +675,50 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
         region = context.region
         rv3d = context.region_data
         targets = self._snap_targets(context, tile, depsgraph)
-        best = None
-        best_dist = SNAP_RADIUS_PX
-        for local_xy in connectors:
-            world_guess = translation + rotated(local_xy)
-            s_guess = view3d_utils.location_3d_to_region_2d(region, rv3d, world_guess)
-            if s_guess is None:
-                continue
-            for target_world, meta in targets:
-                s_target = view3d_utils.location_3d_to_region_2d(region, rv3d, target_world)
-                if s_target is None:
+        # Stashed so _draw can render every available target without
+        # recomputing this list itself.
+        self._hover_targets = targets
+
+        def _search(candidates, radius_px):
+            """Nearest-by-_snap_effective_dist candidate among `candidates`,
+            searched against every one of the segment's own connector
+            waypoints at the current hover translation/rotation. Returns
+            (local_xy, target_world, meta) or None."""
+            best = None
+            best_dist = radius_px
+            for local_xy in connectors:
+                world_guess = translation + rotated(local_xy)
+                s_guess = view3d_utils.location_3d_to_region_2d(region, rv3d, world_guess)
+                if s_guess is None:
                     continue
-                dist = math.hypot(s_target.x - s_guess.x, s_target.y - s_guess.y)
-                if dist <= best_dist:
-                    best_dist = dist
-                    best = (local_xy, target_world, meta)
+                for target_world, meta in candidates:
+                    s_target = view3d_utils.location_3d_to_region_2d(region, rv3d, target_world)
+                    if s_target is None:
+                        continue
+                    pixel_dist = math.hypot(s_target.x - s_guess.x, s_target.y - s_guess.y)
+                    world_dist = (target_world - world_guess).length
+                    eff = _snap_effective_dist(pixel_dist, world_dist, radius_px, MIN_SNAP_WORLD_MM)
+                    if eff is not None and eff <= best_dist:
+                        best_dist = eff
+                        best = (local_xy, target_world, meta)
+            return best
+
+        best = None
+        if self._open_connectors:
+            # Every still-open connector of the piece(s) placed so far --
+            # not just one -- is a valid target for continuing the chain
+            # (the piece just placed may have left more than one end open,
+            # e.g. the very first piece of a run with both ends free, or a
+            # 3+-way junction piece with only one end consumed). Any of
+            # them gets this wider, prioritized catch radius; anything else
+            # within the ordinary radius is irrelevant while a chain is in
+            # progress, since _connects_to_prev only ever accepts a snap
+            # onto one of these.
+            required_candidates = [(oc["world"], ('open', oc))
+                                    for oc in self._open_connectors]
+            best = _search(required_candidates, REQUIRED_CONNECTOR_SNAP_RADIUS_PX)
+        if best is None:
+            best = _search(targets, SNAP_RADIUS_PX)
 
         anchor_local, anchor_world_z = None, None
         if best is not None:
@@ -649,12 +733,15 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
             anchor_local, anchor_world_z, depsgraph)
 
     def _connects_to_prev(self):
-        if self._prev_open_world is None:
+        if not self._open_connectors:
             return True  # the very first piece of the run needs no connection
         if self._snap_meta is None or self._snap_meta[0] != 'open':
             return False
         oc = self._snap_meta[1]
-        return (oc["world"] - self._prev_open_world).length < 1e-3
+        # oc is the exact dict object _snap_targets/_update_hover pulled
+        # out of self._open_connectors -- identity check, not a
+        # recomputed-distance one, since it's the same object either way.
+        return any(oc is cand for cand in self._open_connectors)
 
     # -- placement -----------------------------------------------------------
 
@@ -794,7 +881,14 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
             translation + rotation @ Vector((x, y, 0.0))
             for (x, y) in _connector_locals(seg)
         ]
-        consumed = self._prev_open_world
+        # Whichever specific open connector this placement actually snapped
+        # onto (_connects_to_prev already required it to be one of
+        # self._open_connectors when that list was non-empty) is the one
+        # being consumed by this join -- not just "the" single tracked
+        # connector, since a piece can leave more than one open.
+        consumed = None
+        if self._snap_meta is not None and self._snap_meta[0] == 'open':
+            consumed = self._snap_meta[1]["world"]
         remaining = [w for w in connectors_world
                     if consumed is None or (w - consumed).length > 1e-3]
 
@@ -847,12 +941,8 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
         self._open_connectors = run_open_connectors
         bpy.ops.ed.undo_push(message="HexFinity Draw Segments Path")
 
-        if self._open_connectors:
-            self._prev_open_world = self._open_connectors[-1]["world"]
-            next_tile = self._open_connectors[-1]["tile"]
-        else:
-            self._prev_open_world = None
-            next_tile = pieces[-1][0]
+        next_tile = (self._open_connectors[-1]["tile"] if self._open_connectors
+                    else pieces[-1][0])
 
         if crossing_neighbour is not None and crossing_neighbour is not self._hover_tile:
             # Not guaranteed to already be selected -- no pre-selection is
@@ -976,6 +1066,25 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
         shader.bind()
         shader.uniform_float("color", color)
         batch_for_shader(shader, 'TRIS', {"pos": positions}).draw(shader)
+
+        # Snap-target markers, drawn in the same POST_VIEW world space as
+        # the ghost above -- no screen-space projection needed, unlike
+        # path_features.py's POST_PIXEL tip dot. Every available candidate
+        # (hex-edge points + this run's open connectors) is shown dim and
+        # small so the user can see where there's something to aim for;
+        # the one currently engaged (if any) is drawn brighter and bigger,
+        # on top, so the exact snap point is unambiguous.
+        if self._hover_targets:
+            gpu.state.point_size_set(6.0)
+            shader.uniform_float("color", _SNAP_CANDIDATE_COLOR)
+            candidate_positions = [(w.x, w.y, w.z) for w, _meta in self._hover_targets]
+            batch_for_shader(shader, 'POINTS', {"pos": candidate_positions}).draw(shader)
+        if self._snap_world is not None:
+            gpu.state.point_size_set(12.0)
+            shader.uniform_float("color", _SNAP_ACTIVE_COLOR)
+            w = self._snap_world
+            batch_for_shader(shader, 'POINTS', {"pos": [(w.x, w.y, w.z)]}).draw(shader)
+
         gpu.state.depth_test_set('NONE')
         gpu.state.face_culling_set('NONE')
         gpu.state.blend_set('NONE')

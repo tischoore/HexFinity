@@ -400,8 +400,10 @@ No pre-selection is needed — the tool works across every generated hex in the 
 - Moving the mouse slides the current (not-yet-placed) segment across whichever generated hex is under the cursor, shown as a translucent preview.
 - **Scroll wheel** rotates it around the vertical axis.
 - **+ / -** cycles to the next/previous segment registered under the chosen type.
-- **Left-click** places it — refused unless it's the very first piece of the chain, or one of its own connector waypoints (the edge-tagged points recorded when the segment was authored) has snapped onto the previous piece's still-open connector, a hex's own edge point, or another already-placed piece's connector.
+- **Left-click** places it — refused unless it's the very first piece of the chain, or one of its own connector waypoints (the edge-tagged points recorded when the segment was authored) has snapped onto any of the previously-placed piece's still-open connectors (a piece with more than two — a junction — can leave several open at once, all equally valid to continue from) or a hex's own edge point.
 - **Right-click** or **Esc** ends the tool — every piece placed so far is already committed (its own undo step), so there's nothing left to finish.
+
+Every available snap target — the hovered hex's own edge points, plus any open connector left by pieces placed so far this run — is marked with a small dot while you hover, and the one currently engaged is highlighted brighter and larger so it's clear exactly where a connector will land (the ghost also still turns green). Mid-chain, the one connector needed to continue onto the previous piece's open end gets an extra-generous, prioritized catch radius, and the catch zone has a minimum real-world size so precise snapping doesn't get harder the further you zoom in.
 
 A segment straddling a hex boundary is boolean-clipped into one piece per hex — the same INTERSECT-against-the-hex's-own-prism operation used to split an overhanging terrain object (see *Terrain objects*) — with a waypoint recorded at the crossing so the two pieces stay linked, and the view glides onto the new hex exactly as a multi-hex Path Feature line does.
 
