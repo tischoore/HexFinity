@@ -4,6 +4,10 @@ The **Export Tiles to STL** button (bottom of the HexFinity N-panel, shown once 
 map exists) writes one `.stl` per *distinct* hex tile plus a coordinate→file
 manifest. This page documents the dedup contract and the manifest format.
 
+For one-click export + Bambu Studio slicing from inside Blender (no separate
+STL step, no standalone script), see the **Export + Slice** button — [docs/
+slicing.md](slicing.md#slicing-from-inside-blender-export--slice).
+
 ## Workflow
 
 1. Click **Export Tiles to STL**. A directory browser opens.
@@ -92,6 +96,8 @@ customized tile with its own hash-suffixed file.
   `is_custom_tile`, `tile_filename`, `manifest_rows`. Unit-tested by
   `tests/test_tile_export.py`.
 - `hexfinity/operators.py` — `HEXFINITY_OT_export_tiles`: the directory dialog,
-  depsgraph mesh evaluation, dedup loop, `bpy.ops.wm.stl_export` calls, and manifest
-  writing.
+  plus `_export_tiles_core()`, the shared depsgraph mesh evaluation / dedup loop /
+  `bpy.ops.wm.stl_export` calls / manifest writing, also used by
+  `HEXFINITY_OT_export_and_slice` (see docs/slicing.md) so the two exporters can't
+  drift apart.
 - `hexfinity/panel.py` — the **Export** box at the bottom of the panel.

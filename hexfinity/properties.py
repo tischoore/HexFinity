@@ -1,5 +1,7 @@
 import bpy
 
+from . import bambu_slicer
+
 
 # ---------------------------------------------------------------------------
 # Scene-level — the four global mesh params that every tile in the map
@@ -141,6 +143,7 @@ class HexFinityFloraProperties(bpy.types.PropertyGroup):
         description="Flora element placed by the Flora tool",
         items=[
             ('LEAFY_TREE', "Leafy tree", "A leafy deciduous tree"),
+            ('PINE_TREE', "Pine tree", "A conifer/pine tree clump"),
         ],
         default='LEAFY_TREE',
     )
@@ -280,6 +283,69 @@ class HexFinityFloodFillProperties(bpy.types.PropertyGroup):
         default=10.0,
         min=0.0,
         max=89.0,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Scene-level — "Export + Slice" settings (hexfinity.export_and_slice). No
+# update callbacks: these only affect the next slice run, nothing already
+# built needs a rebuild. printer/nozzle/filament/quality stay plain strings
+# (not a dynamically-populated EnumProperty) since resolving the live Bambu
+# Studio install's presets means a directory scan + per-file JSON parse —
+# fine on demand (see HEXFINITY_OT_slice_list_options), too expensive to
+# re-run on every dialog redraw, and Blender's dynamic-enum-items callback
+# has its own lifetime footgun (the returned list must outlive Blender's
+# hold on it). "" means auto-detect, mirroring scripts/slice_tiles_settings
+# .json's own semantics for the same four fields — a deliberately similar
+# shape, not a synced one (see bambu_slicer.py's module docstring).
+
+class HexFinitySliceProperties(bpy.types.PropertyGroup):
+    printer: bpy.props.StringProperty(
+        name="Printer",
+        description="Bambu printer model name (e.g. 'Bambu Lab P1S'); "
+                    "empty = first instantiable printer in the install",
+        default="",
+    )
+    nozzle: bpy.props.StringProperty(
+        name="Nozzle",
+        description="Nozzle diameter, e.g. '0.4'; empty = 0.4mm if "
+                    "available, else the first",
+        default="",
+    )
+    filament: bpy.props.StringProperty(
+        name="Filament",
+        description="Compatible filament preset name; empty = the "
+                    "printer's default filament profile",
+        default="",
+    )
+    quality: bpy.props.StringProperty(
+        name="Quality",
+        description="Compatible process/quality preset name; empty = the "
+                    "printer's default print profile",
+        default="",
+    )
+    sparse_infill_density: bpy.props.IntProperty(
+        name="Infill Density (%)",
+        description="Sparse infill density passed to the slicer",
+        default=15,
+        min=5,
+        max=20,
+        subtype='PERCENTAGE',
+    )
+    sparse_infill_pattern: bpy.props.EnumProperty(
+        name="Infill Pattern",
+        description="Sparse infill pattern passed to the slicer",
+        items=[(internal, label, label)
+              for internal, label in bambu_slicer.INFILL_PATTERNS],
+        default='honeycomb',
+    )
+    delete_stls_after_slicing: bpy.props.BoolProperty(
+        name="Delete STLs after slicing",
+        description="Remove each tile's intermediate .stl once its .gcode "
+                    "has been produced successfully. A tile whose slice "
+                    "fails always keeps its STL, regardless of this "
+                    "setting, so there's always something to retry with",
+        default=True,
     )
 
 

@@ -28,7 +28,8 @@ from mathutils import Vector
 from . import procedural_surfaces as ps
 from .map import DIRECTIONS, neighbour_coord, find_tile
 from .mesh_builder import (FLORA_PIN_RADIUS_MM, FLORA_PIN_LENGTH_MM,
-                           FLORA_NOTCH_RADIUS_MM, FLORA_NOTCH_DEPTH_MM)
+                           FLORA_NOTCH_RADIUS_MM, FLORA_NOTCH_DEPTH_MM,
+                           FLORA_PIN_HOLE_TOLERANCE_MM)
 
 
 _MARKER_COLOR = (1.0, 0.9, 0.1, 0.9)
@@ -51,8 +52,19 @@ def is_active():
 # planted tree, not a per-placement copy) — the STLs are several MB each.
 
 _ASSETS_DIR = Path(__file__).resolve().parent / "assets"
-_TREE_TYPE_FOLDERS = {'LEAFY_TREE': "leefytree"}   # one entry per HexFinityFloraProperties.tree_type item
+_TREE_TYPE_FOLDERS = {
+    'LEAFY_TREE': "leefytree",
+    'PINE_TREE': "pinetree",
+}   # one entry per HexFinityFloraProperties.tree_type item
 TREE_ASSET_MAN_HEIGHT_MM = 10.0   # the man-height scale the STLs were authored at
+
+# Species whose true flat base disc should sit flush (recessed) with the tile
+# surface rather than just resting on top of the flatten pad, keyed by
+# tree_type -> the disc's authored height in mm (at scale_factor/global_scale
+# == 1.0), scaled the same way base_radius already is in notch_specs()'s
+# recess entry. A species absent here (e.g. leafy) gets no recess -- unchanged
+# behaviour: its base just rests on the flattened pad like today.
+_FLUSH_BASE_HEIGHT_MM = {'PINE_TREE': 0.8}
 FLORA_OF = "hf_flora_of"
 FLORA_PIN_OF = "hf_flora_pin_of"   # tags a planted tree's paired pin object
                                    # (parented to the tree, see `sync_flora`)
@@ -352,14 +364,35 @@ def pad_specs(tile_obj):
 
 
 def notch_specs(tile_obj):
-    """Socket-cut specs for `tile_obj`'s planted trees, one dict per
-    placement: `{"x", "y", "radius_mm", "depth_mm", "index"}` in tile-local
-    mm, ready for `mesh_builder.build_hex_tile`'s `flora_notches` kwarg.
+    """Socket-cut specs for `tile_obj`'s planted trees, ready for
+    `mesh_builder.build_hex_tile`'s `flora_notches` kwarg — a flat list of
+    `{"x", "y", "radius_mm", "depth_mm"[, "index"]}` dicts in tile-local mm.
 
-    Unlike `pad_specs`, the socket's size is a fixed hardcoded constant
+    Every placement contributes its pin-notch dict, unchanged from before:
+    the socket's size is a fixed hardcoded constant
     (`mesh_builder.FLORA_NOTCH_RADIUS_MM`/`FLORA_NOTCH_DEPTH_MM`) — it must
     stay exactly the same size as the pin object regardless of a given
-    tree's random per-placement scale, so no species/scale lookup is needed.
+    tree's random per-placement scale, so no species/scale lookup is needed
+    — tagged `"index": i` so `tree_pads.cut_notches` records its outcome into
+    `ok_indices`/`resolved_heights` for `sync_flora` to consume.
+
+    A placement whose species has an entry in `_FLUSH_BASE_HEIGHT_MM` (e.g.
+    pine) additionally gets a wide, shallow "recess" dict *before* its
+    pin-notch dict, sized to its own (self-tuning, per-mesh) `base_radius` —
+    the same value `pad_specs()` already uses for the flatten pad — plus half
+    of `FLORA_PIN_HOLE_TOLERANCE_MM` for clearance (reusing the leafy tree's
+    own pin/hole tolerance constant rather than inventing a new one), and
+    deep enough to match the species' authored base-disc height (scaled the
+    same way `base_radius` is). It deliberately carries no `"index"` key: the
+    two notches are cut in list order by `tree_pads.cut_notches`, which
+    mutates the mesh in place and samples each notch's own target height
+    fresh off the *current* surface — so cutting the recess first means the
+    pin-notch right after it naturally starts from the recess floor, and
+    *its* `resolved_heights` entry (the one sync_flora actually reads) ends
+    up holding exactly that floor height, without either function needing to
+    know about the other. Leaving the recess un-indexed also means a
+    recess-only success can never make `sync_flora` spawn a pin with no
+    matching deep socket, if the pin-notch alone happens to fail.
 
     Gated on `flatten_base` exactly like `pad_specs`: a socket only makes
     sense cut into a surface already known to be flattened flat under the
@@ -372,12 +405,29 @@ def notch_specs(tile_obj):
     if len(placements) == 0:
         return []
 
-    return [
-        {"x": p.local_x_mm, "y": p.local_y_mm,
-         "radius_mm": FLORA_NOTCH_RADIUS_MM, "depth_mm": FLORA_NOTCH_DEPTH_MM,
-         "index": i}
-        for i, p in enumerate(placements)
-    ]
+    map_props = bpy.context.scene.hexfinity_map
+    global_scale = map_props.man_height_mm / TREE_ASSET_MAN_HEIGHT_MM
+
+    notches = []
+    for i, p in enumerate(placements):
+        flush_height_mm = _FLUSH_BASE_HEIGHT_MM.get(p.tree_type)
+        if flush_height_mm:
+            _mesh, _min_z, _hx, _hy, _lcx, _lcy, base_radius = _get_or_import_mesh(
+                p.tree_type, p.species_file)
+            if _mesh is not None:
+                total_scale = p.scale_factor * global_scale
+                notches.append({
+                    "x": p.local_x_mm, "y": p.local_y_mm,
+                    "radius_mm": base_radius * total_scale
+                                 + FLORA_PIN_HOLE_TOLERANCE_MM / 2.0,
+                    "depth_mm": flush_height_mm * total_scale,
+                })
+        notches.append({
+            "x": p.local_x_mm, "y": p.local_y_mm,
+            "radius_mm": FLORA_NOTCH_RADIUS_MM, "depth_mm": FLORA_NOTCH_DEPTH_MM,
+            "index": i,
+        })
+    return notches
 
 
 # ---------------------------------------------------------------------------

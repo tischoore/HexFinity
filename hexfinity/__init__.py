@@ -27,6 +27,7 @@ def _classes():
         properties.HexFinitySegmentCorner,
         properties.HexFinitySegmentAuthoring,
         properties.HexFinitySegmentsProperties,
+        properties.HexFinitySliceProperties,
         operators.HEXFINITY_OT_generate_map,
         operators.HEXFINITY_OT_clear_map,
         operators.HEXFINITY_OT_add_adjacent_hex,
@@ -40,6 +41,8 @@ def _classes():
         operators.HEXFINITY_OT_bake_tile,
         operators.HEXFINITY_OT_unbake_tile,
         operators.HEXFINITY_OT_export_tiles,
+        operators.HEXFINITY_OT_export_and_slice,
+        operators.HEXFINITY_OT_slice_list_options,
         operators.HEXFINITY_OT_copy_surface_texture,
         operators.HEXFINITY_OT_apply_surface_texture,
         brush.HEXFINITY_OT_paint_brush,
@@ -104,6 +107,9 @@ def register():
     bpy.types.Scene.hexfinity_segments = bpy.props.PointerProperty(
         type=properties.HexFinitySegmentsProperties
     )
+    bpy.types.Scene.hexfinity_slice = bpy.props.PointerProperty(
+        type=properties.HexFinitySliceProperties
+    )
     bpy.types.Object.hexfinity_tile = bpy.props.PointerProperty(
         type=properties.HexFinityProperties
     )
@@ -138,6 +144,8 @@ def unregister():
         del bpy.types.Object.hexfinity_terrain
     if hasattr(bpy.types.Object, "hexfinity_tile"):
         del bpy.types.Object.hexfinity_tile
+    if hasattr(bpy.types.Scene, "hexfinity_slice"):
+        del bpy.types.Scene.hexfinity_slice
     if hasattr(bpy.types.Scene, "hexfinity_segments"):
         del bpy.types.Scene.hexfinity_segments
     if hasattr(bpy.types.Scene, "hexfinity_flood_fill"):

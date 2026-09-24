@@ -11,4 +11,4 @@ license = ["SPDX:MIT"]
 tags = ["Mesh", "Add Mesh"]
 
 [permissions]
-files = "Reads and writes settings.json (the Path Segment authoring tool's type/segment library) in the extension's per-user data directory"
+files = "Reads and writes settings.json (the Path Segment authoring tool's type/segment library) in the extension's per-user data directory; 'Export + Slice' writes STL/manifest/G-code files to a user-chosen folder and invokes a locally installed Bambu Studio executable to slice them"

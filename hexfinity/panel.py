@@ -55,6 +55,11 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
                      text="Export Tiles to STL", icon='EXPORT')
         box.label(text="One STL per distinct tile; identical tiles merge.",
                   icon='INFO')
+        box.separator()
+        box.operator("hexfinity.export_and_slice",
+                     text="Export + Slice", icon='OUTPUT')
+        box.label(text="Exports, then slices each tile to G-code with "
+                       "Bambu Studio.", icon='INFO')
 
     @staticmethod
     def _draw_globals(parent, map_props, enabled):

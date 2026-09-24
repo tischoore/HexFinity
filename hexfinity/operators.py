@@ -1,3 +1,4 @@
+import collections
 import csv
 import json
 import math
@@ -16,6 +17,7 @@ from .map import (SHARED_CORNERS, neighbour_coord, tile_world_xy, find_tile,
 from .tile_export import (is_custom_tile, manifest_rows, short_hash,
                           tile_filename, tile_geometry_hash,
                           flora_placement_filename, flora_manifest_rows)
+from . import bambu_slicer
 
 
 # Re-entrancy guard: writing clamped XY back to a tile's property group
@@ -1820,6 +1822,146 @@ def _eval_mesh_local(obj, depsgraph, matrix):
     return verts, faces
 
 
+class _ExportError(Exception):
+    """Raised by _export_tiles_core on a validation/IO failure. The message
+    is already user-facing, so a caller just self.report({'ERROR'}, str(exc))."""
+
+
+#: Result of _export_tiles_core — shared by HEXFINITY_OT_export_tiles and
+#: HEXFINITY_OT_export_and_slice so their final report() messages agree.
+_ExportResult = collections.namedtuple(
+    "_ExportResult",
+    "written flora_written unfinalized_tiles total_tiles out_dir")
+
+
+def _export_tiles_core(context, out_dir):
+    """Export every generated tile (+ terrain children) to STL, deduped by
+    content hash, plus any finalized planted trees, writing manifest(s) into
+    out_dir. The shared body behind both HEXFINITY_OT_export_tiles and
+    HEXFINITY_OT_export_and_slice, so the two exporters can't drift apart.
+    Raises _ExportError with a user-facing message on failure; out_dir is
+    NOT created here (the caller does that, since the two operators resolve
+    it slightly differently before calling in).
+    """
+    scene = context.scene
+    map_props = scene.hexfinity_map
+
+    if not map_props.is_generated or map_props.root_collection is None:
+        raise _ExportError("Generate a map before exporting.")
+    if not hasattr(bpy.ops.wm, "stl_export"):
+        raise _ExportError(
+            "STL exporter (wm.stl_export) unavailable in this build.")
+
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except OSError as exc:
+        raise _ExportError(f"Could not create export folder: {exc}")
+
+    tiles = [o for o in map_props.root_collection.objects
+             if o.hexfinity_tile.is_generated]
+    if not tiles:
+        raise _ExportError("No HexFinity tiles found to export.")
+
+    # Make sure all transforms are flushed before we read matrix_world.
+    context.view_layer.update()
+    depsgraph = context.evaluated_depsgraph_get()
+
+    # Remember and restore the selection/active object around the export.
+    prev_selected = list(context.selected_objects)
+    prev_active = context.view_layer.objects.active
+
+    from . import flora
+
+    exported_hashes = {}   # geometry hash -> filename already written
+    records = []           # one per tile, for the manifest
+    flora_records = []     # one per planted tree, for the flora manifest
+    written = 0
+    flora_written = 0
+    unfinalized_tiles = 0
+
+    try:
+        for tile in tiles:
+            tp = tile.hexfinity_tile
+            children = _terrain_children(tile)
+
+            # Hash the built geometry: hex mesh (tile-local) + each child
+            # terrain mesh transformed into the tile's local frame.
+            hex_verts, hex_faces = _eval_mesh_local(
+                tile, depsgraph, Matrix.Identity(4))
+            tile_world_inv = tile.matrix_world.inverted()
+            child_meshes = [
+                _eval_mesh_local(
+                    c, depsgraph,
+                    tile_world_inv @ c.evaluated_get(depsgraph).matrix_world)
+                for c in children
+            ]
+            digest = tile_geometry_hash(hex_verts, hex_faces, child_meshes)
+
+            custom = is_custom_tile(
+                has_children=bool(children),
+                has_brush=tile.get("hf_brush_disp") is not None,
+                has_snap=bool(tile.get("hf_terrain_pads")),
+                region_count=len(tp.surface_regions),
+            )
+
+            if digest in exported_hashes:
+                fname = exported_hashes[digest]
+            else:
+                fname = tile_filename(tp.coord_q, tp.coord_r, custom,
+                                      short_hash(digest))
+                path = os.path.join(out_dir, fname)
+                HEXFINITY_OT_export_tiles._export_objects(
+                    context, [tile] + children, path)
+                exported_hashes[digest] = fname
+                written += 1
+
+            records.append({"q": tp.coord_q, "r": tp.coord_r,
+                            "file": fname, "custom": custom})
+
+            # Planted trees export as their own STL, separate from the
+            # tile — that's the whole point of the pin/socket interlock:
+            # an independently printed part assembled by hand. A pin is
+            # parented to its own tree (see `flora.sync_flora`), not the
+            # tile, so it's found via the tree's own children. Only
+            # placements with a matching pin (i.e. flora was finalized)
+            # are exportable; the rest are silently skipped here and
+            # rolled into one warning below.
+            tree_objs = {c[flora.FLORA_PLACEMENT_INDEX]: c
+                        for c in tile.children if c.get(flora.FLORA_OF)}
+            unfinalized_here = False
+
+            for idx, tree_obj in sorted(tree_objs.items()):
+                pin_obj = next((c for c in tree_obj.children
+                                if c.get(flora.FLORA_PIN_OF)), None)
+                if pin_obj is None:
+                    unfinalized_here = True
+                    continue
+
+                fname = flora_placement_filename(tp.coord_q, tp.coord_r, idx)
+                HEXFINITY_OT_export_tiles._export_flora_pair(
+                    context, depsgraph, tree_obj, pin_obj,
+                    os.path.join(out_dir, fname))
+                flora_written += 1
+
+                flora_records.append({"q": tp.coord_q, "r": tp.coord_r,
+                                      "index": idx, "file": fname})
+            if unfinalized_here:
+                unfinalized_tiles += 1
+    finally:
+        for o in context.selected_objects:
+            o.select_set(False)
+        for o in prev_selected:
+            o.select_set(True)
+        context.view_layer.objects.active = prev_active
+
+    HEXFINITY_OT_export_tiles._write_manifest(out_dir, records)
+    if flora_records:
+        HEXFINITY_OT_export_tiles._write_flora_manifest(out_dir, flora_records)
+
+    return _ExportResult(written, flora_written, unfinalized_tiles,
+                         len(tiles), out_dir)
+
+
 class HEXFINITY_OT_export_tiles(bpy.types.Operator):
     bl_idname = "hexfinity.export_tiles"
     bl_label = "Export Tiles to STL"
@@ -1856,138 +1998,27 @@ class HEXFINITY_OT_export_tiles(bpy.types.Operator):
         self.layout.prop(self, "subfolder")
 
     def execute(self, context):
-        scene = context.scene
-        map_props = scene.hexfinity_map
-
-        if not map_props.is_generated or map_props.root_collection is None:
-            self.report({'ERROR'}, "Generate a map before exporting.")
-            return {'CANCELLED'}
         if not self.directory:
             self.report({'ERROR'}, "No export directory selected.")
-            return {'CANCELLED'}
-        if not hasattr(bpy.ops.wm, "stl_export"):
-            self.report({'ERROR'},
-                        "STL exporter (wm.stl_export) unavailable in this build.")
             return {'CANCELLED'}
 
         out_dir = os.path.join(self.directory, self.subfolder.strip()
                                or "hexfinity_export")
         try:
-            os.makedirs(out_dir, exist_ok=True)
-        except OSError as exc:
-            self.report({'ERROR'}, f"Could not create export folder: {exc}")
+            result = _export_tiles_core(context, out_dir)
+        except _ExportError as exc:
+            self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
 
-        tiles = [o for o in map_props.root_collection.objects
-                 if o.hexfinity_tile.is_generated]
-        if not tiles:
-            self.report({'ERROR'}, "No HexFinity tiles found to export.")
-            return {'CANCELLED'}
-
-        # Make sure all transforms are flushed before we read matrix_world.
-        context.view_layer.update()
-        depsgraph = context.evaluated_depsgraph_get()
-
-        # Remember and restore the selection/active object around the export.
-        prev_selected = list(context.selected_objects)
-        prev_active = context.view_layer.objects.active
-
-        from . import flora
-
-        exported_hashes = {}   # geometry hash -> filename already written
-        records = []           # one per tile, for the manifest
-        flora_records = []     # one per planted tree, for the flora manifest
-        written = 0
-        flora_written = 0
-        unfinalized_tiles = 0
-
-        try:
-            for tile in tiles:
-                tp = tile.hexfinity_tile
-                children = _terrain_children(tile)
-
-                # Hash the built geometry: hex mesh (tile-local) + each child
-                # terrain mesh transformed into the tile's local frame.
-                hex_verts, hex_faces = _eval_mesh_local(
-                    tile, depsgraph, Matrix.Identity(4))
-                tile_world_inv = tile.matrix_world.inverted()
-                child_meshes = [
-                    _eval_mesh_local(
-                        c, depsgraph,
-                        tile_world_inv @ c.evaluated_get(depsgraph).matrix_world)
-                    for c in children
-                ]
-                digest = tile_geometry_hash(hex_verts, hex_faces, child_meshes)
-
-                custom = is_custom_tile(
-                    has_children=bool(children),
-                    has_brush=tile.get("hf_brush_disp") is not None,
-                    has_snap=bool(tile.get("hf_terrain_pads")),
-                    region_count=len(tp.surface_regions),
-                )
-
-                if digest in exported_hashes:
-                    fname = exported_hashes[digest]
-                else:
-                    fname = tile_filename(tp.coord_q, tp.coord_r, custom,
-                                          short_hash(digest))
-                    path = os.path.join(out_dir, fname)
-                    self._export_objects(context, [tile] + children, path)
-                    exported_hashes[digest] = fname
-                    written += 1
-
-                records.append({"q": tp.coord_q, "r": tp.coord_r,
-                                "file": fname, "custom": custom})
-
-                # Planted trees export as their own STL, separate from the
-                # tile — that's the whole point of the pin/socket interlock:
-                # an independently printed part assembled by hand. A pin is
-                # parented to its own tree (see `flora.sync_flora`), not the
-                # tile, so it's found via the tree's own children. Only
-                # placements with a matching pin (i.e. flora was finalized)
-                # are exportable; the rest are silently skipped here and
-                # rolled into one warning below.
-                tree_objs = {c[flora.FLORA_PLACEMENT_INDEX]: c
-                            for c in tile.children if c.get(flora.FLORA_OF)}
-                unfinalized_here = False
-
-                for idx, tree_obj in sorted(tree_objs.items()):
-                    pin_obj = next((c for c in tree_obj.children
-                                    if c.get(flora.FLORA_PIN_OF)), None)
-                    if pin_obj is None:
-                        unfinalized_here = True
-                        continue
-
-                    fname = flora_placement_filename(tp.coord_q, tp.coord_r, idx)
-                    self._export_flora_pair(
-                        context, depsgraph, tree_obj, pin_obj,
-                        os.path.join(out_dir, fname))
-                    flora_written += 1
-
-                    flora_records.append({"q": tp.coord_q, "r": tp.coord_r,
-                                          "index": idx, "file": fname})
-                if unfinalized_here:
-                    unfinalized_tiles += 1
-        finally:
-            for o in context.selected_objects:
-                o.select_set(False)
-            for o in prev_selected:
-                o.select_set(True)
-            context.view_layer.objects.active = prev_active
-
-        self._write_manifest(out_dir, records)
-        if flora_records:
-            self._write_flora_manifest(out_dir, flora_records)
-
-        if unfinalized_tiles:
+        if result.unfinalized_tiles:
             self.report(
                 {'WARNING'},
-                f"{unfinalized_tiles} tile(s) have planted trees without a "
+                f"{result.unfinalized_tiles} tile(s) have planted trees without a "
                 f"finalized pin — run Finalize Flora first to export them.")
         self.report({'INFO'},
-                    f"Exported {written} unique tile STL(s) and "
-                    f"{flora_written} planted tree(s) (tree+pin merged into "
-                    f"one STL each) from {len(tiles)} tile(s) to {out_dir}")
+                    f"Exported {result.written} unique tile STL(s) and "
+                    f"{result.flora_written} planted tree(s) (tree+pin merged into "
+                    f"one STL each) from {result.total_tiles} tile(s) to {out_dir}")
         return {'FINISHED'}
 
     @staticmethod
@@ -2111,6 +2142,184 @@ class HEXFINITY_OT_export_tiles(bpy.types.Operator):
         with open(os.path.join(out_dir, "flora_manifest.json"), "w",
                   encoding="utf-8") as fh:
             json.dump(rows, fh, indent=2)
+
+
+class HEXFINITY_OT_slice_list_options(bpy.types.Operator):
+    bl_idname = "hexfinity.slice_list_options"
+    bl_label = "List Available Printers/Filaments/Qualities"
+    bl_description = ("Scan the installed Bambu Studio and report valid "
+                      "printer/nozzle/filament/quality preset names (see "
+                      "the Info log) — the same names typed into the "
+                      "fields above")
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        exe = bambu_slicer.find_bambu_executable()
+        if not exe:
+            self.report({'ERROR'}, "Bambu Studio CLI not found on PATH or "
+                        f"at {bambu_slicer._DEFAULT_WIN_EXE}.")
+            return {'CANCELLED'}
+        root_profiles = bambu_slicer.profiles_dir(exe)
+        if not root_profiles:
+            self.report({'ERROR'}, "Bambu Studio found but its bundled "
+                        "profiles (resources/profiles/BBL) are missing.")
+            return {'CANCELLED'}
+
+        index = bambu_slicer.build_profile_index(root_profiles)
+        printers = bambu_slicer.list_printers(index)
+        if not printers:
+            self.report({'ERROR'},
+                        "No instantiable printer presets found in the install.")
+            return {'CANCELLED'}
+
+        slice_props = context.scene.hexfinity_slice
+        self.report({'INFO'}, f"Printers: {', '.join(sorted(printers))}")
+
+        model = slice_props.printer or sorted(printers)[0]
+        nozzles = printers.get(model)
+        if not nozzles:
+            self.report({'WARNING'}, f"Printer {model!r} not found.")
+            return {'FINISHED'}
+        self.report({'INFO'},
+                    f"Nozzles for {model}: {', '.join(sorted(nozzles))}")
+
+        nozzle = slice_props.nozzle or (
+            "0.4" if "0.4" in nozzles else sorted(nozzles)[0])
+        machine_name = nozzles.get(nozzle)
+        if machine_name:
+            filaments = bambu_slicer.list_filaments(index, machine_name)
+            qualities = bambu_slicer.list_processes(index, machine_name)
+            self.report(
+                {'INFO'},
+                f"Filaments for {model} {nozzle}mm: {', '.join(filaments)}")
+            self.report(
+                {'INFO'},
+                f"Qualities for {model} {nozzle}mm: {', '.join(qualities)}")
+        return {'FINISHED'}
+
+
+class HEXFINITY_OT_export_and_slice(bpy.types.Operator):
+    bl_idname = "hexfinity.export_and_slice"
+    bl_label = "Export + Slice"
+    bl_description = ("Export every tile to STL (same as Export Tiles to "
+                      "STL), then slice each one to G-code with a locally "
+                      "installed Bambu Studio — one click instead of "
+                      "exporting and running the standalone slicing script "
+                      "separately. Slice settings are remembered on the "
+                      "scene")
+    bl_options = {'REGISTER'}
+
+    directory: bpy.props.StringProperty(name="Directory", subtype='DIR_PATH')
+    subfolder: bpy.props.StringProperty(
+        name="Subfolder",
+        description=("Name of the folder created under the chosen directory "
+                     "to receive the STL/G-code files and manifest."),
+        default="hexfinity_export",
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return context.scene.hexfinity_map.is_generated
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width=460)
+
+    def draw(self, context):
+        slice_props = context.scene.hexfinity_slice
+        col = self.layout.column()
+
+        box = col.box()
+        box.label(text="Export Location", icon='EXPORT')
+        box.prop(self, "directory")
+        box.prop(self, "subfolder")
+
+        box = col.box()
+        box.label(text="Slice Settings", icon='NODETREE')
+        box.prop(slice_props, "printer")
+        box.prop(slice_props, "nozzle")
+        box.prop(slice_props, "filament")
+        box.prop(slice_props, "quality")
+        box.operator("hexfinity.slice_list_options", icon='INFO')
+        box.prop(slice_props, "sparse_infill_density", slider=True)
+        box.prop(slice_props, "sparse_infill_pattern")
+        box.prop(slice_props, "delete_stls_after_slicing")
+
+    def execute(self, context):
+        if not self.directory:
+            self.report({'ERROR'}, "No export directory selected.")
+            return {'CANCELLED'}
+
+        exe = bambu_slicer.find_bambu_executable()
+        if not exe:
+            self.report({'ERROR'}, "Bambu Studio CLI not found on PATH or "
+                        f"at {bambu_slicer._DEFAULT_WIN_EXE}.")
+            return {'CANCELLED'}
+        root_profiles = bambu_slicer.profiles_dir(exe)
+        if not root_profiles:
+            self.report({'ERROR'}, "Bambu Studio found but its bundled "
+                        "profiles (resources/profiles/BBL) are missing.")
+            return {'CANCELLED'}
+
+        out_dir = os.path.join(self.directory, self.subfolder.strip()
+                               or "hexfinity_export")
+        try:
+            export_result = _export_tiles_core(context, out_dir)
+        except _ExportError as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+
+        slice_props = context.scene.hexfinity_slice
+        index = bambu_slicer.build_profile_index(root_profiles)
+        settings = {
+            "printer": slice_props.printer,
+            "nozzle": slice_props.nozzle,
+            "filament": slice_props.filament,
+            "quality": slice_props.quality,
+            "sparse_infill_density": slice_props.sparse_infill_density,
+            "sparse_infill_pattern": slice_props.sparse_infill_pattern,
+        }
+        try:
+            machine_name, process_name, filament_name, density, pattern = \
+                bambu_slicer.resolve_selection(index, settings)
+        except ValueError as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+
+        stl_count = sum(1 for f in os.listdir(out_dir)
+                        if f.lower().endswith(".stl"))
+        results = []
+        wm = context.window_manager
+        wm.progress_begin(0, max(stl_count, 1))
+        sliced_so_far = 0
+
+        def _log(msg):
+            nonlocal sliced_so_far
+            self.report({'INFO'}, msg)
+            if msg.startswith("  OK") or msg.startswith("  FAIL"):
+                sliced_so_far += 1
+                wm.progress_update(sliced_so_far)
+
+        try:
+            ok, fail = bambu_slicer.slice_folder(
+                exe, index, out_dir, machine_name, process_name,
+                filament_name, density, pattern, log=_log, results=results)
+        finally:
+            wm.progress_end()
+
+        if slice_props.delete_stls_after_slicing:
+            for stl_path, success, _msg in results:
+                if success:
+                    try:
+                        os.remove(stl_path)
+                    except OSError:
+                        pass
+
+        level = {'INFO'} if fail == 0 else {'WARNING'}
+        self.report(
+            level,
+            f"Exported {export_result.written} tile STL(s), sliced {ok} to "
+            f"G-code ({fail} failed) in {out_dir}")
+        return {'FINISHED'}
 
 
 class HEXFINITY_OT_copy_surface_texture(bpy.types.Operator):

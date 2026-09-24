@@ -4,7 +4,11 @@
 procedural region: move the mouse over a tile and left-click to plant one
 tree at the raycast hit point, picked at random from the current Tree Type's
 STL asset folder, rotated a random amount around its vertical axis, and
-scaled by a random variation factor.
+scaled by a random variation factor. Two Tree Type species currently exist:
+**Leafy tree** (`assets/leefytree/`, one tree per STL) and **Pine tree**
+(`assets/pinetree/`, one multi-trunk clump of 3–5 trees sharing a single flat
+base disc per STL) — see "Flush base disc (pine species)" below for what's
+different about pine.
 
 This page covers the mesh caching, the scene tree it builds, and the manual
 checklist for the bpy-only parts of `flora.py` itself (mesh caching/placement
@@ -179,11 +183,11 @@ per-placement scale and the scene's `man_height_mm` print-scale slider:
 
 | Constant | Value | Meaning |
 |---|---|---|
-| `FLORA_PIN_DIAMETER_MM` | 2.0 | Pin diameter — always exactly this, regardless of tree scale |
-| `FLORA_PIN_HOLE_TOLERANCE_MM` | 0.4 | Socket grows by this over the pin, mirroring `TAB_HOLE_TOLERANCE_MM` |
-| `FLORA_NOTCH_RADIUS_MM` | ~1.2 | Socket radius = pin radius + half the tolerance |
+| `FLORA_PIN_DIAMETER_MM` | 4.0 | Pin diameter — always exactly this, regardless of tree scale |
+| `FLORA_PIN_HOLE_TOLERANCE_MM` | 0.8 | Socket grows by this over the pin, mirroring `TAB_HOLE_TOLERANCE_MM` |
+| `FLORA_NOTCH_RADIUS_MM` | 2.4 | Socket radius = pin radius + half the tolerance |
 | `FLORA_NOTCH_DEPTH_MM` | 10.0 | Socket depth |
-| `FLORA_PIN_LENGTH_MM` | 9.6 | Pin length = socket depth − tolerance, so the tip never bottoms out before the tree's base seats flush |
+| `FLORA_PIN_LENGTH_MM` | 9.2 | Pin length = socket depth − tolerance, so the tip never bottoms out before the tree's base seats flush |
 
 **Cost control — cut only on finalize.** Unlike the flatten pad (recomputed
 on every `rebuild_tile`), drilling a real socket is expensive enough that it
@@ -242,7 +246,7 @@ so nothing is orphaned.
 
 **Seating uses the known pad height, not a raycast into the hole.**
 Once a socket is cut, a straight-down raycast at the placement's exact
-`(x, y)` — the notch's own centre — would pass through the ~1.2mm-wide
+`(x, y)` — the notch's own centre — would pass through the ~2.4mm-wide
 opening and hit the socket floor, ~`FLORA_NOTCH_DEPTH_MM` below the real
 surface, instead of the surrounding pad. `tree_pads.cut_notches` already
 knows the pad's exact pre-drill flat height (`pad_z`) for every notch it
@@ -291,6 +295,46 @@ finalized) triggers a `{'WARNING'}` at export time pointing at Finalize
 Flora, rather than silently exporting trees with no pins and a tile with no
 sockets.
 
+## Flush base disc (pine species)
+
+Leafy trees just rest on top of their flatten pad (see above), sunk in only
+by the small **Penetration** amount. Pine trees additionally get their whole
+base disc **recessed into the surface** — a counterbore, cut wider and
+shallower than the pin socket, so the disc's *top* ends up flush with the
+surrounding terrain instead of sitting proud on it.
+
+`flora._FLUSH_BASE_HEIGHT_MM` is a small per-species table (`{'PINE_TREE':
+0.8}` — the disc's authored height in mm at `scale_factor * global_scale ==
+1.0`) keyed by `tree_type`; a species absent from it (leafy) gets no recess,
+unchanged from before. For a placement whose species *is* listed,
+`flora.notch_specs()` emits one extra un-indexed "recess" dict immediately
+before that placement's normal pin-notch dict, in the same flat list passed
+to `tree_pads.cut_notches` in a single call:
+
+- `radius_mm` = the species' own (self-tuning) `base_radius` — the same
+  value `pad_specs()` already uses for the flatten pad — scaled by
+  `scale_factor * global_scale`, plus half of `FLORA_PIN_HOLE_TOLERANCE_MM`
+  for clearance. No new tolerance constant: it deliberately reuses the same
+  pin/hole fit tolerance the leafy tree's socket already uses.
+- `depth_mm` = `_FLUSH_BASE_HEIGHT_MM[tree_type]`, scaled the same way.
+
+No changes were needed in `tree_pads.py` or `sync_flora` to make this work.
+`cut_notches` mutates the mesh in place and processes its `notches` list in
+order, sampling each notch's own target height fresh off the *current*
+surface — so cutting the wide/shallow recess first, then the normal
+narrow/deep pin-notch right after it (still exactly `FLORA_NOTCH_RADIUS_MM`/
+`FLORA_NOTCH_DEPTH_MM`, unscaled, tagged `"index": i` as before), makes the
+pin-notch start from the recess floor automatically. Its `resolved_heights`
+entry — the one `sync_flora` actually reads to seat the tree — therefore
+already comes out as the recess-floor height, exactly where the base disc
+needs to sit for its top to land flush with the original surface. The recess
+dict itself carries no `"index"`, so it never participates in
+`ok_indices`/`resolved_heights` bookkeeping: a recess-only success can't make
+`sync_flora` spawn a pin over a socket that didn't actually get cut (e.g. the
+pin-notch alone fails near a rim) — the same "pin only ever created for a
+placement whose own notch succeeded" guarantee the leafy tree already relies
+on stays intact.
+
 ## Scene tree
 
 ```
@@ -334,7 +378,7 @@ transform, exactly like scatter boulders and terrain objects.
    `flora_manifest.csv`. A tile with unfinalized flora triggers a warning
    instead of silently exporting mismatched parts.
 8. **Packaging** — build via `deploy.ps1` and confirm the zip contains
-   `hexfinity/assets/leefytree/*.stl`.
+   `hexfinity/assets/leefytree/*.stl` and `hexfinity/assets/pinetree/*.stl`.
 9. **Overlap avoidance** — with *Avoid Overlap* on (default), plant a tree,
    then click a spot close enough to overlap it: confirm the click is
    rejected with a "Too close to another tree" warning and no new object
@@ -375,3 +419,12 @@ transform, exactly like scatter boulders and terrain objects.
     placement. A headless smoke test of this whole path (plant → finalize →
     pin/socket geometry → seating correctness → un-finalize → re-finalize →
     export) lives in `tests/_headless_flora_pin_check.py`.
+12. **Flush base disc (pine)** — switch Tree Type to *Pine tree*, plant a
+    clump, and press **Finalize Flora**: confirm a shallow, wide counterbore
+    is visible under the clump's base disc (in addition to the narrower/
+    deeper pin socket inside it), and that the disc's top sits flush with the
+    surrounding surface rather than proud of it. Plant a leafy tree alongside
+    it and confirm its behaviour is unchanged (pad + pin socket only, no
+    counterbore). The compounding-cut mechanic itself (a wide/shallow notch
+    followed by a narrow/deep one at the same site) is unit-tested in
+    `tests/test_tree_pads.py::test_sequential_notches_compound_at_same_site`.

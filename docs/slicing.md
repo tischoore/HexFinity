@@ -1,5 +1,49 @@
 # Slicing exports to G-code with Bambu Studio
 
+Two ways to turn a HexFinity export into ready-to-print G-code with the
+**Bambu Studio command line**: the **Export + Slice** button inside Blender
+(one click, no separate STL step), or the standalone `scripts/slice_tiles.py`
+CLI script for an already-exported folder. Both drive the same underlying
+mechanics (`hexfinity/bambu_slicer.py`), so behavior — presets, infill
+overrides, output naming — is identical either way.
+
+## Slicing from inside Blender (Export + Slice)
+
+The **Export + Slice** button sits in the panel's Export box, next to
+**Export Tiles to STL**. Click it and a dialog opens combining both steps:
+
+- **Export Location** — the destination folder + subfolder, same as
+  **Export Tiles to STL**'s own directory picker.
+- **Slice Settings** — `Printer` / `Nozzle` / `Filament` / `Quality` (leave
+  blank for auto: first printer, 0.4mm nozzle, the printer's own default
+  filament/quality), a **List Available Printers/Filaments/Qualities**
+  button that reports valid names for what's currently typed (see the Info
+  log), `Infill Density`/`Infill Pattern`, and a **Delete STLs after
+  slicing** checkbox (on by default) — a tile whose slice fails always keeps
+  its STL regardless of this checkbox, so there's always something to retry.
+
+Clicking OK exports every tile (exactly like **Export Tiles to STL** — they
+share the same underlying export code, so they can never drift apart), then
+slices each resulting STL with the locally installed Bambu Studio, producing
+the same paired `.gcode`/`.gcode.3mf` output per tile described below.
+
+**These settings are Blender scene properties** (`scene.hexfinity_slice`),
+persisted with the .blend/session — they are a completely separate surface
+from `scripts/slice_tiles_settings.json` below and are never read from or
+written to that file. If you also use the standalone CLI script, you'll set
+printer/filament/quality/infill in both places; that's expected, not a bug —
+picking one over the other is a matter of workflow (one-click-from-Blender
+vs. batch/unattended slicing outside Blender).
+
+The main tradeoff versus the standalone script: slicing runs synchronously
+on Blender's main thread (the same `subprocess` call either way), so Blender
+is unresponsive for the duration of each tile's slice. For a handful of
+tiles this is barely noticeable; for a large map, the standalone script
+(which you can run in a separate terminal while continuing to work in
+Blender) may be more convenient.
+
+## The standalone script
+
 `scripts/slice_tiles.py` turns a HexFinity STL export folder into ready-to-print
 G-code using the **Bambu Studio command line**. It is a standalone CPython
 script (no `bpy`, no Blender). It has **no interactive UI** — every parameter is
@@ -149,12 +193,26 @@ bambu-studio --load-settings "machine.json;process.json" \
 
 ## Tests
 
-The pure logic (manifest counts, naming, inheritance flattening, infill
-override injection, G-code extraction, command construction) is covered by
-`scripts/tests/test_slice_tiles.py`:
+The pure slicing mechanics (manifest counts, naming, inheritance flattening,
+infill override injection, G-code extraction, command construction, settings
+resolution) live in `hexfinity/bambu_slicer.py` and are covered by
+`tests/test_bambu_slicer.py`:
+
+```
+"C:\Program Files\Blender Foundation\Blender 5.1\5.1\python\bin\python.exe" -m pytest tests -v
+```
+
+The settings-JSON/CLI-specific glue that's still local to
+`scripts/slice_tiles.py` (load/write/refresh, `possible_values`, `run()`/
+`main()`) is covered by `scripts/tests/test_slice_tiles.py`:
 
 ```
 "C:\Program Files\Blender Foundation\Blender 5.1\5.1\python\bin\python.exe" -m pytest scripts/tests -v
 ```
 
-These are `bpy`-free and pass under any CPython.
+Both are `bpy`-free and pass under any CPython. The in-Blender **Export +
+Slice** operator itself (dialog, subprocess call, panel button) has no
+automated coverage — like every other bpy-shell operator in this codebase,
+it's exercised by a manual checklist script instead:
+`tests/_headless_export_and_slice_check.py`, run via
+`blender --background --python tests/_headless_export_and_slice_check.py`.

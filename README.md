@@ -254,7 +254,7 @@ The Apply/Cancel buttons stay reachable from the sidebar even while the Lattice 
 
 ## Flora
 
-The Flora box plants real tree meshes onto a tile. A **Tree Type** dropdown (currently just "Leafy tree") selects which asset folder to plant from; **Scale Variation** sets a +/- percentage jitter around 1.0 applied to each tree; **Flatten Base** (on by default) tessellates a small flat pad into the terrain under each tree's footprint, blended smoothly back into the surrounding surface over **Pad Blend (mm)**, so a tree's flat base cut sits flush and level even on sloped ground instead of poking through on the uphill side and floating on the downhill side; **Penetration** sets a small guaranteed sink (mm) into that pad so the base doesn't z-fight or make a zero-thickness contact. Pressing **Flora** starts a modal tool: move the mouse over any generated tile and a yellow circle-with-center-dot tracks the raycast hit point live; left-click plants a tree there — a species is chosen at random from the current Tree Type's asset folder, rotated a random amount around its vertical axis, and scaled by the random variation factor. Multiple trees can be planted in one activation. While it's running, the sidebar swaps the button for a "Flora active — Esc / RMB to close" indicator (it can't be a clickable Close button — a running modal operator owns all input, so panel buttons are unreachable until you exit); right-click or `Esc` closes it and restores the button.
+The Flora box plants real tree meshes onto a tile. A **Tree Type** dropdown ("Leafy tree" or "Pine tree") selects which asset folder to plant from — a pine placement is a single multi-trunk clump (3-5 trees sharing one flat base disc) rather than one tree per STL like leafy; **Scale Variation** sets a +/- percentage jitter around 1.0 applied to each tree; **Flatten Base** (on by default) tessellates a small flat pad into the terrain under each tree's footprint, blended smoothly back into the surrounding surface over **Pad Blend (mm)**, so a tree's flat base cut sits flush and level even on sloped ground instead of poking through on the uphill side and floating on the downhill side; **Penetration** sets a small guaranteed sink (mm) into that pad so the base doesn't z-fight or make a zero-thickness contact. Pressing **Flora** starts a modal tool: move the mouse over any generated tile and a yellow circle-with-center-dot tracks the raycast hit point live; left-click plants a tree there — a species is chosen at random from the current Tree Type's asset folder, rotated a random amount around its vertical axis, and scaled by the random variation factor. Multiple trees can be planted in one activation. While it's running, the sidebar swaps the button for a "Flora active — Esc / RMB to close" indicator (it can't be a clickable Close button — a running modal operator owns all input, so panel buttons are unreachable until you exit); right-click or `Esc` closes it and restores the button.
 
 Each species STL is imported from `assets/` once per Blender session and cached as a single shared mesh datablock; every planted tree is a separate Object pointing at that same shared mesh (a Blender "linked duplicate"), not a per-tree copy — the Outliner shows one mesh datablock with many object users. Planted trees live in a **Flora** sub-collection nested under the map's root collection, parented to their tile like scatter boulders and terrain objects. A tile's placements (species, position, rotation, scale) are stored as data and re-seated onto the surface on every rebuild — editing corner heights, painting terrain, or changing subdivision moves the trees with the ground instead of leaving them floating or buried. Clearing the map removes the Flora collection along with everything else.
 
@@ -266,10 +266,10 @@ A planted tree and its tile can be printed as **two separate parts** and assembl
 
 | Constant | Value | Meaning |
 |---|---|---|
-| `FLORA_PIN_DIAMETER_MM` | 2.0 mm | Pin diameter — always exactly this |
-| `FLORA_PIN_HOLE_TOLERANCE_MM` | 0.4 mm | Socket grows by this over the pin, mirroring `TAB_HOLE_TOLERANCE_MM` |
+| `FLORA_PIN_DIAMETER_MM` | 4.0 mm | Pin diameter — always exactly this |
+| `FLORA_PIN_HOLE_TOLERANCE_MM` | 0.8 mm | Socket grows by this over the pin, mirroring `TAB_HOLE_TOLERANCE_MM` |
 | `FLORA_NOTCH_DEPTH_MM` | 10.0 mm | Socket depth |
-| `FLORA_PIN_LENGTH_MM` | 9.6 mm | Pin length — slightly shorter than the socket so it never bottoms out |
+| `FLORA_PIN_LENGTH_MM` | 9.2 mm | Pin length — slightly shorter than the socket so it never bottoms out |
 
 Cutting a real socket is too expensive to do on every interactive rebuild, so it's deferred: leaving the Flora tool (Esc/RMB) or pressing the **Finalize Flora** button cuts the socket and creates the pin for every planted tree; any other rebuild trigger (brush stroke, corner-height edit, terrain snap, or a flora pad-setting change) strips them again until Finalize Flora runs once more — the panel notes this next to the button.
 
@@ -277,7 +277,11 @@ The pin is **parented to its own tree** (not a loose sibling under the tile), co
 
 *Export Tiles to STL* then writes each finalized tree and its pin merged into **one** STL file (`hex_qNN_rNN_treeII.stl`), separate from the tile (which keeps the socket baked into its own mesh). The pair is flipped 180° as one rigid body before export so the canopy tip — not the pin's thin tip — sits on the print bed, with the pin (parented to the tree, so it's carried along by the same rotation) pointing up; a tile with unfinalized trees warns instead of exporting mismatched parts.
 
-See **[docs/flora.md](docs/flora.md)** for the mesh caching, the overlap algorithm, the pin/notch cut algorithm, and the manual checklist.
+### Flush base disc (pine species)
+
+A pine clump's whole base disc (15mm radius, 0.8mm tall — self-tuned per STL, the same `base_radius` the flatten pad already uses) is additionally recessed into the surface, so the disc sits flush with the surrounding terrain rather than resting on top of it like a leafy tree's base. This is a second, wider-and-shallower cut on top of the same pin socket above — cut first, so the pin socket then drills from the recess floor — sized with the same `FLORA_PIN_HOLE_TOLERANCE_MM` clearance as the pin/socket fit. Leafy trees are unaffected; only species listed in `flora._FLUSH_BASE_HEIGHT_MM` get a recess.
+
+See **[docs/flora.md](docs/flora.md)** for the mesh caching, the overlap algorithm, the pin/notch cut algorithm, the flush-base-disc mechanism, and the manual checklist.
 
 ## Bake
 
@@ -446,11 +450,25 @@ deduped — every placement gets its own uniquely-named file.
 
 See **[docs/export.md](docs/export.md)** for the dedup contract and manifest format.
 
+Next to it, the **Export + Slice** button combines exporting and slicing
+into one click — see the next section.
+
 ## Slice to G-code (Bambu Studio)
 
-Once you have exported a folder of STLs, the standalone **`scripts/slice_tiles.py`**
-batch-slices every tile to G-code with a locally installed **Bambu Studio**,
-naming each output with its print quantity:
+Two ways to slice, both driven by the same underlying mechanics
+(`hexfinity/bambu_slicer.py`) so behavior is identical either way:
+
+- **Export + Slice** (in Blender, next to Export Tiles to STL) — one dialog
+  asks for the export folder plus printer/nozzle/filament/quality/infill,
+  then exports and slices every tile in one click. Settings are Blender
+  scene properties, remembered across dialog opens, and are a separate
+  surface from the JSON file below (never read from or synced with it).
+- The standalone **`scripts/slice_tiles.py`** script, for an
+  already-exported folder — useful for batch/unattended slicing outside
+  Blender, or continuing to work in Blender while it runs in a separate
+  terminal (slicing from inside Blender blocks the UI for the duration).
+
+The standalone script is run directly:
 
 ```
 python scripts/slice_tiles.py [export_folder] [--settings path.json]
@@ -464,16 +482,21 @@ printer, 0.4 nozzle, the machine's default filament/process); naming a preset
 that does not exist fails with the list of valid options. The file also carries
 a `possible_values` reference block (ignored at slice time) listing every valid
 value for each setting — regenerate it from the live install with
-`python scripts/slice_tiles.py --refresh`. For each STL it writes a `.gcode.3mf`
-(what Bambu printers ingest natively) *and* an extracted plain `.gcode`, both
-named `hex_q00_r00.<count>.gcode[.3mf]` where `<count>` (read from
+`python scripts/slice_tiles.py --refresh`.
+
+Either way, for each STL a `.gcode.3mf` is produced (what Bambu printers
+ingest natively) *and* an extracted plain `.gcode`, both named
+`hex_q00_r00.<count>.gcode[.3mf]` where `<count>` (read from
 `manifest.json`) is how many copies of that tile the map needs.
 
-No `bpy` is involved — the script runs in plain CPython. Its pure logic is
-covered by `scripts/tests/test_slice_tiles.py`.
+No `bpy` is involved in either path's core slicing logic (`hexfinity/
+bambu_slicer.py`) — it's covered by `tests/test_bambu_slicer.py`; the
+standalone script's own settings-JSON/CLI glue is covered by
+`scripts/tests/test_slice_tiles.py`.
 
-See **[docs/slicing.md](docs/slicing.md)** for parameters, the Bambu CLI
-caveats this works around, and troubleshooting.
+See **[docs/slicing.md](docs/slicing.md)** for the Export + Slice dialog,
+the CLI parameters, the Bambu CLI caveats this works around, and
+troubleshooting.
 
 ## Scripts
 
@@ -626,7 +649,10 @@ HexFinity
 │                                     lattice itself is the active/selected object)
 │
 └─ Export                      (map-wide; always shown once a map exists)
-    └─ [ Export Tiles to STL ] (directory dialog → one STL per distinct tile + manifest)
+    ├─ [ Export Tiles to STL ] (directory dialog → one STL per distinct tile + manifest)
+    └─ [ Export + Slice ]      (dialog: folder + printer/filament/quality/infill →
+                                STL export, then Bambu Studio CLI slice per tile →
+                                .gcode + .gcode.3mf)
 ```
 
 A floating sphere gizmo, hovering one *level height* above the tile's apex, drags the active tile's centre XY inside the hex. When a HexFinity tile is selected, the viewport also overlays `P1`–`P6` labels floating one *level height* above each corner so corner identity is unambiguous in the panel. Separately, a **green** sphere gizmo hovers over every open grid slot bordering the map — see [Expanding the map](#expanding-the-map-add-hex-gizmos) — visible for the whole map regardless of selection, not tied to the active tile the way the cyan centre-drag sphere is.
@@ -652,7 +678,8 @@ C:\Work\Hexfinity\
 │   ├─ scatter.py              # bpy shell for scatter surfaces (boulder objects + merge)
 │   ├─ flora.py                # modal click-to-plant tree tool + mesh cache + overlap check + pin objects
 │   ├─ assets\
-│   │   └─ leefytree\           # planted-tree STL assets (one file per species)
+│   │   ├─ leefytree\           # leafy-tree STL assets (one tree per file)
+│   │   └─ pinetree\            # pine-tree STL assets (one multi-trunk clump per file)
 │   ├─ mesh_builder.py         # pure-Python mesh construction (no bpy)
 │   ├─ tree_pads.py            # pure-Python tree-base-pad refine+flatten + pin/notch socket cut + path-feature curvilinear texture displacement (no bpy)
 │   ├─ terrain_pads.py         # pure-Python footprint-grid → circular pad tiling (no bpy)
@@ -678,7 +705,7 @@ C:\Work\Hexfinity\
     └─ test_manifold_check.py
 ```
 
-`mesh_builder.py`, `tree_pads.py`, `terrain_pads.py`, `subdivision.py`, `procedural_surfaces.py`, `map.py`, `tile_export.py`, `face_select.py`, and `manifold_check.py` deliberately contain no `bpy` imports so they can be unit-tested outside Blender (`__init__.py` defers its bpy imports into `register()` for the same reason).
+`mesh_builder.py`, `tree_pads.py`, `terrain_pads.py`, `subdivision.py`, `procedural_surfaces.py`, `map.py`, `tile_export.py`, `face_select.py`, `manifold_check.py`, and `bambu_slicer.py` deliberately contain no `bpy` imports so they can be unit-tested outside Blender (`__init__.py` defers its bpy imports into `register()` for the same reason).
 
 HexFinity is packaged as a **Blender extension** (see `blender_manifest.toml`), the format Blender 5.x ships with — there is no `bl_info` dict in `__init__.py`.
 
@@ -702,12 +729,18 @@ The script reads the version from `blender_manifest.toml`, strips `__pycache__`,
 
 ### Running the unit tests
 
-The bpy-free modules (`mesh_builder.py`, `tree_pads.py`, `terrain_pads.py`, `subdivision.py`, `procedural_surfaces.py`, `map.py`, `tile_export.py`, `face_select.py`, `manifold_check.py`) are unit-tested with `pytest`. You can run them against Blender's bundled Python (which contains no `bpy` dependency for these modules):
+The bpy-free modules (`mesh_builder.py`, `tree_pads.py`, `terrain_pads.py`, `subdivision.py`, `procedural_surfaces.py`, `map.py`, `tile_export.py`, `face_select.py`, `manifold_check.py`, `bambu_slicer.py`) are unit-tested with `pytest`. You can run them against Blender's bundled Python (which contains no `bpy` dependency for these modules):
 
 ```
 "C:\Program Files\Blender Foundation\Blender 5.1\5.1\python\bin\python.exe" -m pip install --user pytest
 "C:\Program Files\Blender Foundation\Blender 5.1\5.1\python\bin\python.exe" -m pytest tests -v
 ```
+
+`scripts/tests/test_slice_tiles.py` covers what's still local to the
+standalone `scripts/slice_tiles.py` CLI script (its settings-JSON glue) —
+run separately with `pytest scripts/tests -v`, since `tests/` and
+`scripts/tests/` cannot currently be collected in the same `pytest` run
+(a pre-existing package-name collision unrelated to slicing).
 
 ---
 

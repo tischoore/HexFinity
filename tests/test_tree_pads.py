@@ -386,6 +386,37 @@ def test_cut_notches_reports_resolved_height():
     assert resolved_heights == {3: pytest.approx(top_z)}
 
 
+def test_sequential_notches_compound_at_same_site():
+    # This is what flora.notch_specs() relies on for a species with a
+    # _FLUSH_BASE_HEIGHT_MM entry (e.g. pine): a wide, shallow, un-indexed
+    # "recess" notch cut first, followed by the normal narrow/deep pin-notch
+    # at the same (x, y) in the SAME cut_notches call. The pin-notch's own
+    # resolved height must land on the recess floor (top_z - recess_depth),
+    # not the original surface height, since it's what `sync_flora` uses to
+    # seat the tree flush.
+    top_z = 20.0
+    verts, faces, protected = _elevated_grid_mesh(6, 60.0, top_z)
+    recess_depth = 2.0
+    pin_depth = 5.0
+    recess = {"x": 30.0, "y": 30.0, "radius_mm": FLORA_NOTCH_RADIUS_MM + 5.0,
+              "depth_mm": recess_depth}   # no "index" -- bookkeeping-free
+    pin = {"x": 30.0, "y": 30.0, "radius_mm": FLORA_NOTCH_RADIUS_MM,
+           "depth_mm": pin_depth, "index": 3}
+    ok_indices = []
+    resolved_heights = {}
+    new_faces = tree_pads.cut_notches(
+        verts, faces, protected, [recess, pin],
+        ok_indices=ok_indices, resolved_heights=resolved_heights)
+    assert ok_indices == [3]
+    assert resolved_heights == {3: pytest.approx(top_z - recess_depth)}
+    # The pin socket's absolute floor sits `recess_depth + pin_depth` below
+    # the original surface, i.e. the two cuts compound rather than the
+    # second one re-measuring from the untouched original surface.
+    floor_z = top_z - recess_depth - pin_depth
+    assert any(v[2] == pytest.approx(floor_z, abs=1e-6) for v in verts)
+    _assert_crack_free(new_faces, protected)
+
+
 def test_cut_notches_skip_reports_no_resolved_height():
     monkeypatch_notch = {"x": 30.0, "y": 30.0, "radius_mm": FLORA_NOTCH_RADIUS_MM,
                          "depth_mm": 5.0, "index": 7}

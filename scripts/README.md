@@ -30,6 +30,12 @@ is no interactive UI. See **[../docs/slicing.md](../docs/slicing.md)** for
 the full parameter reference, the Bambu CLI caveats it works around, and
 troubleshooting.
 
+The reusable slicing mechanics (profile flattening, command building, G-code
+extraction, settings resolution) live in `hexfinity/bambu_slicer.py` — a
+bpy-free module also used by the in-Blender **Export + Slice** button (see
+docs/slicing.md), so a change to slicing *behavior* belongs there, not
+duplicated here. This script keeps only the settings-JSON/CLI-specific glue.
+
 ## stl_center.py
 
 Batch re-centers STL origins to their bounding-box center (or bottom),
