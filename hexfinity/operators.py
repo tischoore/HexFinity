@@ -2144,57 +2144,19 @@ class HEXFINITY_OT_export_tiles(bpy.types.Operator):
             json.dump(rows, fh, indent=2)
 
 
-class HEXFINITY_OT_slice_list_options(bpy.types.Operator):
-    bl_idname = "hexfinity.slice_list_options"
-    bl_label = "List Available Printers/Filaments/Qualities"
-    bl_description = ("Scan the installed Bambu Studio and report valid "
-                      "printer/nozzle/filament/quality preset names (see "
-                      "the Info log) — the same names typed into the "
-                      "fields above")
+class HEXFINITY_OT_slice_refresh_presets(bpy.types.Operator):
+    bl_idname = "hexfinity.slice_refresh_presets"
+    bl_label = "Refresh Presets"
+    bl_description = ("Re-scan the installed Bambu Studio for printer/"
+                      "nozzle/filament/quality presets. The dropdowns above "
+                      "are cached for responsiveness while this dialog is "
+                      "open, so installing or updating Bambu Studio content "
+                      "mid-session won't otherwise show up without this")
     bl_options = {'REGISTER'}
 
     def execute(self, context):
-        exe = bambu_slicer.find_bambu_executable()
-        if not exe:
-            self.report({'ERROR'}, "Bambu Studio CLI not found on PATH or "
-                        f"at {bambu_slicer._DEFAULT_WIN_EXE}.")
-            return {'CANCELLED'}
-        root_profiles = bambu_slicer.profiles_dir(exe)
-        if not root_profiles:
-            self.report({'ERROR'}, "Bambu Studio found but its bundled "
-                        "profiles (resources/profiles/BBL) are missing.")
-            return {'CANCELLED'}
-
-        index = bambu_slicer.build_profile_index(root_profiles)
-        printers = bambu_slicer.list_printers(index)
-        if not printers:
-            self.report({'ERROR'},
-                        "No instantiable printer presets found in the install.")
-            return {'CANCELLED'}
-
-        slice_props = context.scene.hexfinity_slice
-        self.report({'INFO'}, f"Printers: {', '.join(sorted(printers))}")
-
-        model = slice_props.printer or sorted(printers)[0]
-        nozzles = printers.get(model)
-        if not nozzles:
-            self.report({'WARNING'}, f"Printer {model!r} not found.")
-            return {'FINISHED'}
-        self.report({'INFO'},
-                    f"Nozzles for {model}: {', '.join(sorted(nozzles))}")
-
-        nozzle = slice_props.nozzle or (
-            "0.4" if "0.4" in nozzles else sorted(nozzles)[0])
-        machine_name = nozzles.get(nozzle)
-        if machine_name:
-            filaments = bambu_slicer.list_filaments(index, machine_name)
-            qualities = bambu_slicer.list_processes(index, machine_name)
-            self.report(
-                {'INFO'},
-                f"Filaments for {model} {nozzle}mm: {', '.join(filaments)}")
-            self.report(
-                {'INFO'},
-                f"Qualities for {model} {nozzle}mm: {', '.join(qualities)}")
+        bambu_slicer.clear_cache()
+        self.report({'INFO'}, "Bambu Studio presets refreshed.")
         return {'FINISHED'}
 
 
@@ -2222,7 +2184,57 @@ class HEXFINITY_OT_export_and_slice(bpy.types.Operator):
         return context.scene.hexfinity_map.is_generated
 
     def invoke(self, context, event):
+        self._seed_from_settings_file(context)
         return context.window_manager.invoke_props_dialog(self, width=460)
+
+    @staticmethod
+    def _seed_from_settings_file(context):
+        """Load the shared scripts/slice_tiles_settings.json (if reachable
+        — a dev checkout only) and copy its printer/nozzle/filament/quality/
+        infill values onto scene.hexfinity_slice, so the dialog opens
+        showing the last value picked from *either* entry point rather than
+        whatever this .blend's own scene properties happened to have.
+        Guarded by properties._SLICE_FILLING (the same "operator reaches
+        into a properties.py-internal fill guard" idiom
+        HEXFINITY_OT_apply_surface_texture already uses for
+        properties._REGION_FILLING) so seeding doesn't itself trigger the
+        reset-cascade or write straight back what was just read. Each field
+        is set independently so one no-longer-valid stored name (e.g. an
+        uninstalled printer) doesn't prevent the others from loading.
+        """
+        path = bambu_slicer.blender_settings_path()
+        if path is None:
+            return
+        try:
+            settings = bambu_slicer.load_settings(path)
+        except (OSError, ValueError):
+            return
+
+        from . import properties
+        slice_props = context.scene.hexfinity_slice
+        properties._SLICE_FILLING = True
+        try:
+            for attr in ("printer", "nozzle", "filament", "quality"):
+                try:
+                    setattr(slice_props, attr,
+                           settings.get(attr) or properties._SLICE_NONE_ID)
+                except TypeError:
+                    pass  # stored value no longer valid for this install
+            try:
+                slice_props.sparse_infill_density = bambu_slicer.clamp_density(
+                    settings.get("sparse_infill_density",
+                                 bambu_slicer.INFILL_DENSITY_DEFAULT))
+                slice_props.sparse_infill_pattern = bambu_slicer.normalize_pattern(
+                    settings.get("sparse_infill_pattern"))
+            except (TypeError, ValueError):
+                pass
+            try:
+                slice_props.adaptive_layer_height = bool(
+                    settings.get("adaptive_layer_height", False))
+            except TypeError:
+                pass
+        finally:
+            properties._SLICE_FILLING = False
 
     def draw(self, context):
         slice_props = context.scene.hexfinity_slice
@@ -2239,9 +2251,10 @@ class HEXFINITY_OT_export_and_slice(bpy.types.Operator):
         box.prop(slice_props, "nozzle")
         box.prop(slice_props, "filament")
         box.prop(slice_props, "quality")
-        box.operator("hexfinity.slice_list_options", icon='INFO')
+        box.operator("hexfinity.slice_refresh_presets", icon='FILE_REFRESH')
         box.prop(slice_props, "sparse_infill_density", slider=True)
         box.prop(slice_props, "sparse_infill_pattern")
+        box.prop(slice_props, "adaptive_layer_height")
         box.prop(slice_props, "delete_stls_after_slicing")
 
     def execute(self, context):
@@ -2268,19 +2281,21 @@ class HEXFINITY_OT_export_and_slice(bpy.types.Operator):
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
 
+        from . import properties
         slice_props = context.scene.hexfinity_slice
         index = bambu_slicer.build_profile_index(root_profiles)
         settings = {
-            "printer": slice_props.printer,
-            "nozzle": slice_props.nozzle,
-            "filament": slice_props.filament,
-            "quality": slice_props.quality,
+            "printer": properties._slice_setting_value(slice_props.printer),
+            "nozzle": properties._slice_setting_value(slice_props.nozzle),
+            "filament": properties._slice_setting_value(slice_props.filament),
+            "quality": properties._slice_setting_value(slice_props.quality),
             "sparse_infill_density": slice_props.sparse_infill_density,
             "sparse_infill_pattern": slice_props.sparse_infill_pattern,
+            "adaptive_layer_height": slice_props.adaptive_layer_height,
         }
         try:
-            machine_name, process_name, filament_name, density, pattern = \
-                bambu_slicer.resolve_selection(index, settings)
+            (machine_name, process_name, filament_name, density, pattern,
+             adaptive_layer_height) = bambu_slicer.resolve_selection(index, settings)
         except ValueError as exc:
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
@@ -2302,7 +2317,8 @@ class HEXFINITY_OT_export_and_slice(bpy.types.Operator):
         try:
             ok, fail = bambu_slicer.slice_folder(
                 exe, index, out_dir, machine_name, process_name,
-                filament_name, density, pattern, log=_log, results=results)
+                filament_name, density, pattern, adaptive_layer_height,
+                log=_log, results=results)
         finally:
             wm.progress_end()
 

@@ -287,42 +287,182 @@ class HexFinityFloodFillProperties(bpy.types.PropertyGroup):
 
 
 # ---------------------------------------------------------------------------
-# Scene-level — "Export + Slice" settings (hexfinity.export_and_slice). No
-# update callbacks: these only affect the next slice run, nothing already
-# built needs a rebuild. printer/nozzle/filament/quality stay plain strings
-# (not a dynamically-populated EnumProperty) since resolving the live Bambu
-# Studio install's presets means a directory scan + per-file JSON parse —
-# fine on demand (see HEXFINITY_OT_slice_list_options), too expensive to
-# re-run on every dialog redraw, and Blender's dynamic-enum-items callback
-# has its own lifetime footgun (the returned list must outlive Blender's
-# hold on it). "" means auto-detect, mirroring scripts/slice_tiles_settings
-# .json's own semantics for the same four fields — a deliberately similar
-# shape, not a synced one (see bambu_slicer.py's module docstring).
+# Scene-level — "Export + Slice" settings (hexfinity.export_and_slice).
+# printer/nozzle/filament/quality are dynamic EnumProperty dropdowns sourced
+# from the locally installed Bambu Studio, following this file's existing
+# dynamic-dropdown shape (_surface_type_items/_path_texture_items: a fresh
+# list of tuples built every call) — but backed by bambu_slicer.py's cache
+# (cached_index/cached_printers/cached_filaments/cached_processes) instead of
+# a static registry, since list_printers/list_filaments/list_processes each
+# re-open and json.load() every relevant preset file from scratch, far too
+# slow to repeat on every redraw of an open dialog otherwise. Every field
+# change is also persisted to the shared scripts/slice_tiles_settings.json
+# (bambu_slicer.blender_settings_path()/save_settings_fields) — the same
+# file the standalone CLI script reads/writes — so the dialog remembers the
+# last value picked as its default, in this .blend or any other, rather than
+# only for as long as one .blend's scene properties happen to say so.
+#
+# The sentinel/placeholder item's id is "NONE" — not "" — even though
+# bambu_slicer.py's own convention (the shared settings JSON,
+# resolve_selection, resolve_machine) uses "" to mean "not set, auto-detect".
+# A real Blender quirk forces this: assigning an empty-string identifier to
+# a dynamic-items EnumProperty raises "enum '' not found in (...)" — Blender
+# silently excludes an empty-string item from a callback-based enum's valid
+# set at assignment-validation time, even though it's right there in the
+# list the callback returned (confirmed by hand; matches this codebase's
+# existing convention of using a real "NONE" identifier for this exact kind
+# of sentinel elsewhere, e.g. HexFinityPathFeature.river_bottom_style).
+# _slice_setting_value() below is the one place that translates between the
+# two: "NONE" (Blender enum id) <-> "" (bambu_slicer.py's auto-detect value).
+
+_SLICE_NONE_ID = 'NONE'
+_SLICE_NONE_ITEM = (_SLICE_NONE_ID, "NONE", "No value chosen yet — falls "
+                                            "back to the install's own default")
+
+# Guard: while a parent field's change resets its dependents (printer change
+# resets nozzle, which itself resets filament/quality), suppress each
+# dependent's own persist-to-JSON so one user action writes the settings
+# file exactly once, with the fully-resolved final state — mirrors
+# _REGION_FILLING/_PATH_FEATURE_FILLING's existing guarded-autofill shape
+# (save/restore the previous value, not just False, so nested cascades
+# collapse correctly).
+_SLICE_FILLING = False
+
+
+def _slice_setting_value(enum_value):
+    """Translate a slice-dropdown's stored enum id to bambu_slicer.py's ""
+    = auto-detect convention (see the sentinel comment above)."""
+    return '' if enum_value in ('', _SLICE_NONE_ID) else enum_value
+
+
+def _slice_bambu_root():
+    return bambu_slicer.profiles_dir(bambu_slicer.find_bambu_executable())
+
+
+def _slice_printer_items(self, context):
+    root = _slice_bambu_root()
+    if root is None:
+        return [_SLICE_NONE_ITEM]
+    printers = bambu_slicer.cached_printers(root)
+    return [_SLICE_NONE_ITEM] + [(name, name, "") for name in sorted(printers)]
+
+
+def _slice_nozzle_items(self, context):
+    root = _slice_bambu_root()
+    if root is None:
+        return [_SLICE_NONE_ITEM]
+    index = bambu_slicer.cached_index(root)
+    printers = bambu_slicer.cached_printers(root)
+    model, _nozzle, _machine = bambu_slicer.resolve_machine(
+        index, _slice_setting_value(self.printer), "")
+    nozzles = printers.get(model, {})
+    return [_SLICE_NONE_ITEM] + [(n, f"{n} mm", "") for n in sorted(nozzles)]
+
+
+def _slice_filament_items(self, context):
+    root = _slice_bambu_root()
+    if root is None:
+        return [_SLICE_NONE_ITEM]
+    index = bambu_slicer.cached_index(root)
+    _model, _nozzle, machine_name = bambu_slicer.resolve_machine(
+        index, _slice_setting_value(self.printer), _slice_setting_value(self.nozzle))
+    if not machine_name:
+        return [_SLICE_NONE_ITEM]
+    filaments = bambu_slicer.cached_filaments(root, machine_name)
+    return [_SLICE_NONE_ITEM] + [(f, f, "") for f in filaments]
+
+
+def _slice_quality_items(self, context):
+    root = _slice_bambu_root()
+    if root is None:
+        return [_SLICE_NONE_ITEM]
+    index = bambu_slicer.cached_index(root)
+    _model, _nozzle, machine_name = bambu_slicer.resolve_machine(
+        index, _slice_setting_value(self.printer), _slice_setting_value(self.nozzle))
+    if not machine_name:
+        return [_SLICE_NONE_ITEM]
+    qualities = bambu_slicer.cached_processes(root, machine_name)
+    return [_SLICE_NONE_ITEM] + [(q, q, "") for q in qualities]
+
+
+def _persist_slice_settings(self):
+    if _SLICE_FILLING:
+        return
+    path = bambu_slicer.blender_settings_path()
+    if path is None:
+        return
+    try:
+        bambu_slicer.save_settings_fields(
+            path,
+            printer=_slice_setting_value(self.printer),
+            nozzle=_slice_setting_value(self.nozzle),
+            filament=_slice_setting_value(self.filament),
+            quality=_slice_setting_value(self.quality),
+            sparse_infill_density=self.sparse_infill_density,
+            sparse_infill_pattern=self.sparse_infill_pattern,
+            adaptive_layer_height=self.adaptive_layer_height,
+        )
+    except OSError:
+        pass
+
+
+def _on_slice_printer_update(self, context):
+    global _SLICE_FILLING
+    was_filling = _SLICE_FILLING
+    _SLICE_FILLING = True
+    try:
+        self.nozzle = _SLICE_NONE_ID  # cascades: nozzle's own update resets filament/quality too
+    finally:
+        _SLICE_FILLING = was_filling
+    if not was_filling:
+        _persist_slice_settings(self)
+
+
+def _on_slice_nozzle_update(self, context):
+    global _SLICE_FILLING
+    was_filling = _SLICE_FILLING
+    _SLICE_FILLING = True
+    try:
+        self.filament = _SLICE_NONE_ID
+        self.quality = _SLICE_NONE_ID
+    finally:
+        _SLICE_FILLING = was_filling
+    if not was_filling:
+        _persist_slice_settings(self)
+
+
+def _on_slice_setting_changed(self, context):
+    _persist_slice_settings(self)
+
 
 class HexFinitySliceProperties(bpy.types.PropertyGroup):
-    printer: bpy.props.StringProperty(
+    printer: bpy.props.EnumProperty(
         name="Printer",
-        description="Bambu printer model name (e.g. 'Bambu Lab P1S'); "
-                    "empty = first instantiable printer in the install",
-        default="",
+        description="Bambu printer model; NONE = first instantiable "
+                    "printer in the install",
+        items=_slice_printer_items,
+        update=_on_slice_printer_update,
     )
-    nozzle: bpy.props.StringProperty(
+    nozzle: bpy.props.EnumProperty(
         name="Nozzle",
-        description="Nozzle diameter, e.g. '0.4'; empty = 0.4mm if "
-                    "available, else the first",
-        default="",
+        description="Nozzle diameter for the selected printer; NONE = "
+                    "0.4mm if available, else the first",
+        items=_slice_nozzle_items,
+        update=_on_slice_nozzle_update,
     )
-    filament: bpy.props.StringProperty(
+    filament: bpy.props.EnumProperty(
         name="Filament",
-        description="Compatible filament preset name; empty = the "
-                    "printer's default filament profile",
-        default="",
+        description="Compatible filament preset; NONE = the printer's "
+                    "default filament profile",
+        items=_slice_filament_items,
+        update=_on_slice_setting_changed,
     )
-    quality: bpy.props.StringProperty(
+    quality: bpy.props.EnumProperty(
         name="Quality",
-        description="Compatible process/quality preset name; empty = the "
+        description="Compatible process/quality preset; NONE = the "
                     "printer's default print profile",
-        default="",
+        items=_slice_quality_items,
+        update=_on_slice_setting_changed,
     )
     sparse_infill_density: bpy.props.IntProperty(
         name="Infill Density (%)",
@@ -331,6 +471,7 @@ class HexFinitySliceProperties(bpy.types.PropertyGroup):
         min=5,
         max=20,
         subtype='PERCENTAGE',
+        update=_on_slice_setting_changed,
     )
     sparse_infill_pattern: bpy.props.EnumProperty(
         name="Infill Pattern",
@@ -338,6 +479,15 @@ class HexFinitySliceProperties(bpy.types.PropertyGroup):
         items=[(internal, label, label)
               for internal, label in bambu_slicer.INFILL_PATTERNS],
         default='honeycomb',
+        update=_on_slice_setting_changed,
+    )
+    adaptive_layer_height: bpy.props.BoolProperty(
+        name="Adaptive Layer Height",
+        description="Bambu Studio's adaptive layer height: varies layer "
+                    "thickness by local model slope instead of a constant "
+                    "layer height",
+        default=False,
+        update=_on_slice_setting_changed,
     )
     delete_stls_after_slicing: bpy.props.BoolProperty(
         name="Delete STLs after slicing",

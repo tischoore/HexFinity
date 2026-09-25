@@ -43,7 +43,6 @@ settings-JSON/CLI-specific glue and is covered (together with
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 from pathlib import Path
@@ -56,61 +55,23 @@ INFILL_DENSITY_MAX = bambu_slicer.INFILL_DENSITY_MAX
 INFILL_DENSITY_DEFAULT = bambu_slicer.INFILL_DENSITY_DEFAULT
 INFILL_PATTERNS = bambu_slicer.INFILL_PATTERNS
 DEFAULT_PATTERN = bambu_slicer.DEFAULT_PATTERN
-
-#: Settings file read by default — lives next to this script.
-SETTINGS_FILENAME = "slice_tiles_settings.json"
-
-#: Every parameter the old tkinter UI exposed, now as JSON keys + defaults.
-#: ``printer``/``nozzle``/``filament``/``quality`` may be left as ``""`` to fall
-#: back to auto-detection (first printer, 0.4 nozzle, machine's default presets).
-DEFAULT_SETTINGS = {
-    "export_folder": "",
-    "sparse_infill_density": INFILL_DENSITY_DEFAULT,
-    "sparse_infill_pattern": DEFAULT_PATTERN,
-    "printer": "",
-    "nozzle": "",
-    "filament": "",
-    "quality": "",
-}
-
-#: Documentation-only key(s): present in the settings file for reference but
-#: ignored at slice time (stripped in :func:`load_settings`). ``possible_values``
-#: lists/ranges every valid value for each setting; regenerate it with
-#: ``--refresh`` so it tracks the installed Bambu Studio.
-DOC_KEY = "possible_values"
+SETTINGS_FILENAME = bambu_slicer.SETTINGS_FILENAME
+DEFAULT_SETTINGS = bambu_slicer.DEFAULT_SETTINGS
+DOC_KEY = bambu_slicer.DOC_KEY
+load_settings = bambu_slicer.load_settings
+write_settings_file = bambu_slicer.write_settings_file
 
 
 # --------------------------------------------------------------------------- #
-# JSON settings: loading, normalising, resolving against the install
+# JSON settings: this script's own default location
 # --------------------------------------------------------------------------- #
 
 def default_settings_path():
-    """Path to ``slice_tiles_settings.json`` next to this script."""
+    """Path to ``slice_tiles_settings.json`` next to this script — this
+    script's own default, distinct from (though the same schema/file as)
+    ``bambu_slicer.blender_settings_path()``, which the in-Blender Export +
+    Slice dialog uses to reach this same file from inside ``hexfinity/``."""
     return Path(__file__).resolve().parent / SETTINGS_FILENAME
-
-
-def load_settings(path=None):
-    """Load a settings JSON, merged over :data:`DEFAULT_SETTINGS`.
-
-    Missing keys take their default; a missing file yields the defaults
-    unchanged. ``path`` defaults to :func:`default_settings_path`.
-    """
-    path = Path(path) if path else default_settings_path()
-    settings = dict(DEFAULT_SETTINGS)
-    if path.is_file():
-        with open(path, "r", encoding="utf-8") as fh:
-            user = json.load(fh)
-        if not isinstance(user, dict):
-            raise ValueError(f"{path}: settings must be a JSON object")
-        user = {k: v for k, v in user.items() if k != DOC_KEY}  # doc-only, ignore
-        unknown = set(user) - set(DEFAULT_SETTINGS)
-        if unknown:
-            raise ValueError(
-                f"{path}: unknown setting(s) {sorted(unknown)}; "
-                f"valid keys are {sorted(DEFAULT_SETTINGS)}"
-            )
-        settings.update(user)
-    return settings
 
 
 # --------------------------------------------------------------------------- #
@@ -176,6 +137,7 @@ def build_possible_values(index, printer=None, nozzle=None):
             "unit": "percent",
         },
         "sparse_infill_pattern": [value for value, _label in INFILL_PATTERNS],
+        "adaptive_layer_height": [False, True],
         "printer": sorted(printers),
         "nozzle": sorted(nozzles),
         "filament": filaments,
@@ -186,20 +148,6 @@ def build_possible_values(index, printer=None, nozzle=None):
 # --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
-
-def write_settings_file(path, settings, possible_values):
-    """Write ``settings`` (the real keys) plus a ``possible_values`` block.
-
-    Real settings come first, in :data:`DEFAULT_SETTINGS` order, so the file
-    stays diff-friendly; the documentation block is appended last.
-    """
-    out = {key: settings.get(key, DEFAULT_SETTINGS[key]) for key in DEFAULT_SETTINGS}
-    out[DOC_KEY] = possible_values
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(out, fh, indent=2, ensure_ascii=False)
-        fh.write("\n")
-    return path
-
 
 def refresh_settings(settings, settings_path, log=print):
     """Regenerate the ``possible_values`` block in the settings file.
@@ -247,8 +195,8 @@ def run(settings, settings_path=None, log=print):
 
     index = bambu_slicer.build_profile_index(root_profiles)
     try:
-        machine_name, process_name, filament_name, density, pattern = \
-            bambu_slicer.resolve_selection(index, settings)
+        (machine_name, process_name, filament_name, density, pattern,
+         adaptive_layer_height) = bambu_slicer.resolve_selection(index, settings)
     except ValueError as exc:
         log(f"ERROR: {exc}")
         return 2
@@ -256,7 +204,7 @@ def run(settings, settings_path=None, log=print):
     log(f"Bambu Studio: {exe}")
     ok, fail = bambu_slicer.slice_folder(
         exe, index, folder, machine_name, process_name, filament_name,
-        density, pattern, log=log,
+        density, pattern, adaptive_layer_height, log=log,
     )
     return 0 if fail == 0 else 1
 
@@ -278,15 +226,15 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
 
+    settings_path = args.settings or str(default_settings_path())
     try:
-        settings = load_settings(args.settings)
+        settings = load_settings(settings_path)
     except (OSError, ValueError) as exc:
         print(f"ERROR: could not load settings: {exc}")
         return 2
     if args.folder:
         settings["export_folder"] = args.folder
 
-    settings_path = args.settings or str(default_settings_path())
     if args.refresh:
         return refresh_settings(settings, settings_path)
     return run(settings, settings_path=settings_path)

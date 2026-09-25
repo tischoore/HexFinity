@@ -12,8 +12,9 @@ Why this exists / the three CLI realities it works around
    is no direct ``.gcode`` output. Plain G-code lives inside that zip as
    ``Metadata/plate_1.gcode`` — we extract it ourselves (we keep *both* files).
 2. The CLI has no generic ``--key=value`` override. Printer, nozzle, filament,
-   infill density/pattern are all set by passing *full-config* JSON files to
-   ``--load-settings "machine.json;process.json"`` and ``--load-filaments``.
+   infill density/pattern, and adaptive layer height are all set by passing
+   *full-config* JSON files to ``--load-settings "machine.json;process.json"``
+   and ``--load-filaments``.
 3. The profiles shipped under ``resources/profiles/BBL`` are *partial* — they use
    ``"inherits"`` (and machine uses ``"include"``). The CLI needs full configs,
    so we flatten the inheritance chain ourselves and inject the infill overrides.
@@ -88,6 +89,32 @@ INFILL_PATTERNS = [
 
 DEFAULT_PATTERN = "honeycomb"
 
+#: Settings file name — shared by scripts/slice_tiles.py (next to itself) and
+#: the in-Blender Export + Slice dialog (next to it, in a sibling scripts/
+#: directory — see blender_settings_path()). One schema, one file, read/
+#: written from two entry points.
+SETTINGS_FILENAME = "slice_tiles_settings.json"
+
+#: Every parameter the old tkinter UI exposed, now as JSON keys + defaults.
+#: ``printer``/``nozzle``/``filament``/``quality`` may be left as ``""`` to fall
+#: back to auto-detection (first printer, 0.4 nozzle, machine's default presets).
+DEFAULT_SETTINGS = {
+    "export_folder": "",
+    "sparse_infill_density": INFILL_DENSITY_DEFAULT,
+    "sparse_infill_pattern": DEFAULT_PATTERN,
+    "adaptive_layer_height": False,
+    "printer": "",
+    "nozzle": "",
+    "filament": "",
+    "quality": "",
+}
+
+#: Documentation-only key(s): present in the settings file for reference but
+#: ignored at slice time (stripped in :func:`load_settings`). ``possible_values``
+#: lists/ranges every valid value for each setting; regenerate it with
+#: ``--refresh`` (scripts/slice_tiles.py) so it tracks the installed Bambu Studio.
+DOC_KEY = "possible_values"
+
 
 # --------------------------------------------------------------------------- #
 # Locating the install
@@ -121,6 +148,25 @@ def profiles_dir(exe_path):
     if cand.is_dir():
         return cand
     return None
+
+
+def blender_settings_path(base=None):
+    """Path to the shared ``slice_tiles_settings.json``, as reached from
+    inside the ``hexfinity`` package (the in-Blender Export + Slice dialog's
+    read/write target) — the reverse direction of the ``sys.path`` insertion
+    ``scripts/slice_tiles.py`` uses to reach *this* module.
+
+    ``base`` defaults to this file's own directory (i.e. the installed
+    ``hexfinity/`` package); pass a directory explicitly only for tests, to
+    point the lookup at a throwaway ``tmp_path`` instead of the real repo.
+    Returns ``None`` when the sibling ``scripts/`` directory doesn't exist —
+    true for an installed extension (``deploy.ps1`` only ever zips
+    ``hexfinity/*``, never ``scripts/``), where there is nothing to read or
+    write and the caller should just treat every setting as unset.
+    """
+    base = Path(base) if base is not None else Path(__file__).resolve().parent
+    candidate = base.parent / "scripts" / SETTINGS_FILENAME
+    return candidate if candidate.parent.is_dir() else None
 
 
 # --------------------------------------------------------------------------- #
@@ -370,12 +416,13 @@ def extract_plate_gcode(threemf_path, dest_path):
 # --------------------------------------------------------------------------- #
 
 def write_full_configs(tmpdir, index, machine_name, process_name,
-                       filament_name, density, pattern):
-    """Flatten the three presets, inject infill overrides, write JSON configs.
+                       filament_name, density, pattern, adaptive_layer_height):
+    """Flatten the three presets, inject infill/layer overrides, write JSON configs.
 
     Returns ``(machine_json, process_json, filament_json)`` paths inside
-    ``tmpdir``. The infill overrides land on the *process* config as
-    ``sparse_infill_density = "<density>%"`` and ``sparse_infill_pattern``.
+    ``tmpdir``. The overrides all land on the *process* config:
+    ``sparse_infill_density = "<density>%"``, ``sparse_infill_pattern``, and
+    ``adaptive_layer_height`` (Bambu's bool config convention: ``"1"``/``"0"``).
     """
     tmpdir = Path(tmpdir)
 
@@ -385,6 +432,7 @@ def write_full_configs(tmpdir, index, machine_name, process_name,
 
     process["sparse_infill_density"] = f"{int(density)}%"
     process["sparse_infill_pattern"] = pattern
+    process["adaptive_layer_height"] = "1" if adaptive_layer_height else "0"
 
     machine_json = tmpdir / "machine.json"
     process_json = tmpdir / "process.json"
@@ -439,7 +487,7 @@ def slice_one(exe, stl_path, machine_json, process_json, filament_json,
 
 
 def slice_folder(exe, index, folder, machine_name, process_name, filament_name,
-                 density, pattern, log=print, results=None):
+                 density, pattern, adaptive_layer_height, log=print, results=None):
     """Slice every ``*.stl`` in ``folder``; write paired ``.gcode`` + ``.3mf``.
 
     Writes the flattened configs to a temp dir, derives per-tile counts from the
@@ -464,10 +512,11 @@ def slice_folder(exe, index, folder, machine_name, process_name, filament_name,
     with tempfile.TemporaryDirectory(prefix="hexfinity_slice_") as tmp:
         machine_json, process_json, filament_json = write_full_configs(
             tmp, index, machine_name, process_name, filament_name,
-            density, pattern,
+            density, pattern, adaptive_layer_height,
         )
+        adaptive_note = ", adaptive layers" if adaptive_layer_height else ""
         log(f"Slicing {len(stls)} tile(s) with {machine_name} / "
-            f"{process_name} / infill {int(density)}% {pattern}")
+            f"{process_name} / infill {int(density)}% {pattern}{adaptive_note}")
         for stl in stls:
             count = count_for(counts, stl.name)
             out_3mf = threemf_name(stl.stem, count)
@@ -523,14 +572,15 @@ def resolve_selection(index, settings):
     """Turn a settings dict into concrete slicing arguments.
 
     ``settings`` is any mapping with ``printer``/``nozzle``/``filament``/
-    ``quality``/``sparse_infill_density``/``sparse_infill_pattern`` keys (the
-    JSON settings file and the Blender ``HexFinitySliceProperties`` dialog both
-    produce this same shape). Returns ``(machine_name, process_name,
-    filament_name, density, pattern)``. Empty ``printer``/``nozzle``/
-    ``filament``/``quality`` auto-fall-back the way the old UI seeded its
-    dropdowns: first printer, 0.4 nozzle (else first), and the machine's
-    default filament/process presets. Raises ``ValueError`` with a clear
-    message when a named selection does not exist.
+    ``quality``/``sparse_infill_density``/``sparse_infill_pattern``/
+    ``adaptive_layer_height`` keys (the JSON settings file and the Blender
+    ``HexFinitySliceProperties`` dialog both produce this same shape). Returns
+    ``(machine_name, process_name, filament_name, density, pattern,
+    adaptive_layer_height)``. Empty ``printer``/``nozzle``/``filament``/
+    ``quality`` auto-fall-back the way the old UI seeded its dropdowns: first
+    printer, 0.4 nozzle (else first), and the machine's default
+    filament/process presets. Raises ``ValueError`` with a clear message when
+    a named selection does not exist.
     """
     printers = list_printers(index)
     if not printers:
@@ -568,4 +618,176 @@ def resolve_selection(index, settings):
     density = clamp_density(settings.get("sparse_infill_density",
                                          INFILL_DENSITY_DEFAULT))
     pattern = normalize_pattern(settings.get("sparse_infill_pattern"))
-    return machine_name, process_name, filament_name, density, pattern
+    adaptive_layer_height = bool(settings.get("adaptive_layer_height", False))
+    return (machine_name, process_name, filament_name, density, pattern,
+            adaptive_layer_height)
+
+
+def resolve_machine(index, printer, nozzle):
+    """Lenient (never-raising) counterpart to :func:`resolve_selection`'s
+    printer/nozzle resolution — used only to populate the Nozzle/Filament/
+    Quality dropdowns' *dependent* item lists (nozzle depends on the chosen
+    printer; filament/quality depend on the resolved printer+nozzle combo).
+
+    Returns ``(model, nozzle, machine_profile_name)``, applying the same
+    auto-fallback rules as ``resolve_selection`` for an empty value, but
+    treating an unrecognized one the same as empty rather than raising — a
+    dropdown has nothing to validate (it can only ever hold a value it was
+    itself given), just a combination to gracefully degrade rather than
+    error on (e.g. momentarily, mid-cascade, before a stale nozzle is reset
+    for a newly-chosen printer). Returns ``(None, None, None)`` if the
+    install has no instantiable printer presets at all.
+    """
+    printers = list_printers(index)
+    if not printers:
+        return None, None, None
+    model = printer if printer in printers else sorted(printers)[0]
+    nozzles = printers.get(model, {})
+    if not nozzles:
+        return model, None, None
+    noz = nozzle if nozzle in nozzles else (
+        "0.4" if "0.4" in nozzles else sorted(nozzles)[0])
+    return model, noz, nozzles.get(noz)
+
+
+# --------------------------------------------------------------------------- #
+# Settings JSON I/O — shared by scripts/slice_tiles.py and the in-Blender
+# Export + Slice dialog (hexfinity/properties.py's HexFinitySliceProperties
+# update callbacks, via save_settings_fields).
+# --------------------------------------------------------------------------- #
+
+def load_settings(path=None):
+    """Load a settings JSON, merged over :data:`DEFAULT_SETTINGS`.
+
+    Missing keys take their default; ``path=None`` or a missing file both
+    yield the defaults unchanged. No default *location* is assumed here —
+    that's caller-specific (scripts/slice_tiles.py's own
+    ``default_settings_path()`` for the CLI, :func:`blender_settings_path`
+    for the in-Blender dialog).
+    """
+    settings = dict(DEFAULT_SETTINGS)
+    if path is not None and Path(path).is_file():
+        with open(path, "r", encoding="utf-8") as fh:
+            user = json.load(fh)
+        if not isinstance(user, dict):
+            raise ValueError(f"{path}: settings must be a JSON object")
+        user = {k: v for k, v in user.items() if k != DOC_KEY}  # doc-only, ignore
+        unknown = set(user) - set(DEFAULT_SETTINGS)
+        if unknown:
+            raise ValueError(
+                f"{path}: unknown setting(s) {sorted(unknown)}; "
+                f"valid keys are {sorted(DEFAULT_SETTINGS)}"
+            )
+        settings.update(user)
+    return settings
+
+
+def write_settings_file(path, settings, possible_values):
+    """Write ``settings`` (the real keys) plus a ``possible_values`` block.
+
+    Real settings come first, in :data:`DEFAULT_SETTINGS` order, so the file
+    stays diff-friendly; the documentation block is appended last. This is
+    the CLI ``--refresh`` writer (always recomputes ``possible_values``, an
+    install-wide scan) — the Blender dialog's per-field edits go through the
+    cheaper :func:`save_settings_fields` instead, which never recomputes it.
+    """
+    out = {key: settings.get(key, DEFAULT_SETTINGS[key]) for key in DEFAULT_SETTINGS}
+    out[DOC_KEY] = possible_values
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(out, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
+    return path
+
+
+def save_settings_fields(path, **fields):
+    """Merge ``fields`` into the settings JSON at ``path``, preserving every
+    other key untouched — notably an existing ``possible_values`` reference
+    block, which this never fabricates or recomputes (unlike
+    :func:`write_settings_file`, which always writes a fresh one). Creates
+    the file (and its parent directory) if it doesn't exist yet, seeded from
+    :data:`DEFAULT_SETTINGS`.
+
+    This is what the in-Blender Export + Slice dialog's field-change
+    callbacks call: a cheap, additive write on every dropdown/slider change,
+    not a full install rescan.
+    """
+    path = Path(path)
+    raw = {}
+    if path.is_file():
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                loaded = json.load(fh)
+            if isinstance(loaded, dict):
+                raw = loaded
+        except (OSError, ValueError):
+            raw = {}
+
+    merged = dict(DEFAULT_SETTINGS)
+    merged.update({k: v for k, v in raw.items() if k != DOC_KEY})
+    merged.update(fields)
+
+    out = {key: merged.get(key, DEFAULT_SETTINGS[key]) for key in DEFAULT_SETTINGS}
+    if DOC_KEY in raw:
+        out[DOC_KEY] = raw[DOC_KEY]
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(out, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
+    return path
+
+
+# --------------------------------------------------------------------------- #
+# Enumeration cache — for UI dropdowns redrawn many times per second while a
+# dialog is open. list_printers/list_filaments/list_processes (and the
+# build_profile_index they run on) each open+json.load every relevant preset
+# file from scratch; fine for a one-shot CLI run or a single resolve at slice
+# time, far too expensive to re-run on every EnumProperty items= callback
+# (which Blender fires on every redraw of an open dialog, not just once).
+# Trades "notice a newly-installed Bambu printer without restarting Blender"
+# for "the dropdowns don't stutter" — call clear_cache() (wired to the
+# dialog's "Refresh Presets" button) to pick up an install change mid-session.
+# --------------------------------------------------------------------------- #
+
+_CACHE = {"index": None, "printers": None, "filaments": {}, "processes": {}}
+
+
+def clear_cache():
+    """Drop every cached enumeration result, so the next lookup re-scans the
+    install instead of returning a stale list."""
+    _CACHE["index"] = None
+    _CACHE["printers"] = None
+    _CACHE["filaments"].clear()
+    _CACHE["processes"].clear()
+
+
+def cached_index(root):
+    """:func:`build_profile_index`, memoized until :func:`clear_cache`."""
+    if _CACHE["index"] is None:
+        _CACHE["index"] = build_profile_index(root)
+    return _CACHE["index"]
+
+
+def cached_printers(root):
+    """:func:`list_printers`, memoized until :func:`clear_cache`."""
+    if _CACHE["printers"] is None:
+        _CACHE["printers"] = list_printers(cached_index(root))
+    return _CACHE["printers"]
+
+
+def cached_filaments(root, machine_name):
+    """:func:`list_filaments`, memoized per ``machine_name`` until
+    :func:`clear_cache`."""
+    if machine_name not in _CACHE["filaments"]:
+        _CACHE["filaments"][machine_name] = list_filaments(
+            cached_index(root), machine_name)
+    return _CACHE["filaments"][machine_name]
+
+
+def cached_processes(root, machine_name):
+    """:func:`list_processes`, memoized per ``machine_name`` until
+    :func:`clear_cache`."""
+    if machine_name not in _CACHE["processes"]:
+        _CACHE["processes"][machine_name] = list_processes(
+            cached_index(root), machine_name)
+    return _CACHE["processes"][machine_name]

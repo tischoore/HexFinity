@@ -459,10 +459,14 @@ Two ways to slice, both driven by the same underlying mechanics
 (`hexfinity/bambu_slicer.py`) so behavior is identical either way:
 
 - **Export + Slice** (in Blender, next to Export Tiles to STL) — one dialog
-  asks for the export folder plus printer/nozzle/filament/quality/infill,
-  then exports and slices every tile in one click. Settings are Blender
-  scene properties, remembered across dialog opens, and are a separate
-  surface from the JSON file below (never read from or synced with it).
+  asks for the export folder plus Printer/Nozzle/Filament/Quality dropdowns
+  (populated from the install; default NONE = auto), infill, and adaptive
+  layer height, then exports and slices every tile in one click. These
+  settings read from and write to
+  the **same** `scripts/slice_tiles_settings.json` the CLI script below
+  uses — a shared, not a separate, settings surface — so the dialog
+  remembers the last value picked across `.blend` files and Blender
+  sessions, and a choice made here becomes the CLI script's own default too.
 - The standalone **`scripts/slice_tiles.py`** script, for an
   already-exported folder — useful for batch/unattended slicing outside
   Blender, or continuing to work in Blender while it runs in a separate
@@ -476,7 +480,8 @@ python scripts/slice_tiles.py [export_folder] [--settings path.json]
 
 There is **no UI** — every parameter lives in `scripts/slice_tiles_settings.json`:
 the export folder, **sparse infill density** (5–20%) and **pattern** (default
-Honeycomb), plus **printer**, **nozzle**, **filament**, and **quality**. The
+Honeycomb), **adaptive layer height** (default off), plus **printer**,
+**nozzle**, **filament**, and **quality**. The
 four preset keys may be left `""` to auto-pick the install's defaults (first
 printer, 0.4 nozzle, the machine's default filament/process); naming a preset
 that does not exist fails with the list of valid options. The file also carries
@@ -489,10 +494,11 @@ ingest natively) *and* an extracted plain `.gcode`, both named
 `hex_q00_r00.<count>.gcode[.3mf]` where `<count>` (read from
 `manifest.json`) is how many copies of that tile the map needs.
 
-No `bpy` is involved in either path's core slicing logic (`hexfinity/
-bambu_slicer.py`) — it's covered by `tests/test_bambu_slicer.py`; the
-standalone script's own settings-JSON/CLI glue is covered by
-`scripts/tests/test_slice_tiles.py`.
+No `bpy` is involved in either path's core slicing logic, including
+settings-JSON load/write (`hexfinity/bambu_slicer.py`) — it's covered by
+`tests/test_bambu_slicer.py`; the standalone script's own remaining
+CLI-only glue (the `possible_values` reference block, `run()`/`main()`
+wiring) is covered by `scripts/tests/test_slice_tiles.py`.
 
 See **[docs/slicing.md](docs/slicing.md)** for the Export + Slice dialog,
 the CLI parameters, the Bambu CLI caveats this works around, and
@@ -650,9 +656,9 @@ HexFinity
 │
 └─ Export                      (map-wide; always shown once a map exists)
     ├─ [ Export Tiles to STL ] (directory dialog → one STL per distinct tile + manifest)
-    └─ [ Export + Slice ]      (dialog: folder + printer/filament/quality/infill →
-                                STL export, then Bambu Studio CLI slice per tile →
-                                .gcode + .gcode.3mf)
+    └─ [ Export + Slice ]      (dialog: folder + printer/filament/quality/infill/
+                                adaptive layer height → STL export, then Bambu
+                                Studio CLI slice per tile → .gcode + .gcode.3mf)
 ```
 
 A floating sphere gizmo, hovering one *level height* above the tile's apex, drags the active tile's centre XY inside the hex. When a HexFinity tile is selected, the viewport also overlays `P1`–`P6` labels floating one *level height* above each corner so corner identity is unambiguous in the panel. Separately, a **green** sphere gizmo hovers over every open grid slot bordering the map — see [Expanding the map](#expanding-the-map-add-hex-gizmos) — visible for the whole map regardless of selection, not tied to the active tile the way the cyan centre-drag sphere is.

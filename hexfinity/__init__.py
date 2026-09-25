@@ -42,7 +42,7 @@ def _classes():
         operators.HEXFINITY_OT_unbake_tile,
         operators.HEXFINITY_OT_export_tiles,
         operators.HEXFINITY_OT_export_and_slice,
-        operators.HEXFINITY_OT_slice_list_options,
+        operators.HEXFINITY_OT_slice_refresh_presets,
         operators.HEXFINITY_OT_copy_surface_texture,
         operators.HEXFINITY_OT_apply_surface_texture,
         brush.HEXFINITY_OT_paint_brush,

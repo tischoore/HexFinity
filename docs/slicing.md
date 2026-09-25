@@ -14,26 +14,38 @@ The **Export + Slice** button sits in the panel's Export box, next to
 
 - **Export Location** — the destination folder + subfolder, same as
   **Export Tiles to STL**'s own directory picker.
-- **Slice Settings** — `Printer` / `Nozzle` / `Filament` / `Quality` (leave
-  blank for auto: first printer, 0.4mm nozzle, the printer's own default
-  filament/quality), a **List Available Printers/Filaments/Qualities**
-  button that reports valid names for what's currently typed (see the Info
-  log), `Infill Density`/`Infill Pattern`, and a **Delete STLs after
-  slicing** checkbox (on by default) — a tile whose slice fails always keeps
-  its STL regardless of this checkbox, so there's always something to retry.
+- **Slice Settings** — `Printer` / `Nozzle` / `Filament` / `Quality` are real
+  dropdowns, populated from the locally installed Bambu Studio. Each
+  defaults to **NONE** (auto: first printer, 0.4mm nozzle, the printer's own
+  default filament/quality) until you pick something; picking a Printer
+  resets Nozzle/Filament/Quality back to NONE (and picking a Nozzle resets
+  Filament/Quality), since a value valid for one printer/nozzle combination
+  may not exist for another. A **Refresh Presets** button re-scans the
+  install — the dropdowns are cached for responsiveness while the dialog is
+  open, so installing new Bambu Studio content mid-session needs this to
+  show up without restarting Blender. `Infill Density`/`Infill Pattern` and
+  a **Delete STLs after slicing** checkbox (on by default) round out the
+  settings — a tile whose slice fails always keeps its STL regardless of
+  this checkbox, so there's always something to retry.
 
 Clicking OK exports every tile (exactly like **Export Tiles to STL** — they
 share the same underlying export code, so they can never drift apart), then
 slices each resulting STL with the locally installed Bambu Studio, producing
 the same paired `.gcode`/`.gcode.3mf` output per tile described below.
 
-**These settings are Blender scene properties** (`scene.hexfinity_slice`),
-persisted with the .blend/session — they are a completely separate surface
-from `scripts/slice_tiles_settings.json` below and are never read from or
-written to that file. If you also use the standalone CLI script, you'll set
-printer/filament/quality/infill in both places; that's expected, not a bug —
-picking one over the other is a matter of workflow (one-click-from-Blender
-vs. batch/unattended slicing outside Blender).
+**These settings are read from and written to the same
+`scripts/slice_tiles_settings.json` the standalone CLI script below uses** —
+picking a printer here becomes the CLI script's own default the next time
+you run it manually, and vice versa (one shared file, one source of truth,
+by design). Every field change is written immediately (not just on OK), so
+the dialog remembers the last value picked across `.blend` files and Blender
+sessions alike, not just for as long as one `.blend`'s scene properties say
+so. This means using the dialog **modifies that file on disk** — worth
+knowing since it's a git-tracked file in a dev checkout, so picking presets
+here will show up as an uncommitted change. On an installed extension (not a
+dev checkout), `scripts/` doesn't exist at all (`deploy.ps1` only ever zips
+`hexfinity/*`) — every dropdown then just shows NONE every time, with
+nowhere to persist a choice.
 
 The main tradeoff versus the standalone script: slicing runs synchronously
 on Blender's main thread (the same `subprocess` call either way), so Blender
@@ -85,6 +97,7 @@ default file:
   "export_folder": "",
   "sparse_infill_density": 15,
   "sparse_infill_pattern": "honeycomb",
+  "adaptive_layer_height": false,
   "printer": "",
   "nozzle": "",
   "filament": "",
@@ -97,6 +110,7 @@ default file:
 | `export_folder` | Folder of STLs + `manifest.json` produced by HexFinity. The positional CLI argument overrides this. |
 | `sparse_infill_density` | 5–20% (clamped). Written as `sparse_infill_density`. |
 | `sparse_infill_pattern` | Bambu pattern — internal value (`"honeycomb"`) **or** human label (`"3D Honeycomb"`), case-insensitive. An unknown value fails loudly. Default **Honeycomb**. |
+| `adaptive_layer_height` | Bambu Studio's adaptive layer height (bool). Written onto the process config as `adaptive_layer_height = "1"`/`"0"`. Default off. |
 | `printer` | Printer model name, e.g. `"Bambu Lab P1S"`. Empty → the first instantiable printer in the install. |
 | `nozzle` | Nozzle diameter for that model (`"0.2"` / `"0.4"` / `"0.6"` / `"0.8"`). Together with `printer` it selects one machine preset. Empty → `0.4` when available, else the first. |
 | `filament` | Compatible filament preset name. Empty → the printer's `default_filament_profile` (Bambu PLA Basic). |
@@ -120,6 +134,7 @@ setting, every valid value or the numeric range:
 | `export_folder` | A note (any directory is allowed). |
 | `sparse_infill_density` | `{ "min": 5, "max": 20, "unit": "percent" }`. |
 | `sparse_infill_pattern` | The full list of internal pattern values. |
+| `adaptive_layer_height` | `[false, true]`. |
 | `printer` | Every installed printer model. |
 | `nozzle` | The selected printer's nozzle diameters. |
 | `filament` | Every compatible filament preset for the selected printer+nozzle. |
@@ -145,15 +160,16 @@ script bridges three gaps:
    `--export-3mf`). Plain G-code is the member `Metadata/plate_1.gcode` *inside*
    that zip; the script extracts it (keeping both files).
 2. **No per-setting CLI flags.** There is no generic `--key=value` override.
-   Printer, nozzle, filament and the infill settings are all supplied as
+   Printer, nozzle, filament and the infill/layer settings are all supplied as
    full-config JSON files via `--load-settings "machine.json;process.json"` and
    `--load-filaments "filament.json"`.
 3. **Shipped presets are partial.** Presets under `resources/profiles/BBL` use
    `"inherits"` (and machine presets use `"include"` for G-code templates), so
    they are not valid full configs. The script **flattens** each chosen preset's
    inheritance chain into a complete config, injects
-   `sparse_infill_density` / `sparse_infill_pattern` onto the process config,
-   writes the three JSON files to a temp dir, then calls the CLI.
+   `sparse_infill_density` / `sparse_infill_pattern` / `adaptive_layer_height`
+   onto the process config, writes the three JSON files to a temp dir, then
+   calls the CLI.
 
 The resulting command per tile is:
 
@@ -170,8 +186,9 @@ bambu-studio --load-settings "machine.json;process.json" \
 - Each STL should produce a paired `.gcode` and `.gcode.3mf` with the same
   `.<count>.` infix; counts should match the manifest's tile grouping.
 - Open a produced `.gcode` and check the trailing config block contains your
-  chosen `sparse_infill_density = N%` and `sparse_infill_pattern = <pattern>` —
-  that proves the flattened-config overrides reached the slicer.
+  chosen `sparse_infill_density = N%`, `sparse_infill_pattern = <pattern>`, and
+  (if enabled) `adaptive_layer_height = 1` — that proves the flattened-config
+  overrides reached the slicer.
 
 ## Troubleshooting
 
@@ -195,16 +212,17 @@ bambu-studio --load-settings "machine.json;process.json" \
 
 The pure slicing mechanics (manifest counts, naming, inheritance flattening,
 infill override injection, G-code extraction, command construction, settings
-resolution) live in `hexfinity/bambu_slicer.py` and are covered by
-`tests/test_bambu_slicer.py`:
+resolution, settings-JSON load/write/merge, the dropdown-dependency
+`resolve_machine` helper, and the enumeration cache) live in
+`hexfinity/bambu_slicer.py` and are covered by `tests/test_bambu_slicer.py`:
 
 ```
 "C:\Program Files\Blender Foundation\Blender 5.1\5.1\python\bin\python.exe" -m pytest tests -v
 ```
 
-The settings-JSON/CLI-specific glue that's still local to
-`scripts/slice_tiles.py` (load/write/refresh, `possible_values`, `run()`/
-`main()`) is covered by `scripts/tests/test_slice_tiles.py`:
+The `possible_values` reference-doc block and `run()`/`main()`/
+`refresh_settings()` wiring — what's still local to `scripts/slice_tiles.py`
+— is covered by `scripts/tests/test_slice_tiles.py`:
 
 ```
 "C:\Program Files\Blender Foundation\Blender 5.1\5.1\python\bin\python.exe" -m pytest scripts/tests -v

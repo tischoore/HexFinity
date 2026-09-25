@@ -1,12 +1,14 @@
 """Tests for the settings-JSON/CLI glue in ``scripts/slice_tiles.py``.
 
 The reusable slicing mechanics (profile flattening, command building, G-code
-extraction, settings resolution) now live in ``hexfinity/bambu_slicer.py`` and
-are tested in ``tests/test_bambu_slicer.py``. This file covers only what's
-still local to the standalone script: settings JSON load/write/refresh, the
-``possible_values`` documentation block, and that ``run()``/``refresh_settings()``
-wire correctly into ``bambu_slicer``. No tkinter, no real Bambu Studio call —
-runs under any CPython (including Blender's bundled interpreter):
+extraction, settings resolution, and settings-JSON load/write/merge) now
+live in ``hexfinity/bambu_slicer.py`` and are tested in
+``tests/test_bambu_slicer.py``. This file covers only what's still local to
+the standalone script: the ``possible_values`` reference-doc block
+(``build_possible_values``/``_match_printer``, CLI-``--refresh``-only), and
+that ``run()``/``refresh_settings()``/``main()`` wire correctly into
+``bambu_slicer``. No tkinter, no real Bambu Studio call — runs under any
+CPython (including Blender's bundled interpreter):
 
     python -m pytest scripts/tests -v
 """
@@ -52,46 +54,6 @@ def _seed_install(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# JSON settings: loading, normalising
-# --------------------------------------------------------------------------- #
-
-def test_load_settings_missing_file_returns_defaults(tmp_path):
-    settings = slice_tiles.load_settings(tmp_path / "nope.json")
-    assert settings == slice_tiles.DEFAULT_SETTINGS
-    # A copy, not the module-level dict.
-    assert settings is not slice_tiles.DEFAULT_SETTINGS
-
-
-def test_load_settings_merges_over_defaults(tmp_path):
-    path = tmp_path / "s.json"
-    path.write_text(json.dumps({"sparse_infill_density": 8,
-                                "printer": "Bambu Lab P1S"}), encoding="utf-8")
-    settings = slice_tiles.load_settings(path)
-    assert settings["sparse_infill_density"] == 8
-    assert settings["printer"] == "Bambu Lab P1S"
-    # Untouched keys keep their defaults.
-    assert settings["sparse_infill_pattern"] == slice_tiles.DEFAULT_PATTERN
-
-
-def test_load_settings_rejects_unknown_key(tmp_path):
-    path = tmp_path / "s.json"
-    path.write_text(json.dumps({"bogus": 1}), encoding="utf-8")
-    with pytest.raises(ValueError):
-        slice_tiles.load_settings(path)
-
-
-def test_load_settings_ignores_possible_values_doc_block(tmp_path):
-    path = tmp_path / "s.json"
-    path.write_text(json.dumps({
-        "sparse_infill_density": 9,
-        "possible_values": {"anything": ["at", "all"]},  # doc-only, ignored
-    }), encoding="utf-8")
-    settings = slice_tiles.load_settings(path)
-    assert settings["sparse_infill_density"] == 9
-    assert "possible_values" not in settings  # never becomes a real setting
-
-
-# --------------------------------------------------------------------------- #
 # possible_values documentation block
 # --------------------------------------------------------------------------- #
 
@@ -115,6 +77,7 @@ def test_build_possible_values_lists_every_setting(tmp_path):
         "unit": "percent",
     }
     assert pv["sparse_infill_pattern"] == [v for v, _ in slice_tiles.INFILL_PATTERNS]
+    assert pv["adaptive_layer_height"] == [False, True]
     assert pv["printer"] == ["Bambu Lab P1S"]
     assert pv["nozzle"] == ["0.4", "0.6"]  # both nozzles seeded for P1S
     # filament/quality enumerated for the (leniently matched) P1S machine.
@@ -157,17 +120,19 @@ def test_run_wires_settings_into_bambu_slicer_slice_folder(tmp_path, monkeypatch
     captured = {}
 
     def fake_slice_folder(exe, idx, folder, machine_name, process_name,
-                          filament_name, density, pattern, log=print,
-                          results=None):
+                          filament_name, density, pattern,
+                          adaptive_layer_height, log=print, results=None):
         captured.update(machine_name=machine_name, process_name=process_name,
                         filament_name=filament_name, density=density,
-                        pattern=pattern, folder=str(folder))
+                        pattern=pattern, adaptive_layer_height=adaptive_layer_height,
+                        folder=str(folder))
         return (0, 0)
 
     monkeypatch.setattr(bambu_slicer, "slice_folder", fake_slice_folder)
 
     settings = dict(slice_tiles.DEFAULT_SETTINGS, export_folder=str(export_dir),
-                    printer="Bambu Lab P1S", sparse_infill_density=7)
+                    printer="Bambu Lab P1S", sparse_infill_density=7,
+                    adaptive_layer_height=True)
     code = slice_tiles.run(settings, log=lambda msg: None)
 
     assert code == 0
@@ -175,6 +140,7 @@ def test_run_wires_settings_into_bambu_slicer_slice_folder(tmp_path, monkeypatch
     assert captured["process_name"] == "0.20mm Standard"
     assert captured["filament_name"] == "Bambu PLA Basic"
     assert captured["density"] == 7
+    assert captured["adaptive_layer_height"] is True
     assert captured["folder"] == str(export_dir)
 
 

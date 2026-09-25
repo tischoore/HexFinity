@@ -136,14 +136,33 @@ def test_write_full_configs_injects_infill_overrides(tmp_path):
     out = tmp_path / "out"
     out.mkdir()
     m_json, p_json, f_json = bambu_slicer.write_full_configs(
-        out, index, "m", "p", "f", density=7, pattern="honeycomb")
+        out, index, "m", "p", "f", density=7, pattern="honeycomb",
+        adaptive_layer_height=True)
 
     process = json.loads(Path(p_json).read_text(encoding="utf-8"))
     assert process["sparse_infill_density"] == "7%"
     assert process["sparse_infill_pattern"] == "honeycomb"
+    assert process["adaptive_layer_height"] == "1"
     # Machine + filament configs written too.
     assert json.loads(Path(m_json).read_text())["nozzle_diameter"] == ["0.4"]
     assert json.loads(Path(f_json).read_text())["filament_type"] == ["PLA"]
+
+
+def test_write_full_configs_adaptive_layer_height_off(tmp_path):
+    _write_profile(tmp_path, "machine", "m", {"nozzle_diameter": ["0.4"]})
+    _write_profile(tmp_path, "process", "p", {
+        "sparse_infill_density": "15%", "sparse_infill_pattern": "grid"})
+    _write_profile(tmp_path, "filament", "f", {"filament_type": ["PLA"]})
+    index = bambu_slicer.build_profile_index(tmp_path)
+
+    out = tmp_path / "out"
+    out.mkdir()
+    _m_json, p_json, _f_json = bambu_slicer.write_full_configs(
+        out, index, "m", "p", "f", density=7, pattern="honeycomb",
+        adaptive_layer_height=False)
+
+    process = json.loads(Path(p_json).read_text(encoding="utf-8"))
+    assert process["adaptive_layer_height"] == "0"
 
 
 # --------------------------------------------------------------------------- #
@@ -265,6 +284,7 @@ def _seed_install(tmp_path):
 _DEFAULT_SETTINGS = {
     "sparse_infill_density": bambu_slicer.INFILL_DENSITY_DEFAULT,
     "sparse_infill_pattern": bambu_slicer.DEFAULT_PATTERN,
+    "adaptive_layer_height": False,
     "printer": "",
     "nozzle": "",
     "filament": "",
@@ -274,13 +294,21 @@ _DEFAULT_SETTINGS = {
 
 def test_resolve_selection_auto_fallbacks(tmp_path):
     index = _seed_install(tmp_path)
-    machine, process, filament, density, pattern = \
+    machine, process, filament, density, pattern, adaptive_layer_height = \
         bambu_slicer.resolve_selection(index, dict(_DEFAULT_SETTINGS))
     assert machine == "P1S 0.4 nozzle"      # first printer, 0.4 nozzle preferred
     assert process == "0.20mm Standard"      # machine default
     assert filament == "Bambu PLA Basic"     # machine default
     assert density == bambu_slicer.INFILL_DENSITY_DEFAULT
     assert pattern == bambu_slicer.DEFAULT_PATTERN
+    assert adaptive_layer_height is False
+
+
+def test_resolve_selection_adaptive_layer_height_passthrough(tmp_path):
+    index = _seed_install(tmp_path)
+    settings = dict(_DEFAULT_SETTINGS, adaptive_layer_height=True)
+    *_rest, adaptive_layer_height = bambu_slicer.resolve_selection(index, settings)
+    assert adaptive_layer_height is True
 
 
 def test_resolve_selection_explicit_nozzle(tmp_path):
@@ -302,6 +330,38 @@ def test_resolve_selection_unknown_nozzle_raises(tmp_path):
     settings = dict(_DEFAULT_SETTINGS, printer="Bambu Lab P1S", nozzle="0.8")
     with pytest.raises(ValueError):
         bambu_slicer.resolve_selection(index, settings)
+
+
+# --------------------------------------------------------------------------- #
+# resolve_machine: lenient (never-raising) dropdown-dependency resolution
+# --------------------------------------------------------------------------- #
+
+def test_resolve_machine_auto_fallbacks(tmp_path):
+    index = _seed_install(tmp_path)
+    model, nozzle, machine = bambu_slicer.resolve_machine(index, "", "")
+    assert (model, nozzle, machine) == (
+        "Bambu Lab P1S", "0.4", "P1S 0.4 nozzle")
+
+
+def test_resolve_machine_explicit_nozzle(tmp_path):
+    index = _seed_install(tmp_path)
+    model, nozzle, machine = bambu_slicer.resolve_machine(
+        index, "Bambu Lab P1S", "0.6")
+    assert (model, nozzle, machine) == (
+        "Bambu Lab P1S", "0.6", "P1S 0.6 nozzle")
+
+
+def test_resolve_machine_unrecognized_values_fall_back_instead_of_raising(tmp_path):
+    index = _seed_install(tmp_path)
+    model, nozzle, machine = bambu_slicer.resolve_machine(
+        index, "No Such Printer", "9.9")
+    assert (model, nozzle, machine) == (
+        "Bambu Lab P1S", "0.4", "P1S 0.4 nozzle")
+
+
+def test_resolve_machine_no_printers_returns_none_triple(tmp_path):
+    index = bambu_slicer.build_profile_index(tmp_path)  # empty install
+    assert bambu_slicer.resolve_machine(index, "", "") == (None, None, None)
 
 
 # --------------------------------------------------------------------------- #
@@ -344,8 +404,189 @@ def test_slice_folder_results_list_records_success_and_failure(tmp_path, monkeyp
     ok, fail = bambu_slicer.slice_folder(
         "bambu-studio", index, tmp_path,
         "P1S 0.4 nozzle", "0.20mm Standard", "Bambu PLA Basic",
-        15, "honeycomb", log=lambda msg: None, results=results,
+        15, "honeycomb", False, log=lambda msg: None, results=results,
     )
     assert (ok, fail) == (1, 1)
     outcomes = {Path(path).stem: success for path, success, _msg in results}
     assert outcomes == {"ok": True, "bad": False}
+
+
+# --------------------------------------------------------------------------- #
+# Settings JSON I/O — shared by scripts/slice_tiles.py and the in-Blender
+# Export + Slice dialog.
+# --------------------------------------------------------------------------- #
+
+def test_load_settings_missing_file_returns_defaults(tmp_path):
+    settings = bambu_slicer.load_settings(tmp_path / "nope.json")
+    assert settings == bambu_slicer.DEFAULT_SETTINGS
+    assert settings is not bambu_slicer.DEFAULT_SETTINGS  # a copy
+
+
+def test_load_settings_none_path_returns_defaults():
+    settings = bambu_slicer.load_settings(None)
+    assert settings == bambu_slicer.DEFAULT_SETTINGS
+
+
+def test_load_settings_merges_over_defaults(tmp_path):
+    path = tmp_path / "s.json"
+    path.write_text(json.dumps({"sparse_infill_density": 8,
+                                "printer": "Bambu Lab P1S"}), encoding="utf-8")
+    settings = bambu_slicer.load_settings(path)
+    assert settings["sparse_infill_density"] == 8
+    assert settings["printer"] == "Bambu Lab P1S"
+    assert settings["sparse_infill_pattern"] == bambu_slicer.DEFAULT_PATTERN
+
+
+def test_load_settings_rejects_unknown_key(tmp_path):
+    path = tmp_path / "s.json"
+    path.write_text(json.dumps({"bogus": 1}), encoding="utf-8")
+    with pytest.raises(ValueError):
+        bambu_slicer.load_settings(path)
+
+
+def test_load_settings_ignores_possible_values_doc_block(tmp_path):
+    path = tmp_path / "s.json"
+    path.write_text(json.dumps({
+        "sparse_infill_density": 9,
+        "possible_values": {"anything": ["at", "all"]},
+    }), encoding="utf-8")
+    settings = bambu_slicer.load_settings(path)
+    assert settings["sparse_infill_density"] == 9
+    assert "possible_values" not in settings
+
+
+def test_write_settings_file_roundtrips_and_strips_on_reload(tmp_path):
+    settings = dict(bambu_slicer.DEFAULT_SETTINGS,
+                    sparse_infill_density=7, printer="Bambu Lab P1S")
+    path = tmp_path / "out.json"
+    bambu_slicer.write_settings_file(path, settings, {"_note": "ref"})
+
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    assert raw["sparse_infill_density"] == 7
+    assert raw["possible_values"] == {"_note": "ref"}
+    reloaded = bambu_slicer.load_settings(path)
+    assert reloaded["sparse_infill_density"] == 7
+    assert "possible_values" not in reloaded
+
+
+def test_save_settings_fields_creates_file_with_merged_defaults(tmp_path):
+    path = tmp_path / "s.json"
+    bambu_slicer.save_settings_fields(path, printer="Bambu Lab P1S")
+    settings = bambu_slicer.load_settings(path)
+    assert settings["printer"] == "Bambu Lab P1S"
+    assert settings["nozzle"] == ""  # untouched fields keep their default
+
+
+def test_save_settings_fields_merges_over_existing_values(tmp_path):
+    path = tmp_path / "s.json"
+    bambu_slicer.save_settings_fields(path, printer="Bambu Lab P1S", nozzle="0.4")
+    bambu_slicer.save_settings_fields(path, nozzle="0.6")
+    settings = bambu_slicer.load_settings(path)
+    assert settings["printer"] == "Bambu Lab P1S"  # untouched by the 2nd call
+    assert settings["nozzle"] == "0.6"
+
+
+def test_save_settings_fields_preserves_possible_values_block(tmp_path):
+    path = tmp_path / "s.json"
+    bambu_slicer.write_settings_file(
+        path, bambu_slicer.DEFAULT_SETTINGS, {"_note": "keep me"})
+    bambu_slicer.save_settings_fields(path, printer="Bambu Lab P1S")
+
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    assert raw["possible_values"] == {"_note": "keep me"}
+    assert raw["printer"] == "Bambu Lab P1S"
+
+
+def test_save_settings_fields_roundtrips_adaptive_layer_height(tmp_path):
+    path = tmp_path / "s.json"
+    bambu_slicer.save_settings_fields(path, adaptive_layer_height=True)
+    settings = bambu_slicer.load_settings(path)
+    assert settings["adaptive_layer_height"] is True
+
+
+def test_save_settings_fields_creates_missing_parent_directory(tmp_path):
+    path = tmp_path / "nested" / "dir" / "s.json"
+    bambu_slicer.save_settings_fields(path, printer="Bambu Lab P1S")
+    assert path.is_file()
+    assert bambu_slicer.load_settings(path)["printer"] == "Bambu Lab P1S"
+
+
+def test_blender_settings_path_found_when_scripts_dir_exists(tmp_path):
+    (tmp_path / "hexfinity").mkdir()
+    (tmp_path / "scripts").mkdir()
+    result = bambu_slicer.blender_settings_path(base=tmp_path / "hexfinity")
+    assert result == tmp_path / "scripts" / bambu_slicer.SETTINGS_FILENAME
+
+
+def test_blender_settings_path_none_when_scripts_dir_missing(tmp_path):
+    (tmp_path / "hexfinity").mkdir()
+    result = bambu_slicer.blender_settings_path(base=tmp_path / "hexfinity")
+    assert result is None
+
+
+# --------------------------------------------------------------------------- #
+# Enumeration cache
+# --------------------------------------------------------------------------- #
+
+@pytest.fixture(autouse=True)
+def _clear_bambu_cache():
+    """Every cache test starts clean and leaves no state for other tests."""
+    bambu_slicer.clear_cache()
+    yield
+    bambu_slicer.clear_cache()
+
+
+def _counting(monkeypatch, name):
+    """Wrap bambu_slicer.<name> to count calls, returning the counter list."""
+    calls = []
+    original = getattr(bambu_slicer, name)
+
+    def wrapper(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(bambu_slicer, name, wrapper)
+    return calls
+
+
+def test_cached_index_scans_once_until_clear_cache(tmp_path, monkeypatch):
+    calls = _counting(monkeypatch, "build_profile_index")
+    bambu_slicer.cached_index(tmp_path)
+    bambu_slicer.cached_index(tmp_path)
+    assert len(calls) == 1
+    bambu_slicer.clear_cache()
+    bambu_slicer.cached_index(tmp_path)
+    assert len(calls) == 2
+
+
+def test_cached_printers_scans_once_until_clear_cache(tmp_path, monkeypatch):
+    _seed_install(tmp_path)
+    calls = _counting(monkeypatch, "list_printers")
+    bambu_slicer.cached_printers(tmp_path)
+    bambu_slicer.cached_printers(tmp_path)
+    assert len(calls) == 1
+    bambu_slicer.clear_cache()
+    bambu_slicer.cached_printers(tmp_path)
+    assert len(calls) == 2
+
+
+def test_cached_filaments_scans_once_per_machine_until_clear_cache(tmp_path, monkeypatch):
+    _seed_install(tmp_path)
+    calls = _counting(monkeypatch, "list_filaments")
+    bambu_slicer.cached_filaments(tmp_path, "P1S 0.4 nozzle")
+    bambu_slicer.cached_filaments(tmp_path, "P1S 0.4 nozzle")
+    assert len(calls) == 1
+    bambu_slicer.clear_cache()
+    bambu_slicer.cached_filaments(tmp_path, "P1S 0.4 nozzle")
+    assert len(calls) == 2
+
+
+def test_cached_processes_scans_once_per_machine_until_clear_cache(tmp_path, monkeypatch):
+    _seed_install(tmp_path)
+    calls = _counting(monkeypatch, "list_processes")
+    bambu_slicer.cached_processes(tmp_path, "P1S 0.4 nozzle")
+    bambu_slicer.cached_processes(tmp_path, "P1S 0.4 nozzle")
+    assert len(calls) == 1
+    bambu_slicer.clear_cache()
+    bambu_slicer.cached_processes(tmp_path, "P1S 0.4 nozzle")
+    assert len(calls) == 2

@@ -2,6 +2,7 @@
   "export_folder": "c:\\tmp\\output\\hexfinity_export",
   "sparse_infill_density": 8,
   "sparse_infill_pattern": "honeycomb",
+  "adaptive_layer_height": true,
   "printer": "Bambu Lab P2S",
   "nozzle": "0.4",
   "filament": "Bambu PLA Basic @BBL P2S",
@@ -37,6 +38,10 @@
       "crosszag",
       "lockedzag",
       "2dlattice"
+    ],
+    "adaptive_layer_height": [
+      false,
+      true
     ],
     "printer": [
       "Bambu Lab A1",
