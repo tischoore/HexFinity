@@ -39,6 +39,12 @@ _PROPAGATING = False
 # letting each tile run its own seam cascade. See on_corner_changed.
 _MULTI_APPLYING = False
 
+# Set by HEXFINITY_OT_cancel_export_progress (the progress popup's Cancel
+# button) and checked once per timer tick by _ExportProgressMixin.modal —
+# the shared flag behind both export operators' progress popups, since only
+# one can plausibly be running at a time.
+_EXPORT_PROGRESS_CANCEL_REQUESTED = False
+
 # Snapshot of the active tile's six corner levels, captured before an edit so
 # the corner callback can recover the pre-edit value (Blender's update hook
 # only exposes the post-edit value). Re-seeded from the panel whenever the
@@ -1834,14 +1840,12 @@ _ExportResult = collections.namedtuple(
     "written flora_written unfinalized_tiles total_tiles out_dir")
 
 
-def _export_tiles_core(context, out_dir):
-    """Export every generated tile (+ terrain children) to STL, deduped by
-    content hash, plus any finalized planted trees, writing manifest(s) into
-    out_dir. The shared body behind both HEXFINITY_OT_export_tiles and
-    HEXFINITY_OT_export_and_slice, so the two exporters can't drift apart.
-    Raises _ExportError with a user-facing message on failure; out_dir is
-    NOT created here (the caller does that, since the two operators resolve
-    it slightly differently before calling in).
+def _prepare_export(context, out_dir):
+    """Validate state, create out_dir, and return the list of generated
+    tiles to export. Raises _ExportError with a user-facing message on
+    failure; called eagerly/synchronously by both export operators before
+    any progress popup opens, so a bad-state error still reports and
+    cancels instantly rather than needing a modal round-trip.
     """
     scene = context.scene
     map_props = scene.hexfinity_map
@@ -1861,7 +1865,26 @@ def _export_tiles_core(context, out_dir):
              if o.hexfinity_tile.is_generated]
     if not tiles:
         raise _ExportError("No HexFinity tiles found to export.")
+    return tiles
 
+
+def _iter_export_tiles(context, tiles, out_dir):
+    """Generator sibling of _export_tiles_core: exports each of `tiles` (+
+    terrain children) to STL, deduped by content hash, plus any finalized
+    planted trees, yielding `(done, total, label)` after each tile is fully
+    written — so a chunked progress-popup modal can process one tile per
+    timer tick and redraw/check cancellation in between. The shared body
+    behind both HEXFINITY_OT_export_tiles and HEXFINITY_OT_export_and_slice,
+    so the two exporters can't drift apart. `tiles`/`out_dir` are assumed
+    already validated/created by `_prepare_export`.
+
+    Manifest-writing moved inside the same `finally` that restores the
+    selection: an early `.close()` (cancellation mid-export) still restores
+    selection *and* writes a manifest covering whichever subset of tiles was
+    actually completed, rather than leaving STL files on disk with no
+    manifest at all. Returns (via StopIteration.value) the final
+    _ExportResult on normal completion.
+    """
     # Make sure all transforms are flushed before we read matrix_world.
     context.view_layer.update()
     depsgraph = context.evaluated_depsgraph_get()
@@ -1880,7 +1903,7 @@ def _export_tiles_core(context, out_dir):
     unfinalized_tiles = 0
 
     try:
-        for tile in tiles:
+        for i, tile in enumerate(tiles):
             tp = tile.hexfinity_tile
             children = _terrain_children(tile)
 
@@ -1947,6 +1970,9 @@ def _export_tiles_core(context, out_dir):
                                       "index": idx, "file": fname})
             if unfinalized_here:
                 unfinalized_tiles += 1
+
+            yield (i + 1, len(tiles),
+                  f"q{tp.coord_q} r{tp.coord_r}")
     finally:
         for o in context.selected_objects:
             o.select_set(False)
@@ -1954,15 +1980,162 @@ def _export_tiles_core(context, out_dir):
             o.select_set(True)
         context.view_layer.objects.active = prev_active
 
-    HEXFINITY_OT_export_tiles._write_manifest(out_dir, records)
-    if flora_records:
-        HEXFINITY_OT_export_tiles._write_flora_manifest(out_dir, flora_records)
+        HEXFINITY_OT_export_tiles._write_manifest(out_dir, records)
+        if flora_records:
+            HEXFINITY_OT_export_tiles._write_flora_manifest(out_dir, flora_records)
 
     return _ExportResult(written, flora_written, unfinalized_tiles,
                          len(tiles), out_dir)
 
 
-class HEXFINITY_OT_export_tiles(bpy.types.Operator):
+def _export_tiles_core(context, out_dir):
+    """Export every generated tile to STL — the synchronous, one-shot form
+    of `_iter_export_tiles`: validates/prepares via `_prepare_export`, then
+    drains the generator to its final `_ExportResult`. Kept for any caller
+    that doesn't need chunked progress.
+    """
+    tiles = _prepare_export(context, out_dir)
+    gen = _iter_export_tiles(context, tiles, out_dir)
+    try:
+        while True:
+            next(gen)
+    except StopIteration as stop:
+        return stop.value
+
+
+class HEXFINITY_OT_cancel_export_progress(bpy.types.Operator):
+    """Backs the Cancel button drawn inside an _ExportProgressMixin popup.
+    Just flips the shared module flag; the owning modal operator notices it
+    on its next timer tick and stops (cooperatively — between tiles during
+    export, between jobs during slicing)."""
+    bl_idname = "hexfinity.cancel_export_progress"
+    bl_label = "Cancel"
+    bl_options = {'INTERNAL'}
+
+    def execute(self, context):
+        global _EXPORT_PROGRESS_CANCEL_REQUESTED
+        _EXPORT_PROGRESS_CANCEL_REQUESTED = True
+        return {'FINISHED'}
+
+
+# A text spinner frame set — Blender has no built-in animated spinner
+# widget, so a cycling character next to the phase label stands in for one.
+_SPINNER_FRAMES = "|/-\\"
+
+
+class _ExportProgressMixin:
+    """Shared timer/popup/cancel plumbing for a chunked export/slice modal
+    operator. A concrete operator (HEXFINITY_OT_export_tiles,
+    HEXFINITY_OT_export_and_slice) calls `_start_progress` from its own
+    `execute()` once validation has passed and the real work is about to
+    begin, and implements:
+
+    - `_advance(self, context) -> bool` — called once per timer tick to do
+      the next unit of work (one tile, one slice job, ...); update
+      self._done/_total/_current_label; return True to keep going, False
+      once all work is finished.
+    - `_report_result(self, context)` — called exactly once, after work
+      stops (normally or via cancellation), to self.report(...) the final
+      outcome and do any end-of-run bookkeeping (e.g. closing generators).
+
+    `invoke_popup` + `modal_handler_add` together is the standard Blender
+    pattern for a modal operator that owns a live popup; forcing a redraw of
+    every area each tick is a defensive measure so the popup's `draw()`
+    actually repaints every tick rather than waiting on an unrelated input
+    event.
+    """
+
+    def _start_progress(self, context, total, phase):
+        """Starts the chunked work. Returns the operator-result dict/set the
+        caller's own `execute()` should return directly (`return
+        self._start_progress(...)`).
+
+        In `bpy.app.background` mode (headless `--background` scripts, CI)
+        there is no windowing event loop to deliver TIMER events to a modal
+        operator, so `event_timer_add`/`invoke_popup` would never advance —
+        this drains the work synchronously instead, exactly like the
+        pre-popup behavior, so a scripted `EXEC_DEFAULT` call still completes
+        in one call and returns {'FINISHED'}/{'CANCELLED'} immediately.
+        """
+        self._done = 0
+        self._total = total
+        self._phase = phase
+        self._current_label = ""
+        self._cancelled = False
+        self._spin_frame = 0
+        self._progress_active = False
+
+        if bpy.app.background:
+            while self._advance(context):
+                pass
+            self._report_result(context)
+            return {'CANCELLED'} if self._cancelled else {'FINISHED'}
+
+        global _EXPORT_PROGRESS_CANCEL_REQUESTED
+        _EXPORT_PROGRESS_CANCEL_REQUESTED = False
+        self._progress_active = True
+        self._timer = None
+        wm = context.window_manager
+        self._timer = wm.event_timer_add(0.05, window=context.window)
+        wm.modal_handler_add(self)
+        wm.invoke_popup(self, width=300)
+        return {'RUNNING_MODAL'}
+
+    def _draw_progress(self, context):
+        """The popup's draw() content, once `_start_progress` has run. A
+        concrete operator's own `draw()` (used earlier, e.g. by a file
+        browser sidebar or a settings dialog) should delegate here once
+        `getattr(self, "_progress_active", False)` is True."""
+        layout = self.layout
+        col = layout.column()
+        spin = _SPINNER_FRAMES[self._spin_frame % len(_SPINNER_FRAMES)]
+        col.label(text=f"{spin}  {self._phase}")
+        if self._total:
+            col.label(text=f"{self._done} / {self._total}   {self._current_label}")
+        col.separator()
+        col.operator("hexfinity.cancel_export_progress", icon='X')
+
+    def modal(self, context, event):
+        global _EXPORT_PROGRESS_CANCEL_REQUESTED
+        if event.type in {'ESC', 'RIGHTMOUSE'}:
+            _EXPORT_PROGRESS_CANCEL_REQUESTED = True
+            return {'RUNNING_MODAL'}
+        if event.type != 'TIMER':
+            # Let normal UI event handling proceed (in particular, clicks on
+            # the popup's own Cancel button) — we only act on our own timer.
+            return {'PASS_THROUGH'}
+
+        self._spin_frame += 1
+        if _EXPORT_PROGRESS_CANCEL_REQUESTED:
+            self._cancelled = True
+            return self._end_progress(context)
+
+        keep_going = self._advance(context)
+        for area in context.window.screen.areas:
+            area.tag_redraw()
+        if not keep_going:
+            return self._end_progress(context)
+        return {'RUNNING_MODAL'}
+
+    def cancel(self, context):
+        # Blender calls this if the popup is dismissed externally (e.g.
+        # click-away) while still modal — must still release the timer and
+        # let the concrete operator close any open generator, mirroring
+        # segment_path.py's "_finish always calls _stop_view_pan so the
+        # timer never leaks" discipline.
+        self._cancelled = True
+        self._end_progress(context)
+
+    def _end_progress(self, context):
+        wm = context.window_manager
+        if getattr(self, "_timer", None) is not None:
+            wm.event_timer_remove(self._timer)
+            self._timer = None
+        self._report_result(context)
+        return {'CANCELLED'} if self._cancelled else {'FINISHED'}
+
+
+class HEXFINITY_OT_export_tiles(_ExportProgressMixin, bpy.types.Operator):
     bl_idname = "hexfinity.export_tiles"
     bl_label = "Export Tiles to STL"
     bl_description = ("Export every distinct hex tile (including its parented "
@@ -1994,6 +2167,9 @@ class HEXFINITY_OT_export_tiles(bpy.types.Operator):
         return {'RUNNING_MODAL'}
 
     def draw(self, context):
+        if getattr(self, "_progress_active", False):
+            self._draw_progress(context)
+            return
         # Shown in the file browser's operator sidebar.
         self.layout.prop(self, "subfolder")
 
@@ -2005,11 +2181,35 @@ class HEXFINITY_OT_export_tiles(bpy.types.Operator):
         out_dir = os.path.join(self.directory, self.subfolder.strip()
                                or "hexfinity_export")
         try:
-            result = _export_tiles_core(context, out_dir)
+            self._tiles = _prepare_export(context, out_dir)
         except _ExportError as exc:
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
 
+        self._out_dir = out_dir
+        self._gen = _iter_export_tiles(context, self._tiles, out_dir)
+        self._result = None
+        return self._start_progress(context, total=len(self._tiles),
+                                    phase="Exporting tiles")
+
+    def _advance(self, context):
+        try:
+            self._done, self._total, self._current_label = next(self._gen)
+            return True
+        except StopIteration as stop:
+            self._result = stop.value
+            return False
+
+    def _report_result(self, context):
+        if self._cancelled:
+            self._gen.close()
+            self.report(
+                {'WARNING'},
+                f"Export cancelled after {self._done}/{self._total} tile(s); "
+                f"manifest written for what completed in {self._out_dir}")
+            return
+
+        result = self._result
         if result.unfinalized_tiles:
             self.report(
                 {'WARNING'},
@@ -2018,8 +2218,7 @@ class HEXFINITY_OT_export_tiles(bpy.types.Operator):
         self.report({'INFO'},
                     f"Exported {result.written} unique tile STL(s) and "
                     f"{result.flora_written} planted tree(s) (tree+pin merged into "
-                    f"one STL each) from {result.total_tiles} tile(s) to {out_dir}")
-        return {'FINISHED'}
+                    f"one STL each) from {result.total_tiles} tile(s) to {result.out_dir}")
 
     @staticmethod
     def _export_objects(context, objs, path):
@@ -2160,7 +2359,7 @@ class HEXFINITY_OT_slice_refresh_presets(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class HEXFINITY_OT_export_and_slice(bpy.types.Operator):
+class HEXFINITY_OT_export_and_slice(_ExportProgressMixin, bpy.types.Operator):
     bl_idname = "hexfinity.export_and_slice"
     bl_label = "Export + Slice"
     bl_description = ("Export every tile to STL (same as Export Tiles to "
@@ -2240,6 +2439,10 @@ class HEXFINITY_OT_export_and_slice(bpy.types.Operator):
             properties._SLICE_FILLING = False
 
     def draw(self, context):
+        if getattr(self, "_progress_active", False):
+            self._draw_progress(context)
+            return
+
         slice_props = context.scene.hexfinity_slice
         col = self.layout.column()
 
@@ -2279,7 +2482,7 @@ class HEXFINITY_OT_export_and_slice(bpy.types.Operator):
         out_dir = os.path.join(self.directory, self.subfolder.strip()
                                or "hexfinity_export")
         try:
-            export_result = _export_tiles_core(context, out_dir)
+            self._tiles = _prepare_export(context, out_dir)
         except _ExportError as exc:
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
@@ -2303,42 +2506,90 @@ class HEXFINITY_OT_export_and_slice(bpy.types.Operator):
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
 
-        job_count = len(bambu_slicer.slice_jobs(out_dir))
-        results = []
-        wm = context.window_manager
-        wm.progress_begin(0, max(job_count, 1))
-        sliced_so_far = 0
+        self._out_dir = out_dir
+        self._delete_stls = slice_props.delete_stls_after_slicing
+        self._export_gen = _iter_export_tiles(context, self._tiles, out_dir)
+        self._phase_key = 'export'
+        self._slice_args = (exe, index, out_dir, machine_name, process_name,
+                            filament_name, density, pattern, adaptive_layer_height)
+        self._export_result = None
+        self._slice_ok = 0
+        self._slice_fail = 0
+        self._results = []
+        return self._start_progress(context, total=len(self._tiles),
+                                    phase="Exporting tiles")
 
-        def _log(msg):
-            nonlocal sliced_so_far
-            self.report({'INFO'}, msg)
-            if msg.startswith("  OK") or msg.startswith("  FAIL"):
-                sliced_so_far += 1
-                wm.progress_update(sliced_so_far)
+    def _advance(self, context):
+        if self._phase_key == 'export':
+            try:
+                self._done, self._total, self._current_label = next(self._export_gen)
+                return True
+            except StopIteration as stop:
+                self._export_result = stop.value
+                self._phase_key = 'slice'
+                self._phase = "Slicing"
+                self._slice_gen = bambu_slicer.iter_slice_jobs(
+                    *self._slice_args, log=lambda msg: self.report({'INFO'}, msg))
+                self._total = len(bambu_slicer.slice_jobs(self._out_dir))
+                self._done = 0
+                self._current_label = ""
+                return True  # first slice job is pulled on the next tick
 
+        # phase == 'slice': each next() blocks for exactly one job (one
+        # subprocess.run call inside bambu_slicer.slice_one) — this is the
+        # cooperative-cancellation design confirmed with the user: Cancel is
+        # only observed between jobs, after whichever one is in flight
+        # finishes, never by killing the Bambu Studio CLI process itself.
         try:
-            ok, fail = bambu_slicer.slice_folder(
-                exe, index, out_dir, machine_name, process_name,
-                filament_name, density, pattern, adaptive_layer_height,
-                log=_log, results=results)
-        finally:
-            wm.progress_end()
+            job, success, message = next(self._slice_gen)
+        except StopIteration:
+            return False
+        self._done += 1
+        self._current_label = ", ".join(p.name for p in job.stl_paths)
+        if success:
+            self._slice_ok += 1
+        else:
+            self._slice_fail += 1
+        self._results.append((job.stl_paths, success, message))
+        return True
 
-        if slice_props.delete_stls_after_slicing:
-            for stl_paths, success, _msg in results:
-                if success:
-                    for stl_path in stl_paths:
-                        try:
-                            os.remove(stl_path)
-                        except OSError:
-                            pass
+    def _cleanup_stls_if_requested(self):
+        if not self._delete_stls:
+            return
+        for stl_paths, success, _msg in self._results:
+            if success:
+                for stl_path in stl_paths:
+                    try:
+                        os.remove(stl_path)
+                    except OSError:
+                        pass
 
-        level = {'INFO'} if fail == 0 else {'WARNING'}
+    def _report_result(self, context):
+        if self._cancelled:
+            if self._phase_key == 'export':
+                self._export_gen.close()
+                self.report(
+                    {'WARNING'},
+                    f"Export cancelled after {self._done}/{self._total} tile(s); "
+                    f"no slicing attempted. Manifest written for what completed "
+                    f"in {self._out_dir}")
+            else:
+                self._slice_gen.close()
+                self._cleanup_stls_if_requested()
+                self.report(
+                    {'WARNING'},
+                    f"Slicing cancelled after {self._done}/{self._total} job(s) "
+                    f"({self._slice_ok} sliced, {self._slice_fail} failed) in "
+                    f"{self._out_dir}")
+            return
+
+        self._cleanup_stls_if_requested()
+        level = {'INFO'} if self._slice_fail == 0 else {'WARNING'}
         self.report(
             level,
-            f"Exported {export_result.written} tile STL(s), sliced {ok} to "
-            f"G-code ({fail} failed) in {out_dir}")
-        return {'FINISHED'}
+            f"Exported {self._export_result.written} tile STL(s), sliced "
+            f"{self._slice_ok} to G-code ({self._slice_fail} failed) in "
+            f"{self._out_dir}")
 
 
 class HEXFINITY_OT_copy_surface_texture(bpy.types.Operator):

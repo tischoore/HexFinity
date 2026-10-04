@@ -649,6 +649,60 @@ def slice_one(exe, stl_paths, machine_json, process_json, filament_json,
     return str(out_path)
 
 
+def iter_slice_jobs(exe, index, folder, machine_name, process_name, filament_name,
+                    density, pattern, adaptive_layer_height, log=print):
+    """Generator sibling of :func:`slice_folder`: same work, same log output,
+    but yields ``(job, ok, message)`` immediately after each job is sliced
+    instead of collecting a ``results`` list, so a caller can drive it one
+    job per iteration (e.g. a cancellable progress UI) instead of waiting for
+    the whole folder. ``message`` is the extracted G-code path on success or
+    the failure text on error — same shape ``slice_folder``'s own ``results``
+    entries carry.
+
+    The flattened-config temp directory is opened once and stays open across
+    every ``yield`` (a ``with`` block spanning the whole loop) — a caller
+    that stops iterating early and calls ``.close()`` on the generator still
+    gets it cleaned up, since a generator correctly unwinds its enclosing
+    ``with``/``finally`` blocks on ``GeneratorExit``.
+
+    ``slice_folder`` itself is now a thin wrapper that drains this generator;
+    behavior and log output are unchanged.
+    """
+    folder = Path(folder)
+    jobs = slice_jobs(folder)
+    if not jobs:
+        log(f"No .stl files found in {folder}")
+        return
+
+    with tempfile.TemporaryDirectory(prefix="hexfinity_slice_") as tmp:
+        machine_json, process_json, filament_json = write_full_configs(
+            tmp, index, machine_name, process_name, filament_name,
+            density, pattern, adaptive_layer_height,
+        )
+        adaptive_note = ", adaptive layers" if adaptive_layer_height else ""
+        log(f"Slicing {len(jobs)} plate(s) with {machine_name} / "
+            f"{process_name} / infill {int(density)}% {pattern}{adaptive_note}")
+        ok = fail = 0
+        for job in jobs:
+            out_3mf = threemf_name(job.out_stem, job.count)
+            names = ", ".join(p.name for p in job.stl_paths)
+            try:
+                slice_one(exe, job.stl_paths, machine_json, process_json,
+                          filament_json, folder, out_3mf)
+                gcode_path = extract_plate_gcode(
+                    folder / out_3mf, folder / gcode_name(job.out_stem, job.count))
+                ok += 1
+                log(f"  OK  {names}  ->  {gcode_name(job.out_stem, job.count)} "
+                    f"(x{job.count})")
+                yield (job, True, str(gcode_path))
+            except (RuntimeError, KeyError, OSError) as exc:
+                fail += 1
+                log(f"  FAIL {names}: {exc}")
+                yield (job, False, str(exc))
+
+    log(f"Done. {ok} sliced, {fail} failed.")
+
+
 def slice_folder(exe, index, folder, machine_name, process_name, filament_name,
                  density, pattern, adaptive_layer_height, log=print, results=None):
     """Slice an export folder; write paired ``.gcode`` + ``.3mf`` per job.
@@ -667,43 +721,20 @@ def slice_folder(exe, index, folder, machine_name, process_name, filament_name,
     in-Blender Export + Slice operator) uses this to know exactly which STLs
     actually turned into G-code, e.g. before deleting the intermediate STLs.
     Returns ``(ok_count, fail_count)`` — counts of *jobs*, not STL files.
+
+    A thin wrapper around :func:`iter_slice_jobs` — see that function for a
+    version a caller can drive job-by-job instead of draining in one call.
     """
-    folder = Path(folder)
-    jobs = slice_jobs(folder)
-    if not jobs:
-        log(f"No .stl files found in {folder}")
-        return (0, 0)
-
     ok = fail = 0
-
-    with tempfile.TemporaryDirectory(prefix="hexfinity_slice_") as tmp:
-        machine_json, process_json, filament_json = write_full_configs(
-            tmp, index, machine_name, process_name, filament_name,
-            density, pattern, adaptive_layer_height,
-        )
-        adaptive_note = ", adaptive layers" if adaptive_layer_height else ""
-        log(f"Slicing {len(jobs)} plate(s) with {machine_name} / "
-            f"{process_name} / infill {int(density)}% {pattern}{adaptive_note}")
-        for job in jobs:
-            out_3mf = threemf_name(job.out_stem, job.count)
-            names = ", ".join(p.name for p in job.stl_paths)
-            try:
-                slice_one(exe, job.stl_paths, machine_json, process_json,
-                          filament_json, folder, out_3mf)
-                gcode_path = extract_plate_gcode(
-                    folder / out_3mf, folder / gcode_name(job.out_stem, job.count))
-                ok += 1
-                log(f"  OK  {names}  ->  {gcode_name(job.out_stem, job.count)} "
-                    f"(x{job.count})")
-                if results is not None:
-                    results.append((job.stl_paths, True, str(gcode_path)))
-            except (RuntimeError, KeyError, OSError) as exc:
-                fail += 1
-                log(f"  FAIL {names}: {exc}")
-                if results is not None:
-                    results.append((job.stl_paths, False, str(exc)))
-
-    log(f"Done. {ok} sliced, {fail} failed.")
+    for job, success, message in iter_slice_jobs(
+            exe, index, folder, machine_name, process_name, filament_name,
+            density, pattern, adaptive_layer_height, log=log):
+        if success:
+            ok += 1
+        else:
+            fail += 1
+        if results is not None:
+            results.append((job.stl_paths, success, message))
     return (ok, fail)
 
 

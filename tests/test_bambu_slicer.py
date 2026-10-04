@@ -556,6 +556,81 @@ def test_slice_folder_results_list_records_success_and_failure(tmp_path, monkeyp
 
 
 # --------------------------------------------------------------------------- #
+# iter_slice_jobs: job-by-job generator slice_folder is now built on top of
+# --------------------------------------------------------------------------- #
+
+def _fake_slice_one_factory():
+    def fake_slice_one(exe, stl_paths, machine_json, process_json,
+                       filament_json, outdir, out_3mf_name):
+        out_path = Path(outdir) / out_3mf_name
+        if Path(stl_paths[0]).stem == "bad":
+            raise RuntimeError("boom")
+        with zipfile.ZipFile(out_path, "w") as zf:
+            zf.writestr("Metadata/plate_1.gcode", "G1\n")
+        return str(out_path)
+    return fake_slice_one
+
+
+def test_iter_slice_jobs_yields_one_tuple_per_job(tmp_path, monkeypatch):
+    index = _seed_install(tmp_path)
+    (tmp_path / "ok.stl").write_bytes(b"solid ok\nendsolid\n")
+    (tmp_path / "bad.stl").write_bytes(b"solid bad\nendsolid\n")
+    monkeypatch.setattr(bambu_slicer, "slice_one", _fake_slice_one_factory())
+
+    outcomes = {}
+    for job, success, message in bambu_slicer.iter_slice_jobs(
+            "bambu-studio", index, tmp_path,
+            "P1S 0.4 nozzle", "0.20mm Standard", "Bambu PLA Basic",
+            15, "honeycomb", False, log=lambda msg: None):
+        outcomes[Path(job.stl_paths[0]).stem] = (success, message)
+
+    assert outcomes["ok"][0] is True
+    assert outcomes["bad"] == (False, "boom")
+
+
+def test_slice_folder_matches_iter_slice_jobs_drained(tmp_path, monkeypatch):
+    index = _seed_install(tmp_path)
+    (tmp_path / "ok.stl").write_bytes(b"solid ok\nendsolid\n")
+    (tmp_path / "bad.stl").write_bytes(b"solid bad\nendsolid\n")
+    monkeypatch.setattr(bambu_slicer, "slice_one", _fake_slice_one_factory())
+
+    results = []
+    ok, fail = bambu_slicer.slice_folder(
+        "bambu-studio", index, tmp_path,
+        "P1S 0.4 nozzle", "0.20mm Standard", "Bambu PLA Basic",
+        15, "honeycomb", False, log=lambda msg: None, results=results,
+    )
+    assert (ok, fail) == (1, 1)
+    outcomes = {Path(paths[0]).stem: success for paths, success, _msg in results}
+    assert outcomes == {"ok": True, "bad": False}
+
+
+def test_iter_slice_jobs_close_cleans_up_temp_dir(tmp_path, monkeypatch):
+    """Stopping early (.close()) must still remove the flattened-config temp
+    dir — a generator correctly unwinds its enclosing `with` block on
+    GeneratorExit, so no hexfinity_slice_* directory should survive."""
+    import tempfile as tempfile_mod
+
+    index = _seed_install(tmp_path)
+    (tmp_path / "ok.stl").write_bytes(b"solid ok\nendsolid\n")
+    (tmp_path / "ok2.stl").write_bytes(b"solid ok2\nendsolid\n")
+    monkeypatch.setattr(bambu_slicer, "slice_one", _fake_slice_one_factory())
+
+    system_tmp = Path(tempfile_mod.gettempdir())
+    before = {p.name for p in system_tmp.glob("hexfinity_slice_*")}
+
+    gen = bambu_slicer.iter_slice_jobs(
+        "bambu-studio", index, tmp_path,
+        "P1S 0.4 nozzle", "0.20mm Standard", "Bambu PLA Basic",
+        15, "honeycomb", False, log=lambda msg: None)
+    next(gen)  # slice exactly one job, then abandon the generator
+    gen.close()
+
+    after = {p.name for p in system_tmp.glob("hexfinity_slice_*")}
+    assert after == before
+
+
+# --------------------------------------------------------------------------- #
 # Settings JSON I/O — shared by scripts/slice_tiles.py and the in-Blender
 # Export + Slice dialog.
 # --------------------------------------------------------------------------- #

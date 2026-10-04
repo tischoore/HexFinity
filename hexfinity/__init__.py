@@ -40,6 +40,7 @@ def _classes():
         terrain_lock.HEXFINITY_OT_cancel_conform_lattice,
         operators.HEXFINITY_OT_bake_tile,
         operators.HEXFINITY_OT_unbake_tile,
+        operators.HEXFINITY_OT_cancel_export_progress,
         operators.HEXFINITY_OT_export_tiles,
         operators.HEXFINITY_OT_export_and_slice,
         operators.HEXFINITY_OT_slice_refresh_presets,

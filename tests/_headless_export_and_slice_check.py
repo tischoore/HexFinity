@@ -1,11 +1,12 @@
 """Headless smoke test: register the extension, generate a minimal one-tile
 map, and exercise hexfinity.export_and_slice end to end — STL export via the
-shared _export_tiles_core, then a real Bambu Studio CLI slice (if installed),
-producing paired .gcode/.gcode.3mf files, and the delete-STL-on-success
-behaviour. Also confirms hexfinity.export_tiles (the original button) still
-behaves identically after the _export_tiles_core refactor, and exercises the
-Printer/Nozzle/Filament/Quality dropdown machinery (items= callbacks,
-cascading resets, and settings-JSON persistence).
+shared _export_tiles_core/_iter_export_tiles, then a real Bambu Studio CLI
+slice (if installed), producing paired .gcode/.gcode.3mf files, and the
+delete-STL-on-success behaviour. Also confirms hexfinity.export_tiles (the
+original button) still behaves identically after the _export_tiles_core
+refactor, and exercises the Printer/Nozzle/Filament/Quality dropdown
+machinery (items= callbacks, cascading resets, and settings-JSON
+persistence).
 
 Run with:
     blender --background --python tests/_headless_export_and_slice_check.py
@@ -14,6 +15,25 @@ Exits non-zero on failure (raises) so it can gate CI / manual checks.
 If Bambu Studio isn't installed on this machine, the slicing/dropdown
 portions are skipped with a clear message — the STL-export/refactor checks
 still run.
+
+Both operators are now _ExportProgressMixin modal operators backing an
+interactive progress popup with a Cancel button (see operators.py's
+_start_progress). `bpy.app.background` is True for this whole script
+(`--background`), so _start_progress takes its synchronous fallback branch —
+there is no windowing event loop in background mode to deliver TIMER events
+to a modal operator/invoke_popup, so the chunked/popup/Cancel path is
+unreachable here by design; both operators instead drain their generator in
+one call and return {'FINISHED'}/{'CANCELLED'} immediately, same as before
+this feature existed. That's exactly what this script continues to check.
+The popup/spinner/Cancel-button UX itself (including mid-export and
+mid-slice cancellation) can only be exercised by hand in interactive
+Blender — generate a map, click Export Tiles to STL or Export + Slice, and
+confirm: the popup appears and shows live tile/job progress; the Cancel
+button, Esc, and dismissing the popup by clicking elsewhere all stop the
+operation (immediately between tiles while exporting; after the in-flight
+job finishes while slicing, per the confirmed cooperative-cancellation
+design); a cancelled export still writes a manifest covering whatever
+completed; normal completion reports the same messages as before.
 
 IMPORTANT: the persistence checks below monkeypatch
 bambu_slicer.blender_settings_path() to point at a throwaway temp file
@@ -33,6 +53,11 @@ import sys
 import tempfile
 
 import bpy
+
+assert bpy.app.background, (
+    "this script must run via `blender --background ...` — it relies on "
+    "_ExportProgressMixin._start_progress's bpy.app.background fallback to "
+    "drain export/slice synchronously instead of starting a popup/timer")
 
 try:
     bpy.ops.preferences.addon_disable(module="bl_ext.user_default.hexfinity")
