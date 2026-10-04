@@ -2164,11 +2164,14 @@ class HEXFINITY_OT_export_and_slice(bpy.types.Operator):
     bl_idname = "hexfinity.export_and_slice"
     bl_label = "Export + Slice"
     bl_description = ("Export every tile to STL (same as Export Tiles to "
-                      "STL), then slice each one to G-code with a locally "
-                      "installed Bambu Studio — one click instead of "
-                      "exporting and running the standalone slicing script "
-                      "separately. Slice settings are remembered on the "
-                      "scene")
+                      "STL), then slice to G-code with a locally installed "
+                      "Bambu Studio — one click instead of exporting and "
+                      "running the standalone slicing script separately. A "
+                      "hex with finalized flora slices its tile and every "
+                      "one of its trees together onto one auto-arranged "
+                      "plate/G-code, right next to each other, rather than "
+                      "each getting its own; a flora-less tile is unaffected. "
+                      "Slice settings are remembered on the scene")
     bl_options = {'REGISTER'}
 
     directory: bpy.props.StringProperty(name="Directory", subtype='DIR_PATH')
@@ -2300,11 +2303,10 @@ class HEXFINITY_OT_export_and_slice(bpy.types.Operator):
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
 
-        stl_count = sum(1 for f in os.listdir(out_dir)
-                        if f.lower().endswith(".stl"))
+        job_count = len(bambu_slicer.slice_jobs(out_dir))
         results = []
         wm = context.window_manager
-        wm.progress_begin(0, max(stl_count, 1))
+        wm.progress_begin(0, max(job_count, 1))
         sliced_so_far = 0
 
         def _log(msg):
@@ -2323,12 +2325,13 @@ class HEXFINITY_OT_export_and_slice(bpy.types.Operator):
             wm.progress_end()
 
         if slice_props.delete_stls_after_slicing:
-            for stl_path, success, _msg in results:
+            for stl_paths, success, _msg in results:
                 if success:
-                    try:
-                        os.remove(stl_path)
-                    except OSError:
-                        pass
+                    for stl_path in stl_paths:
+                        try:
+                            os.remove(stl_path)
+                        except OSError:
+                            pass
 
         level = {'INFO'} if fail == 0 else {'WARNING'}
         self.report(

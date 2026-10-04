@@ -53,6 +53,121 @@ def test_read_manifest_roundtrip(tmp_path):
     assert bambu_slicer.read_manifest(tmp_path) == rows
 
 
+def test_read_flora_manifest_missing_returns_empty(tmp_path):
+    assert bambu_slicer.read_flora_manifest(tmp_path) == []
+
+
+def test_read_flora_manifest_roundtrip(tmp_path):
+    rows = [{"q": 0, "r": 0, "index": 1, "file": "hex_q00_r00_tree01.stl"}]
+    (tmp_path / "flora_manifest.json").write_text(json.dumps(rows), encoding="utf-8")
+    assert bambu_slicer.read_flora_manifest(tmp_path) == rows
+
+
+# --------------------------------------------------------------------------- #
+# slice_jobs: grouping a folder's STLs into plates/jobs
+# --------------------------------------------------------------------------- #
+
+def _touch_stls(folder, names):
+    for name in names:
+        (folder / name).write_bytes(b"solid s\nendsolid\n")
+
+
+def test_slice_jobs_no_manifest_is_one_job_per_file(tmp_path):
+    _touch_stls(tmp_path, ["a.stl", "b.stl"])
+    jobs = bambu_slicer.slice_jobs(tmp_path)
+    assert [(j.out_stem, j.count, [p.name for p in j.stl_paths]) for j in jobs] == [
+        ("a", 1, ["a.stl"]),
+        ("b", 1, ["b.stl"]),
+    ]
+
+
+def test_slice_jobs_dedup_counts_flora_less_tiles_unchanged(tmp_path):
+    _touch_stls(tmp_path, ["hex_q00_r00.stl"])
+    manifest = [
+        {"q": 0, "r": 0, "file": "hex_q00_r00.stl", "custom": False},
+        {"q": 1, "r": 0, "file": "hex_q00_r00.stl", "custom": False},
+        {"q": 2, "r": 0, "file": "hex_q00_r00.stl", "custom": False},
+    ]
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    jobs = bambu_slicer.slice_jobs(tmp_path)
+    assert len(jobs) == 1
+    assert jobs[0].out_stem == "hex_q00_r00"
+    assert jobs[0].count == 3
+    assert [p.name for p in jobs[0].stl_paths] == ["hex_q00_r00.stl"]
+
+
+def test_slice_jobs_groups_flora_onto_tiles_own_plate(tmp_path):
+    _touch_stls(tmp_path, [
+        "hex_q00_r00.stl", "hex_q00_r00_tree01.stl", "hex_q00_r00_tree02.stl",
+    ])
+    manifest = [{"q": 0, "r": 0, "file": "hex_q00_r00.stl", "custom": True}]
+    flora = [
+        {"q": 0, "r": 0, "index": 2, "file": "hex_q00_r00_tree02.stl"},
+        {"q": 0, "r": 0, "index": 1, "file": "hex_q00_r00_tree01.stl"},
+    ]
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (tmp_path / "flora_manifest.json").write_text(json.dumps(flora), encoding="utf-8")
+
+    jobs = bambu_slicer.slice_jobs(tmp_path)
+    assert len(jobs) == 1
+    job = jobs[0]
+    assert job.out_stem == "hex_q00_r00"
+    assert job.count == 1
+    # Tile first, then trees in index order — never a flora file standalone.
+    assert [p.name for p in job.stl_paths] == [
+        "hex_q00_r00.stl", "hex_q00_r00_tree01.stl", "hex_q00_r00_tree02.stl",
+    ]
+
+
+def test_slice_jobs_shared_tile_file_splits_between_flora_and_plain(tmp_path):
+    # (0,0) and (1,0) dedup to the same flat tile STL; only (0,0) has a tree.
+    # (0,0) is also the position that happened to export/name that shared
+    # file, so its own bare stem ("hex_q00_r00") collides with the flora
+    # job's position-based stem — a realistic, not just contrived, case.
+    _touch_stls(tmp_path, ["hex_q00_r00.stl", "hex_q00_r00_tree01.stl"])
+    manifest = [
+        {"q": 0, "r": 0, "file": "hex_q00_r00.stl", "custom": False},
+        {"q": 1, "r": 0, "file": "hex_q00_r00.stl", "custom": False},
+    ]
+    flora = [{"q": 0, "r": 0, "index": 1, "file": "hex_q00_r00_tree01.stl"}]
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (tmp_path / "flora_manifest.json").write_text(json.dumps(flora), encoding="utf-8")
+
+    jobs = bambu_slicer.slice_jobs(tmp_path)
+    assert len(jobs) == 2
+    # Every job gets its own, non-colliding out_stem (no two jobs would ever
+    # write the same output filename).
+    stems = [j.out_stem for j in jobs]
+    assert len(set(stems)) == len(stems)
+
+    combined = next(j for j in jobs if len(j.stl_paths) == 2)
+    assert combined.out_stem == "hex_q00_r00"
+    assert [p.name for p in combined.stl_paths] == [
+        "hex_q00_r00.stl", "hex_q00_r00_tree01.stl"]
+    assert combined.count == 1
+
+    # A second, independent job must still print the bare tile once more
+    # for (1,0) — the flora job does not absorb that copy — disambiguated
+    # from the combined job's stem.
+    bare = next(j for j in jobs if len(j.stl_paths) == 1)
+    assert bare.stl_paths == [tmp_path / "hex_q00_r00.stl"]
+    assert bare.count == 1
+    assert bare.out_stem != combined.out_stem
+
+
+def test_slice_jobs_flora_file_never_stands_alone(tmp_path):
+    # A flora STL with no manifest tile row for its position still only ever
+    # appears inside its own combined job, never as its own standalone job.
+    _touch_stls(tmp_path, ["hex_q00_r00_tree01.stl"])
+    flora = [{"q": 0, "r": 0, "index": 1, "file": "hex_q00_r00_tree01.stl"}]
+    (tmp_path / "flora_manifest.json").write_text(json.dumps(flora), encoding="utf-8")
+
+    jobs = bambu_slicer.slice_jobs(tmp_path)
+    assert len(jobs) == 1
+    assert jobs[0].out_stem == "hex_q00_r00"
+    assert [p.name for p in jobs[0].stl_paths] == ["hex_q00_r00_tree01.stl"]
+
+
 # --------------------------------------------------------------------------- #
 # Output naming
 # --------------------------------------------------------------------------- #
@@ -163,6 +278,27 @@ def test_write_full_configs_adaptive_layer_height_off(tmp_path):
 
     process = json.loads(Path(p_json).read_text(encoding="utf-8"))
     assert process["adaptive_layer_height"] == "0"
+
+
+def test_write_full_configs_forces_supports_on(tmp_path):
+    # The preset itself says supports are off; the override must win anyway —
+    # HexFinity always slices every object (tile and flora alike) with
+    # supports on, with no opt-out.
+    _write_profile(tmp_path, "machine", "m", {"nozzle_diameter": ["0.4"]})
+    _write_profile(tmp_path, "process", "p", {
+        "sparse_infill_density": "15%", "sparse_infill_pattern": "grid",
+        "enable_support": "0"})
+    _write_profile(tmp_path, "filament", "f", {"filament_type": ["PLA"]})
+    index = bambu_slicer.build_profile_index(tmp_path)
+
+    out = tmp_path / "out"
+    out.mkdir()
+    _m_json, p_json, _f_json = bambu_slicer.write_full_configs(
+        out, index, "m", "p", "f", density=7, pattern="honeycomb",
+        adaptive_layer_height=False)
+
+    process = json.loads(Path(p_json).read_text(encoding="utf-8"))
+    assert process["enable_support"] == "1"
 
 
 # --------------------------------------------------------------------------- #
@@ -380,6 +516,14 @@ def test_build_slice_command_shape():
     assert cmd[-1] == "tile.stl"
 
 
+def test_build_slice_command_multiple_stls_all_appended(tmp_path):
+    cmd = bambu_slicer.build_slice_command(
+        "bambu-studio", ["tile.stl", "tree01.stl", "tree02.stl"],
+        "m.json", "p.json", "f.json", "/out", "hex_q00_r00.1.gcode.3mf")
+    assert cmd[-3:] == ["tile.stl", "tree01.stl", "tree02.stl"]
+    assert "--arrange" in cmd and cmd[cmd.index("--arrange") + 1] == "1"
+
+
 # --------------------------------------------------------------------------- #
 # slice_folder: results= per-tile outcome list
 # --------------------------------------------------------------------------- #
@@ -389,10 +533,10 @@ def test_slice_folder_results_list_records_success_and_failure(tmp_path, monkeyp
     (tmp_path / "ok.stl").write_bytes(b"solid ok\nendsolid\n")
     (tmp_path / "bad.stl").write_bytes(b"solid bad\nendsolid\n")
 
-    def fake_slice_one(exe, stl_path, machine_json, process_json,
+    def fake_slice_one(exe, stl_paths, machine_json, process_json,
                        filament_json, outdir, out_3mf_name):
         out_path = Path(outdir) / out_3mf_name
-        if Path(stl_path).stem == "bad":
+        if Path(stl_paths[0]).stem == "bad":
             raise RuntimeError("boom")
         with zipfile.ZipFile(out_path, "w") as zf:
             zf.writestr("Metadata/plate_1.gcode", "G1\n")
@@ -407,7 +551,7 @@ def test_slice_folder_results_list_records_success_and_failure(tmp_path, monkeyp
         15, "honeycomb", False, log=lambda msg: None, results=results,
     )
     assert (ok, fail) == (1, 1)
-    outcomes = {Path(path).stem: success for path, success, _msg in results}
+    outcomes = {Path(paths[0]).stem: success for paths, success, _msg in results}
     assert outcomes == {"ok": True, "bad": False}
 
 

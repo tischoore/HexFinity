@@ -26,6 +26,19 @@ to be printed several times. The count is derived from the export's
 ``manifest.json`` (number of rows referencing each ``file``). It is written into
 the output name immediately before the extension, e.g. ``hex_q00_r00.4.gcode``
 means "print four of these".
+
+Flora shares a plate with its own hex
+--------------------------------------
+A hex position with one or more finalized planted trees (``flora_manifest.json``)
+is *not* sliced independently per STL: :func:`slice_jobs` groups that
+position's tile STL with every one of its tree STLs into one job, passed to
+the CLI together so ``--arrange 1`` auto-arranges them onto a single shared
+plate/G-code, printed once. A flora-less tile keeps the print-count behaviour
+above unchanged. Object-to-object spacing during that auto-arrange is not
+something this module (or the CLI) can set — it is Bambu Studio's own saved
+"Auto-Arrange" spacing preference (``arrange.min_object_distance_fff`` in the
+user's ``BambuStudio.conf``), which this module deliberately never touches
+(see ``docs/slicing.md``).
 """
 
 from __future__ import annotations
@@ -353,6 +366,22 @@ def read_manifest(folder):
     return data if isinstance(data, list) else []
 
 
+def read_flora_manifest(folder):
+    """Load ``flora_manifest.json`` rows from an export folder (``[]`` if
+    absent — most exports have no flora at all, see
+    ``operators._export_tiles_core``, which only writes this file when at
+    least one tree was finalized)."""
+    path = Path(folder) / "flora_manifest.json"
+    if not path.is_file():
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    return data if isinstance(data, list) else []
+
+
 def tile_counts(rows):
     """``{stl_filename: copies}`` — how many of each unique STL to print.
 
@@ -371,6 +400,117 @@ def tile_counts(rows):
 def count_for(counts, stl_filename):
     """Print quantity for an STL, defaulting to 1 when not in the manifest."""
     return counts.get(stl_filename, 1)
+
+
+# --------------------------------------------------------------------------- #
+# Slice job planning — grouping STLs onto one plate/G-code per job
+# --------------------------------------------------------------------------- #
+
+#: One CLI invocation / one output plate: every file in ``stl_paths`` is
+#: passed to the same ``--arrange 1`` call, so Bambu Studio auto-arranges
+#: them together onto a single G-code. ``out_stem`` names the resulting
+#: ``<out_stem>.<count>.gcode``; ``count`` is the print quantity (see
+#: :func:`gcode_name`).
+_SliceJob = collections.namedtuple("_SliceJob", "stl_paths out_stem count")
+
+
+def slice_jobs(folder):
+    """Group an export folder's STLs into slice jobs (one job = one plate).
+
+    A hex position (``q``, ``r``) that has one or more finalized flora
+    placements (``flora_manifest.json``) gets its own job: its tile STL plus
+    every one of its flora STLs, arranged together onto one plate so the
+    trees print right next to their hex rather than on a separate plate —
+    that's the whole point of grouping rather than slicing every ``*.stl``
+    independently. The job is printed once (``count=1``) and named after the
+    position itself (``hex_qNN_rNN``), *not* the tile STL's own filename,
+    because that file may be a dedup-shared one (see ``tile_export.py``'s
+    dedup contract) also used verbatim by other, flora-less positions.
+
+    Every remaining tile STL keeps the original dedup-by-file behaviour:
+    every manifest row whose *own* position carries no flora contributes to
+    that file's print count, and the file is sliced once as its own
+    single-STL job — unchanged from before flora grouping existed. A flora
+    STL is never itself considered for a standalone job; it only ever
+    appears inside its position's combined job.
+
+    Any ``*.stl`` present in ``folder`` but absent from ``manifest.json``
+    (e.g. no manifest at all — a bare folder of STLs) still gets its own
+    job, count defaulting to 1, matching :func:`slice_folder`'s pre-grouping
+    behaviour for that case.
+
+    A plain, dedup-shared tile file's own bare name (``hex_qNN_rNN.stl``,
+    with no hash suffix — see ``tile_export.tile_filename``) can coincide
+    with a *different* flora position's own combined-job name (nothing ties
+    "custom" to "has flora": a flora position's tile is very often an
+    otherwise-plain, unmodified tile). When a standalone job's natural stem
+    is already taken by an earlier job, it's disambiguated with a
+    ``_2``/``_3``/... suffix rather than silently colliding on the same
+    output filename.
+
+    Returns a list of :data:`_SliceJob`, sorted by ``out_stem`` for a stable,
+    diffable slicing order.
+    """
+    folder = Path(folder)
+    all_stls = sorted(p.name for p in folder.glob("*.stl"))
+    manifest = read_manifest(folder)
+    flora_rows = read_flora_manifest(folder)
+
+    flora_by_pos = collections.defaultdict(list)
+    flora_files = set()
+    for row in flora_rows:
+        flora_by_pos[(row["q"], row["r"])].append(row)
+        flora_files.add(row["file"])
+
+    tile_file_by_pos = {}
+    manifest_files = set()
+    for row in manifest:
+        tile_file_by_pos[(row["q"], row["r"])] = row["file"]
+        manifest_files.add(row["file"])
+
+    used_stems = set()
+
+    def _unique_stem(base):
+        stem = base
+        n = 2
+        while stem in used_stems:
+            stem = f"{base}_{n}"
+            n += 1
+        used_stems.add(stem)
+        return stem
+
+    jobs = []
+
+    for (q, r) in sorted(flora_by_pos):
+        flora = flora_by_pos[(q, r)]
+        names = []
+        tile_file = tile_file_by_pos.get((q, r))
+        if tile_file:
+            names.append(tile_file)
+        names.extend(f["file"] for f in sorted(flora, key=lambda item: item["index"]))
+        paths = [folder / name for name in names if (folder / name).is_file()]
+        if paths:
+            stem = _unique_stem(f"hex_q{q:02d}_r{r:02d}")
+            jobs.append(_SliceJob(paths, stem, 1))
+
+    # Plain print count per tile file, counting only rows whose own position
+    # has no flora (a shared/deduped file's flora-attached positions are
+    # already covered by their own combined job above).
+    counts = collections.Counter()
+    for row in manifest:
+        if (row["q"], row["r"]) not in flora_by_pos:
+            counts[row["file"]] += 1
+
+    for name in all_stls:
+        if name in flora_files:
+            continue  # only ever sliced as part of its position's combined job
+        if name in manifest_files and counts.get(name, 0) == 0:
+            continue  # every reference to this file was flora-attached
+        stem = _unique_stem(Path(name).stem)
+        jobs.append(_SliceJob([folder / name], stem, counts.get(name, 1)))
+
+    jobs.sort(key=lambda job: job.out_stem)
+    return jobs
 
 
 # --------------------------------------------------------------------------- #
@@ -423,6 +563,13 @@ def write_full_configs(tmpdir, index, machine_name, process_name,
     ``tmpdir``. The overrides all land on the *process* config:
     ``sparse_infill_density = "<density>%"``, ``sparse_infill_pattern``, and
     ``adaptive_layer_height`` (Bambu's bool config convention: ``"1"``/``"0"``).
+    ``enable_support`` is also unconditionally forced to ``"1"`` — every object
+    HexFinity slices (the hex tile and any flora piece alike) always gets
+    supports, regardless of what the chosen quality preset's own
+    ``enable_support``/``support_type`` default is (every shipped Bambu process
+    preset inherits ``enable_support = "0"`` from ``fdm_process_common.json``,
+    so without this override supports would be off by default). Not a settings
+    field — there is no opt-out, by design.
     """
     tmpdir = Path(tmpdir)
 
@@ -433,6 +580,7 @@ def write_full_configs(tmpdir, index, machine_name, process_name,
     process["sparse_infill_density"] = f"{int(density)}%"
     process["sparse_infill_pattern"] = pattern
     process["adaptive_layer_height"] = "1" if adaptive_layer_height else "0"
+    process["enable_support"] = "1"
 
     machine_json = tmpdir / "machine.json"
     process_json = tmpdir / "process.json"
@@ -447,9 +595,20 @@ def write_full_configs(tmpdir, index, machine_name, process_name,
     return str(machine_json), str(process_json), str(filament_json)
 
 
-def build_slice_command(exe, stl_path, machine_json, process_json,
+def build_slice_command(exe, stl_paths, machine_json, process_json,
                         filament_json, outdir, out_3mf_name):
-    """Assemble the Bambu Studio CLI argv for slicing one STL."""
+    """Assemble the Bambu Studio CLI argv for slicing one job.
+
+    ``stl_paths`` is one path or an iterable of several — every path given
+    lands on the same ``--arrange 1`` call, so a job's STLs (e.g. a tile plus
+    its flora) auto-arrange onto one shared plate/G-code rather than each
+    getting its own. Object-to-object spacing during that arrange is
+    whatever Bambu Studio's own saved "Auto-Arrange" spacing preference is
+    (not something the CLI/a process config can override — see
+    ``docs/slicing.md``).
+    """
+    if isinstance(stl_paths, (str, Path)):
+        stl_paths = [stl_paths]
     return [
         exe,
         "--load-settings", f"{machine_json};{process_json}",
@@ -458,19 +617,22 @@ def build_slice_command(exe, stl_path, machine_json, process_json,
         "--slice", "0",
         "--outputdir", str(outdir),
         "--export-3mf", out_3mf_name,
-        str(stl_path),
+        *(str(p) for p in stl_paths),
     ]
 
 
-def slice_one(exe, stl_path, machine_json, process_json, filament_json,
+def slice_one(exe, stl_paths, machine_json, process_json, filament_json,
               outdir, out_3mf_name):
-    """Slice one STL; return the path to the produced ``.gcode.3mf``.
+    """Slice one job (one or more STLs onto one plate); return the path to
+    the produced ``.gcode.3mf``.
 
     Raises ``RuntimeError`` on a non-zero exit or a missing output file, with
     the captured CLI output attached for diagnosis.
     """
+    if isinstance(stl_paths, (str, Path)):
+        stl_paths = [stl_paths]
     cmd = build_slice_command(
-        exe, stl_path, machine_json, process_json, filament_json,
+        exe, stl_paths, machine_json, process_json, filament_json,
         outdir, out_3mf_name,
     )
     proc = subprocess.run(
@@ -478,9 +640,10 @@ def slice_one(exe, stl_path, machine_json, process_json, filament_json,
     )
     out_path = Path(outdir) / out_3mf_name
     if proc.returncode != 0 or not out_path.is_file():
+        names = ", ".join(Path(p).name for p in stl_paths)
         raise RuntimeError(
             f"Bambu Studio CLI failed (exit {proc.returncode}) for "
-            f"{Path(stl_path).name}.\n--- stdout ---\n{proc.stdout}\n"
+            f"{names}.\n--- stdout ---\n{proc.stdout}\n"
             f"--- stderr ---\n{proc.stderr}"
         )
     return str(out_path)
@@ -488,25 +651,29 @@ def slice_one(exe, stl_path, machine_json, process_json, filament_json,
 
 def slice_folder(exe, index, folder, machine_name, process_name, filament_name,
                  density, pattern, adaptive_layer_height, log=print, results=None):
-    """Slice every ``*.stl`` in ``folder``; write paired ``.gcode`` + ``.3mf``.
+    """Slice an export folder; write paired ``.gcode`` + ``.3mf`` per job.
 
-    Writes the flattened configs to a temp dir, derives per-tile counts from the
-    manifest, and for each STL produces ``<stem>.<count>.gcode.3mf`` and the
-    extracted ``<stem>.<count>.gcode``. ``log`` receives human-readable progress
-    lines. When ``results`` is given (a list), one ``(stl_path, ok, message)``
-    tuple is appended per tile — ``ok`` is a bool, ``message`` is the extracted
-    G-code path on success or the failure text on error; a caller (e.g. the
+    Jobs come from :func:`slice_jobs`: a hex position with finalized flora
+    slices its tile and every one of its trees together onto one plate (one
+    combined G-code); every other tile STL keeps the original
+    dedup-by-file/print-count behaviour, sliced on its own. Writes the
+    flattened configs to a temp dir once, then for each job produces
+    ``<out_stem>.<count>.gcode.3mf`` and the extracted
+    ``<out_stem>.<count>.gcode``. ``log`` receives human-readable progress
+    lines. When ``results`` is given (a list), one ``(stl_paths, ok,
+    message)`` tuple is appended per job — ``stl_paths`` is the job's full
+    list of STL paths, ``ok`` is a bool, ``message`` is the extracted G-code
+    path on success or the failure text on error; a caller (e.g. the
     in-Blender Export + Slice operator) uses this to know exactly which STLs
-    actually turned into G-code, e.g. before deleting the intermediate STL.
-    Returns ``(ok_count, fail_count)``.
+    actually turned into G-code, e.g. before deleting the intermediate STLs.
+    Returns ``(ok_count, fail_count)`` — counts of *jobs*, not STL files.
     """
     folder = Path(folder)
-    stls = sorted(folder.glob("*.stl"))
-    if not stls:
+    jobs = slice_jobs(folder)
+    if not jobs:
         log(f"No .stl files found in {folder}")
         return (0, 0)
 
-    counts = tile_counts(read_manifest(folder))
     ok = fail = 0
 
     with tempfile.TemporaryDirectory(prefix="hexfinity_slice_") as tmp:
@@ -515,26 +682,26 @@ def slice_folder(exe, index, folder, machine_name, process_name, filament_name,
             density, pattern, adaptive_layer_height,
         )
         adaptive_note = ", adaptive layers" if adaptive_layer_height else ""
-        log(f"Slicing {len(stls)} tile(s) with {machine_name} / "
+        log(f"Slicing {len(jobs)} plate(s) with {machine_name} / "
             f"{process_name} / infill {int(density)}% {pattern}{adaptive_note}")
-        for stl in stls:
-            count = count_for(counts, stl.name)
-            out_3mf = threemf_name(stl.stem, count)
+        for job in jobs:
+            out_3mf = threemf_name(job.out_stem, job.count)
+            names = ", ".join(p.name for p in job.stl_paths)
             try:
-                slice_one(exe, stl, machine_json, process_json, filament_json,
-                          folder, out_3mf)
+                slice_one(exe, job.stl_paths, machine_json, process_json,
+                          filament_json, folder, out_3mf)
                 gcode_path = extract_plate_gcode(
-                    folder / out_3mf, folder / gcode_name(stl.stem, count))
+                    folder / out_3mf, folder / gcode_name(job.out_stem, job.count))
                 ok += 1
-                log(f"  OK  {stl.name}  ->  {gcode_name(stl.stem, count)} "
-                    f"(x{count})")
+                log(f"  OK  {names}  ->  {gcode_name(job.out_stem, job.count)} "
+                    f"(x{job.count})")
                 if results is not None:
-                    results.append((stl, True, str(gcode_path)))
+                    results.append((job.stl_paths, True, str(gcode_path)))
             except (RuntimeError, KeyError, OSError) as exc:
                 fail += 1
-                log(f"  FAIL {stl.name}: {exc}")
+                log(f"  FAIL {names}: {exc}")
                 if results is not None:
-                    results.append((stl, False, str(exc)))
+                    results.append((job.stl_paths, False, str(exc)))
 
     log(f"Done. {ok} sliced, {fail} failed.")
     return (ok, fail)

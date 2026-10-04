@@ -77,15 +77,48 @@ python scripts/slice_tiles.py [export_folder] [--settings path.json]
    chosen Printer / Nozzle / Filament / Quality against them.
 4. Reads `manifest.json` in the export folder to learn how many of each tile to
    print (identical tiles are deduplicated to one STL — see
-   [docs/export.md](export.md)).
-5. For every `*.stl` in the folder, slices it and writes **two** files next to
-   the STL:
+   [docs/export.md](export.md)), and `flora_manifest.json` (if present) to learn
+   which hex positions have finalized planted trees.
+5. Groups the folder's STLs into **jobs** (`bambu_slicer.slice_jobs`) — one job
+   per plate/G-code:
+   - A hex position with one or more finalized trees gets its own job: its tile
+     STL plus every one of its tree STLs, sliced **together** in one CLI call so
+     `--arrange 1` auto-arranges them onto one shared plate — the trees print
+     right next to their own hex, not on a separate plate/G-code. Printed once
+     (`count = 1`), named after the position (`hex_q00_r00`, disambiguated with
+     a `_2`/`_3`/... suffix in the rare case that a plain, dedup-shared tile
+     file's own bare name collides with a different flora position's name).
+   - Every other tile STL keeps the original one-job-per-file behaviour,
+     printed `<count>` times (from how many manifest rows reference it —
+     identical, flora-less tiles share one file and one job).
+6. For each job, writes **two** files next to the STL(s):
    - `hex_q00_r00.<count>.gcode.3mf` — the Bambu project (printers ingest this
      natively),
    - `hex_q00_r00.<count>.gcode` — the plain G-code extracted from it.
 
-   `<count>` is the print quantity. STLs that are not in the manifest default to
-   a count of `1`.
+   `<count>` is the print quantity. An STL not referenced by the manifest at
+   all defaults to a count of `1`, sliced on its own.
+
+**Object spacing during that auto-arrange** (e.g. a tree next to its hex) is
+not something this script, `bambu_slicer.py`, or the CLI's config files
+control — it is Bambu Studio's own saved "Auto-Arrange" spacing preference
+(the small arrow/gear next to the Auto-Arrange toolbar button in the GUI,
+persisted as `arrange.min_object_distance_fff` in your
+`%APPDATA%\BambuStudio\BambuStudio.conf`). Set it once in the Bambu Studio
+GUI (e.g. to `10`mm) and every future `--arrange 1` — from this script, the
+in-Blender dialog, or the GUI itself — reuses that same saved value. HexFinity
+deliberately never reads or writes that file itself: it's a large,
+checksum-protected file holding many unrelated Bambu Studio preferences, and
+getting the checksum format wrong (or overwriting an unrelated user setting)
+risks corrupting preferences well beyond this one value.
+
+**Verified empirically** (direct CLI test outside Blender, comparing
+`--arrange 1` vs `--arrange 10` against the same two STLs): the numeric
+argument has **no effect** on the resulting layout — both produced
+byte-identical object transforms. The only thing that changed the gap was
+the value already saved in `BambuStudio.conf`. Do not try passing a
+different number here expecting a different mm spacing; it is a no-op on
+this CLI build.
 
 ## Parameters (the settings JSON)
 
@@ -171,24 +204,42 @@ script bridges three gaps:
    onto the process config, writes the three JSON files to a temp dir, then
    calls the CLI.
 
-The resulting command per tile is:
+Supports are always forced on: `write_full_configs` unconditionally sets
+`enable_support = "1"` on the flattened process config, regardless of what the
+chosen quality preset's own default is (every shipped Bambu process preset
+inherits `enable_support = "0"` from `fdm_process_common.json`). This is not a
+settings-file key — there is no opt-out — and it applies to every STL a
+`slice_folder` run touches, tile and flora alike, since they all share the one
+flattened process config.
+
+The resulting command per job (a flora-less tile passes just the one STL; a
+flora-attached hex passes its tile *and* every one of its tree STLs together)
+is:
 
 ```
 bambu-studio --load-settings "machine.json;process.json" \
              --load-filaments "filament.json" \
              --arrange 1 --slice 0 \
              --outputdir <export_folder> --export-3mf <name>.gcode.3mf \
-             <tile>.stl
+             <tile>.stl [<tree01>.stl <tree02>.stl ...]
 ```
 
 ## Verifying a run
 
-- Each STL should produce a paired `.gcode` and `.gcode.3mf` with the same
-  `.<count>.` infix; counts should match the manifest's tile grouping.
+- Each job should produce a paired `.gcode` and `.gcode.3mf` with the same
+  `.<count>.` infix; a flora-less tile's count should match the manifest's
+  tile grouping, and a flora-attached hex's job is always `.1.` (printed once,
+  tile and trees together).
 - Open a produced `.gcode` and check the trailing config block contains your
-  chosen `sparse_infill_density = N%`, `sparse_infill_pattern = <pattern>`, and
-  (if enabled) `adaptive_layer_height = 1` — that proves the flattened-config
-  overrides reached the slicer.
+  chosen `sparse_infill_density = N%`, `sparse_infill_pattern = <pattern>`,
+  (if enabled) `adaptive_layer_height = 1`, and `enable_support = 1` (always,
+  unconditionally) — that proves the flattened-config overrides reached the
+  slicer.
+- For a flora-attached hex, open `Metadata/model_settings.config` (or
+  `3D/3dmodel.model`) inside the `.gcode.3mf` and confirm both the tile and
+  its tree(s) are present as separate `<object>`/`<item>` entries with
+  distinct `transform` positions — that proves they arranged onto one shared
+  plate rather than one overwriting the other.
 
 ## Troubleshooting
 
