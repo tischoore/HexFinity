@@ -583,7 +583,7 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
         # the surface's ParamSpec so the registry stays the single source of
         # truth (no per-surface UI code).
         from . import procedural_surfaces as ps
-        from . import scatter
+        from . import scatter, flagstones
         slots = ("param0", "param1", "param2", "param3")
         col = box.column(align=True)
         vals = {}
@@ -593,20 +593,37 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
             col.prop(reg, slots[i], text=spec.label)
             vals[spec.key] = getattr(reg, slots[i])
 
-        # Vertex-budget guidance: density x size over a big region can yield a
-        # very heavy joined mesh, so estimate it up front.
+        # Vertex-budget guidance: element count x per-element vertex count
+        # over a big region can yield a very heavy joined mesh, so estimate
+        # it up front. Each scatter surface has its own cheap closed-form
+        # count estimator and fixed per-element vertex count; dispatched
+        # explicitly here (only two scatter surfaces exist, so a dedicated
+        # registry field would be premature) rather than generically.
         poly = [(p.x, p.y) for p in reg.points] or ps.hex_polygon(map_props.diameter_mm)
-        count = ps.estimate_boulder_count(
-            poly,
-            min_size_mm=vals.get("min_size_mm", 0.0),
-            max_size_mm=vals.get("max_size_mm", 0.0),
-            density=vals.get("density", 0.0))
-        verts_per = len(ps._icosphere(scatter.SUBDIV)[0])
+        if reg.surface_type == 'FLAGSTONE':
+            count = ps.estimate_flagstone_count(
+                poly,
+                min_size_mm=vals.get("min_size_mm", 0.0),
+                max_size_mm=vals.get("max_size_mm", 0.0),
+                gap_mm=vals.get("gap_mm", 0.0))
+            verts_per = 2 * flagstones.AVG_OUTLINE_VERTS_ESTIMATE
+            label = "flagstones"
+            merge_idname, merge_text = ("hexfinity.merge_flagstones",
+                                        "Merge Flagstones into Tile")
+        else:
+            count = ps.estimate_boulder_count(
+                poly,
+                min_size_mm=vals.get("min_size_mm", 0.0),
+                max_size_mm=vals.get("max_size_mm", 0.0),
+                density=vals.get("density", 0.0))
+            verts_per = len(ps._icosphere(scatter.SUBDIV)[0])
+            label = "boulders"
+            merge_idname, merge_text = ("hexfinity.merge_scatter",
+                                        "Merge Boulders into Tile")
         total = count * verts_per
-        msg = f"~{count} boulders (~{total:,} verts)"
+        msg = f"~{count} {label} (~{total:,} verts)"
         box.label(text=msg,
                   icon='ERROR' if total > 200_000 else 'INFO')
 
         box.prop(reg, "scatter_merge")
-        box.operator("hexfinity.merge_scatter",
-                     text="Merge Boulders into Tile", icon='MOD_BOOLEAN')
+        box.operator(merge_idname, text=merge_text, icon='MOD_BOOLEAN')

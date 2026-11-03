@@ -30,6 +30,11 @@ it lets the surfaces stay pure functions of (x, y) with no geometry dependency
 
 import math
 
+try:
+    from . import segment_geometry as sg
+except ImportError:
+    import segment_geometry as sg
+
 # Real-world man height (mm); model scale = man_height_mm / REAL_MAN_HEIGHT_MM.
 REAL_MAN_HEIGHT_MM = 1800.0
 
@@ -411,6 +416,22 @@ def polygon_area(poly):
     return abs(acc) * 0.5
 
 
+def _signed_area(poly):
+    """Signed shoelace area -- positive for CCW winding, negative for CW.
+    Used by the flagstone tessellation to normalise an arbitrary (hand-drawn
+    or hex) region polygon to CCW before treating its edges as inward-facing
+    half-plane constraints."""
+    n = len(poly)
+    if n < 3:
+        return 0.0
+    acc = 0.0
+    j = n - 1
+    for i in range(n):
+        acc += (poly[j][0] + poly[i][0]) * (poly[j][1] - poly[i][1])
+        j = i
+    return -acc * 0.5
+
+
 def estimate_boulder_count(polygon, *, min_size_mm, max_size_mm, density):
     """Rough expected boulder count for a scatter region — cheap enough for a
     live panel warning. Mirrors `scatter_boulders`' grid: cells ≈ area / pitch²,
@@ -450,6 +471,552 @@ def assemble_scatter_mesh(placements, z_of, *, sink_mm=1.0, roughness=0.35,
             ry = s * vx + c * vy
             all_verts.append((rx + x, ry + y, vz + z0))
         for f in bfaces:
+            all_faces.append(tuple(base + idx for idx in f))
+    return all_verts, all_faces
+
+
+# ---------------------------------------------------------------------------
+# Flagstone Paving — a second `scatter` surface. Where a boulder is a rough,
+# freely-tumbled rock seated flat at a single centre height, a flagstone is a
+# flat paving slab that must rest flush against the (possibly sloped) local
+# terrain, like a real paver on uneven ground. That needs a per-element TILT
+# fit, not just a height — see assemble_flagstone_mesh below.
+# ---------------------------------------------------------------------------
+def flagstone_mesh(outline_local, thickness_mm):
+    """One paving slab: a flat-topped prism built directly from
+    `outline_local` (a CCW list of `(x, y)` tile-local-relative-to-the-
+    stone's-own-centre points — its own tessellation-derived footprint, see
+    `scatter_flagstones`). The outline is duplicated as a flat BOTTOM ring
+    (z=0 — the face `assemble_flagstone_mesh` seats on the terrain) and a
+    flat TOP ring (z=+thickness_mm), closed by one side quad per edge plus a
+    bottom/top n-gon cap (reversed winding on the bottom so its outward
+    normal faces -Z). Unlike the old generated-n-gon version, vertex/face
+    count (`2*n`/`n+2`) is NOT fixed across stones — each stone's outline is
+    its own inset tessellation cell, a different shape and vertex count from
+    its neighbours by construction."""
+    n = len(outline_local)
+    bottom = [(x, y, 0.0) for (x, y) in outline_local]
+    top = [(x, y, thickness_mm) for (x, y) in outline_local]
+    verts = bottom + top
+
+    faces = [tuple(reversed(range(n))), tuple(n + i for i in range(n))]
+    for i in range(n):
+        j = (i + 1) % n
+        faces.append((i, j, n + j, n + i))
+    return verts, faces
+
+
+# ---------------------------------------------------------------------------
+# Flagstone placement: a power diagram (weighted Voronoi) tessellation of the
+# region, each cell inset along its shared edges by a jittered half of the
+# target mortar gap. A tessellation covers the whole region by construction
+# (no leftover holes, unlike a packer that can leave uncovered pockets
+# between separately-grown fronts), and because each shared edge is inset
+# independently from BOTH sides, the realized gap on that edge is the SUM of
+# two independent jittered half-gaps — which averages to `gap_mm` by
+# linearity even though any one edge may come out narrower or wider, or (once
+# an inset clamps to the cell's own size) touch at exactly 0.
+# ---------------------------------------------------------------------------
+def _intersect_halfplanes(subject, halfplanes):
+    """Clip polygon `subject` (list of `(x, y)`, CCW; may be concave) against
+    every halfplane in `halfplanes` — `(a, b, c, tag)` tuples meaning "keep
+    points with `a*x + b*y <= c`" — applied one at a time via
+    Sutherland-Hodgman. Each edge of the result is tagged: an edge inherited
+    unsplit from `subject` keeps `None`; an edge newly introduced by clipping
+    against halfplane k gets that halfplane's own `tag`. Returns `(verts,
+    edge_tags)` where `edge_tags[i]` is the tag of the edge from `verts[i]`
+    to `verts[(i+1) % n]`; returns `([], [])` once the polygon clips away to
+    nothing.
+
+    Correct for a concave `subject` against any SEQUENCE of individually
+    convex (single-constraint) halfplanes — each clip step is a standard
+    convex-window Sutherland-Hodgman clip, valid regardless of the subject's
+    own convexity. It is NOT a general polygon-offset routine: feeding a
+    polygon's OWN edges back in as `halfplanes` only reproduces an inward
+    offset of that exact polygon when the polygon is convex (every cell this
+    module builds from a convex boundary is convex; see `scatter_flagstones`
+    for the one documented exception)."""
+    verts = list(subject)
+    tags = [None] * len(verts)
+    eps = 1e-9
+    for (a, b, c, tag) in halfplanes:
+        if not verts:
+            break
+        n = len(verts)
+        new_v, new_t = [], []
+        for i in range(n):
+            cur, nxt = verts[i], verts[(i + 1) % n]
+            cur_tag = tags[i]
+            cur_val = a * cur[0] + b * cur[1]
+            nxt_val = a * nxt[0] + b * nxt[1]
+            cur_in = cur_val <= c + eps
+            nxt_in = nxt_val <= c + eps
+            if cur_in:
+                new_v.append(cur)
+                new_t.append(cur_tag)
+            if cur_in != nxt_in:
+                denom = nxt_val - cur_val
+                t = 0.5 if abs(denom) < 1e-15 else (c - cur_val) / denom
+                t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+                point = (cur[0] + t * (nxt[0] - cur[0]),
+                         cur[1] + t * (nxt[1] - cur[1]))
+                new_v.append(point)
+                new_t.append(tag if cur_in else cur_tag)
+        verts, tags = new_v, new_t
+    return verts, tags
+
+
+def _dedupe_polygon_vertices(verts, tags, min_edge_mm):
+    """Merge away a near-duplicate vertex following a VERY short edge (one
+    under `min_edge_mm`) — the artifact left behind when two different clip
+    lines (from `_intersect_halfplanes` being applied one halfplane at a
+    time) happen to cross the polygon boundary at nearly the same point.
+    Geometrically harmless on its own (the polygon's shape barely changes),
+    but a surviving sliver edge becomes a razor-thin quad in the final
+    mesh — invisible at a glance, but a real artifact a close look (or a
+    slicer) would notice. Keeps the tag of the LONGER edge that follows the
+    merge, since that's the one that actually mattered; a discarded sliver's
+    own tag is never the only record of a mortar seam (the neighbour across
+    it carries the same seam on its own, non-degenerate edge too). Caps
+    total work at one pass around the polygon regardless of how many
+    consecutive short edges it finds."""
+    n = len(verts)
+    if n <= 3:
+        return verts, tags
+    out_v, out_t = [], []
+    i = 0
+    visited = 0
+    while visited < n:
+        out_v.append(verts[i])
+        j = (i + 1) % n
+        hops = 1
+        while hops < n and math.hypot(verts[j][0] - verts[i][0],
+                                      verts[j][1] - verts[i][1]) < min_edge_mm:
+            i = j
+            j = (i + 1) % n
+            hops += 1
+            visited += 1
+        out_t.append(tags[i])
+        visited += 1
+        i = j
+    if len(out_v) < 3:
+        return [], []
+    return out_v, out_t
+
+
+# Safety cap on how many times `_power_cell` is allowed to widen its
+# neighbour search before giving up and returning its best effort — in
+# practice 1-2 widenings cover any realistic seed layout (see that
+# function's own docstring for why a fixed, un-widened search radius isn't
+# safe on its own).
+_POWER_CELL_MAX_RINGS = 8
+
+
+def _power_cell(i, seeds, boundary, grid, bucket_size, weight_span, min_edge_mm):
+    """The power-diagram cell of seed `i` (an index into `seeds`, a list of
+    `(x, y, weight)`), clipped to `boundary` (CCW). `weight = (size/2)**2`
+    per seed is what makes a bigger-weighted seed claim more area than a
+    smaller one — the power/Laguerre bisector between sites `i`/`j` is still
+    a straight line (unlike multiplicative weighting, which bends it into an
+    arc), so the result stays a polygon, found the same way as a plain
+    Voronoi cell: intersect `boundary` against the "closer to i than j"
+    halfplane of every nearby seed `j`, then `_dedupe_polygon_vertices` (with
+    `min_edge_mm`) to merge away any near-duplicate vertex the sequential
+    clipping left behind. Returns `(verts, edge_tags)` — an edge tagged
+    `None` came from `boundary` (the paved area's own rim, never inset for
+    mortar); an edge tagged `j` is the shared mortar seam with seed `j`.
+
+    `grid`/`bucket_size` are the spatial hash built once by
+    `scatter_flagstones`, keyed by `bucket_size`-sized cells. A fixed,
+    un-widened neighbour search (e.g. a single 3x3 ring) is NOT safe here:
+    random seed jitter routinely leaves a locally sparser-than-average patch
+    somewhere, and the one seed that should have clipped `i`'s cell in that
+    direction can end up just outside a fixed search radius — leaving that
+    whole side of the cell unconstrained, so it balloons out to (or toward)
+    the far side of `boundary` instead of stopping at its true, slightly
+    farther neighbour. (This was a real, reproducible bug: one oversized
+    stone, many times the area of its neighbours, floating above an
+    otherwise-correct tessellation.) So the ring radius starts small and
+    widens whenever it might still be missing something relevant: after each
+    clip, `D` is the farthest the resulting cell actually reaches from seed
+    `i`; a not-yet-considered seed at distance `d` has its power bisector at
+    signed distance (from `i`, toward it) of at least `d/2 - weight_span /
+    (2*d)` in the worst case (`weight_span` the largest possible
+    `|weight_i - weight_j|` over the whole `min/max_size_mm` range) — solving
+    for where that lower bound first reaches `D` gives the search radius
+    that's provably wide enough no unconsidered seed could still cut the
+    cell any closer — each widening jumps straight to that radius rather
+    than growing by one ring at a time, so it converges in 1-2 passes for
+    any realistic layout even when the first (cheap, small) guess was way
+    too small; `_POWER_CELL_MAX_RINGS` just bounds the pathological case."""
+    xi, yi, wi = seeds[i]
+    cx = int(math.floor(xi / bucket_size))
+    cy = int(math.floor(yi / bucket_size))
+    halfplanes = []
+    considered = set()
+    k = 1
+    cell_verts, cell_tags = list(boundary), [None] * len(boundary)
+    for _ in range(_POWER_CELL_MAX_RINGS):
+        for dy in range(-k, k + 1):
+            for dx in range(-k, k + 1):
+                for j in grid.get((cx + dx, cy + dy), ()):
+                    if j == i or j in considered:
+                        continue
+                    considered.add(j)
+                    xj, yj, wj = seeds[j]
+                    a, b = xj - xi, yj - yi
+                    if a == 0.0 and b == 0.0:
+                        continue
+                    c = 0.5 * ((xj * xj + yj * yj) - (xi * xi + yi * yi) + wi - wj)
+                    halfplanes.append((a, b, c, j))
+        cell_verts, cell_tags = _intersect_halfplanes(boundary, halfplanes)
+        if not cell_verts:
+            return cell_verts, cell_tags
+        d_max = max(math.hypot(vx - xi, vy - yi) for (vx, vy) in cell_verts)
+        covered = k * bucket_size
+        needed = d_max + math.sqrt(d_max * d_max + weight_span)
+        if needed <= covered:
+            return _dedupe_polygon_vertices(cell_verts, cell_tags, min_edge_mm)
+        # Jump straight to the ring that should cover `needed` rather than
+        # widening by one each time -- converges in one extra pass even when
+        # the first (tiny, cheap) guess was far too small.
+        k = max(k + 1, int(math.ceil(needed / bucket_size)))
+    return _dedupe_polygon_vertices(cell_verts, cell_tags, min_edge_mm)
+
+
+def _inset_cell(cell_verts, cell_tags, gap_mm, seed_i, jitter_seed):
+    """Shrink convex polygon `cell_verts` (CCW, from `_power_cell`) by
+    insetting each edge tagged with a neighbour index `j` inward by its own
+    independently-jittered half of `gap_mm` (mean `gap_mm/2`, so two
+    neighbouring cells' insets sum to `gap_mm` on average across the whole
+    tessellation); an edge tagged `None` (the paved area's own rim) is never
+    inset. `jitter_seed` keyed by the unordered `(seed_i, j)` pair so both
+    sides of one shared edge draw from the SAME hash call — this is what
+    makes the inset the two cells apply to their shared edge independent
+    draws from each side's own perspective while still letting a caller
+    reconstruct (for a test) what either side used. Degenerate/too-tight
+    insets are clamped (never negative) by `_intersect_halfplanes` itself —
+    an inset that would collapse the polygon simply clips it down toward a
+    point rather than self-intersecting."""
+    n = len(cell_verts)
+    if n < 3:
+        return cell_verts
+    halfplanes = []
+    for k in range(n):
+        ax, ay = cell_verts[k]
+        bx, by = cell_verts[(k + 1) % n]
+        dx, dy = bx - ax, by - ay
+        length = math.hypot(dx, dy)
+        if length < 1e-9:
+            continue
+        # Outward unit normal of a CCW edge: rotate the edge direction -90°.
+        nx, ny = dy / length, -dx / length
+        c = nx * ax + ny * ay
+        tag = cell_tags[k]
+        if tag is None:
+            inset = 0.0
+        else:
+            lo_i, hi_i = (seed_i, tag) if seed_i < tag else (tag, seed_i)
+            jitter = 0.1 + 1.8 * _hash01(lo_i, hi_i, jitter_seed)
+            inset = max(0.0, gap_mm * 0.5 * jitter)
+        halfplanes.append((nx, ny, c - inset, tag))
+    verts, _tags = _intersect_halfplanes(cell_verts, halfplanes)
+    return verts
+
+
+# Safety ceiling so a pathological parameter combo (near-zero stone size
+# over a huge region) can't make scatter_flagstones run away — mirrors the
+# MAX_LEVELS-style caps elsewhere in this codebase (e.g. tree_pads.py).
+_FLAGSTONE_MAX_SEEDS = 4000
+
+# Rough coverage fudge factor for estimate_flagstone_count ONLY — the real
+# tessellation covers very close to the full region (minus the comparatively
+# small mortar-joint area), unlike the old packer's much looser efficiency.
+_FLAGSTONE_COVERAGE_FACTOR = 0.95
+
+# A placement whose final (inset) cell area falls below this fraction of its
+# own seed's nominal circular area (pi * weight) is dropped as a sliver
+# rather than kept as an unusably tiny/oddly-shaped "stone" -- see
+# scatter_flagstones' own placement loop for why this matters in practice
+# (a tight/acute region-boundary corner, from a hand-drawn or flood-filled
+# region, is the common trigger).
+_FLAGSTONE_MIN_CELL_AREA_FRACTION = 0.2
+
+
+def scatter_flagstones(polygon, *, min_size_mm, max_size_mm, gap_mm, seed):
+    """Plan flagstone placements inside `polygon` (tile-local mm) as a power
+    diagram (weighted Voronoi) tessellation, each cell inset for mortar.
+    Returns a list of `(x_mm, y_mm, outline_local, pid)` tuples — `(x, y)` a
+    seed centre, `outline_local` its own inset cell's vertices (CCW) relative
+    to that centre, Z/tilt resolved later by the caller's per-corner
+    sampling. `min/max_size_mm` are DIAMETERS, used as each seed's power-
+    diagram weight so a bigger drawn size actually claims more area (not a
+    literal per-stone bound the way a packer's direct draw was — a cell's
+    final size also depends on its neighbours', same as any tessellation).
+    Deterministic from `seed` so rebuilds are stable.
+
+    Algorithm: seed the region with a hex-staggered grid (pitch = the mean of
+    min/max size) plus the centroid, each jittered in position and given its
+    own random target size/weight — the same reseed-grid construction the
+    earlier packer used only as a fallback, now the sole placement
+    mechanism, since a full tessellation needs no "growth front" at all.
+    Each seed's cell is `_power_cell` (clipped to `polygon`, normalised to
+    CCW winding first so the inset step's outward-normal math is valid
+    regardless of how the caller wound it) then `_inset_cell` (the mortar
+    gap). A tessellation covers the whole region by construction, so this
+    produces near-complete coverage with no growth-front holes — the
+    previous algorithm's actual failure mode, which read as "much wider
+    gaps than the parameter" even though its pairwise minimum-gap invariant
+    held.
+
+    `_power_cell`'s cells are guaranteed convex (so `_inset_cell`'s own-edge
+    offset is exact) whenever `polygon` itself is convex — true for the
+    default whole-hex case. A hand-drawn, genuinely concave Draw Area region
+    can in principle leave the one or two cells that straddle its concave
+    part non-convex, where the inset is only an approximation (still safe —
+    `_intersect_halfplanes` never corrupts, at worst insets slightly
+    unevenly right at that notch); not a concern for the common case."""
+    if len(polygon) < 3:
+        return []
+    lo = max(0.0, min(min_size_mm, max_size_mm))
+    hi = max(0.0, max(min_size_mm, max_size_mm))
+    if hi <= 0.0:
+        return []
+    gap_mm = max(0.0, gap_mm)
+    seed = int(seed)
+
+    boundary = list(polygon)
+    if _signed_area(boundary) < 0.0:
+        boundary = list(reversed(boundary))
+
+    mean_size = 0.5 * (lo + hi)
+    pitch = max(mean_size, 1e-6)
+
+    xs = [p[0] for p in boundary]
+    ys = [p[1] for p in boundary]
+    minx, maxx = min(xs), max(xs)
+    miny, maxy = min(ys), max(ys)
+    bbox_w = max(maxx - minx, 1e-6)
+    bbox_h = max(maxy - miny, 1e-6)
+
+    est_cells = (bbox_w / pitch + 2) * (bbox_h / pitch + 2)
+    if est_cells > _FLAGSTONE_MAX_SEEDS:
+        pitch *= math.sqrt(est_cells / _FLAGSTONE_MAX_SEEDS)
+
+    seeds = []   # [(x, y, weight), ...]
+
+    def add_seed(x, y, salt_x, salt_y):
+        if len(seeds) >= _FLAGSTONE_MAX_SEEDS:
+            return
+        u = _hash01(salt_x, salt_y, seed ^ 0x1234ABCD)
+        size = lo + (hi - lo) * u
+        seeds.append((x, y, (0.5 * size) ** 2))
+
+    centroid = (sum(xs) / len(xs), sum(ys) / len(ys))
+    if point_in_polygon(centroid[0], centroid[1], boundary):
+        add_seed(centroid[0], centroid[1], 0, 0)
+
+    nrows = int(math.ceil(bbox_h / pitch)) + 2
+    ncols = int(math.ceil(bbox_w / pitch)) + 2
+    for row in range(nrows):
+        if len(seeds) >= _FLAGSTONE_MAX_SEEDS:
+            break
+        yv = miny + row * pitch
+        offset = 0.5 * pitch if row % 2 else 0.0
+        for col in range(ncols):
+            if len(seeds) >= _FLAGSTONE_MAX_SEEDS:
+                break
+            xv = minx + col * pitch + offset
+            jx = (_hash01(col, row, seed) - 0.5) * pitch * 0.6
+            jy = (_hash01(col, row, seed ^ 0x9E3779B9) - 0.5) * pitch * 0.6
+            px, py = xv + jx, yv + jy
+            if not point_in_polygon(px, py, boundary):
+                continue
+            add_seed(px, py, col + 1, row + 1)
+
+    if not seeds:
+        return []
+
+    # Spatial hash for the power-cell neighbour search. Only a bucketing
+    # convenience now, not a correctness-critical reach bound: `_power_cell`
+    # widens its own search radius as needed, since a fixed one isn't safe
+    # (see its docstring).
+    bucket_size = max(pitch, 1e-6)
+    grid = {}
+    for idx, (sx, sy, _w) in enumerate(seeds):
+        key = (int(math.floor(sx / bucket_size)), int(math.floor(sy / bucket_size)))
+        grid.setdefault(key, []).append(idx)
+
+    # Largest possible |weight_i - weight_j| over the whole min/max_size_mm
+    # range -- the conservative bound `_power_cell` needs to know how far a
+    # not-yet-considered seed's bisector could still reach back toward `i`.
+    weight_span = max(0.0, (0.5 * hi) ** 2 - (0.5 * lo) ** 2)
+
+    # Threshold for merging away a near-duplicate vertex left behind by
+    # sequential half-plane clipping (see `_dedupe_polygon_vertices`) -- tied
+    # to the configured stone scale rather than a fixed mm constant, so it
+    # stays a negligible fraction of a stone's own size at any model scale.
+    min_edge_mm = max(1e-9, 0.005 * mean_size)
+
+    placements = []
+    for i, (sx, sy, sw) in enumerate(seeds):
+        cell_verts, cell_tags = _power_cell(i, seeds, boundary, grid,
+                                            bucket_size, weight_span, min_edge_mm)
+        if len(cell_verts) < 3:
+            continue
+        inset_verts = _inset_cell(cell_verts, cell_tags, gap_mm, i,
+                                  seed ^ 0x5A17E000)
+        inset_verts, _inset_tags = _dedupe_polygon_vertices(
+            inset_verts, [None] * len(inset_verts), min_edge_mm)
+        if len(inset_verts) < 3:
+            continue
+        # A seed right next to a tight/acute boundary corner (a hand-drawn
+        # or flood-filled region's own boundary -- the hex's own 6 corners
+        # are never this acute) can get clipped into a sliver far smaller
+        # than its own drawn size -- geometrically a valid tessellation
+        # cell, but not a usable paving stone: too small to print/see as
+        # its own piece, and (being so small) disproportionately sensitive
+        # to any local height variation, so it tilts hard against whatever
+        # the terrain happens to do right at that one corner -- visually a
+        # single oddly-angled sliver among otherwise normal stones. Skip it
+        # (leaving a small bare patch there) rather than place it -- `sw`
+        # (seed `i`'s own weight, `(size/2)**2`) times pi is exactly that
+        # seed's own nominal circular area, so this is relative to what the
+        # seed itself was aiming for, not a fixed mm^2 constant.
+        if polygon_area(inset_verts) < _FLAGSTONE_MIN_CELL_AREA_FRACTION * math.pi * sw:
+            continue
+        outline_local = [(x - sx, y - sy) for (x, y) in inset_verts]
+        pid = ((i * 2654435761) ^ seed) & 0x7FFFFFFF
+        placements.append((sx, sy, outline_local, pid))
+    return placements
+
+
+def estimate_flagstone_count(polygon, *, min_size_mm, max_size_mm, gap_mm):
+    """Rough expected flagstone count for a scatter region — cheap enough for
+    a live panel warning. Mirrors estimate_boulder_count's shape; the real
+    tessellation covers the region near-completely (unlike a packer hitting
+    a target density), so this is simply area / (mean cell area) with a
+    small fudge for the mortar-joint area it doesn't otherwise account for.
+    `gap_mm` no longer inflates the pitch (the gap comes from insetting
+    cells, not from spacing them further apart)."""
+    area = polygon_area(polygon)
+    lo = max(0.0, min(min_size_mm, max_size_mm))
+    hi = max(0.0, max(min_size_mm, max_size_mm))
+    mean_size = 0.5 * (lo + hi)
+    if area <= 0.0 or mean_size <= 0.0:
+        return 0
+    pitch = max(mean_size, 1e-6)
+    return int(area / (pitch * pitch) * _FLAGSTONE_COVERAGE_FACTOR)
+
+
+def _rotate_to_normal(nx, ny, nz):
+    """3x3 rotation matrix (3 row-tuples) mapping (0,0,1) to the unit vector
+    (nx, ny, nz) via the minimal (shortest-arc) rotation — Rodrigues' formula
+    on the axis cross((0,0,1),(nx,ny,nz)). Pure-Python analogue of
+    `mathutils.Vector.rotation_difference`, used the same way by
+    segment_path.py for a placed segment's tilt; needed here in plain
+    vector math because this module stays bpy-free. Returns the identity
+    matrix when the normal is already ~+Z, or a 180-degree flip about X when
+    it's ~-Z (an edge case `clamp_tilt_slopes` makes unreachable in practice,
+    handled defensively anyway)."""
+    ax, ay = -ny, nx   # cross((0, 0, 1), (nx, ny, nz)) = (-ny, nx, 0)
+    sin_t = math.hypot(ax, ay)
+    cos_t = nz
+    if sin_t < 1e-12:
+        if cos_t >= 0.0:
+            return ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+        return ((1.0, 0.0, 0.0), (0.0, -1.0, 0.0), (0.0, 0.0, -1.0))
+    kx, ky = ax / sin_t, ay / sin_t
+    one_c = 1.0 - cos_t
+    return (
+        (cos_t + kx * kx * one_c, kx * ky * one_c, ky * sin_t),
+        (kx * ky * one_c, cos_t + ky * ky * one_c, -kx * sin_t),
+        (-ky * sin_t, kx * sin_t, cos_t),
+    )
+
+
+def _apply_rotation(mat, v):
+    r0, r1, r2 = mat
+    x, y, z = v
+    return (r0[0] * x + r0[1] * y + r0[2] * z,
+            r1[0] * x + r1[1] * y + r1[2] * z,
+            r2[0] * x + r2[1] * y + r2[2] * z)
+
+
+def assemble_flagstone_mesh(placements, corner_sampler, *, thickness_mm=60.0,
+                            sink_mm=1.0, max_tilt_deg=25.0):
+    """Join every flagstone in `placements` into ONE `(verts, faces)` mesh,
+    each individually TILTED to rest flush on the local terrain rather than
+    just raycast-seated flat at its centre like a boulder.
+
+    For each placement: build the stone via `flagstone_mesh` from its own
+    `outline_local` (no separate spin — the outline is already a unique,
+    oriented tessellation cell), sample the real surface Z under every one
+    of its BOTTOM-ring corners — the contact face, z=0 in the stone's own
+    local frame — via the injected `corner_sampler(x, y)` callback (keeping
+    this bpy-free/testable, mirroring boulders' injected `z_of`), fit the
+    lowest never-penetrating plane through those samples
+    (`segment_geometry.fit_resting_plane` — the same "rests on N uneven
+    point supports without sinking through" fit `segment_path.py` uses for a
+    placed path segment — falling back to its least-squares `fit_tilt_plane`
+    only on the rare fully-degenerate input the resting fit can't handle),
+    clamp the tilt (`segment_geometry.clamp_tilt_slopes`), turn the plane's
+    normal into a rigid rotation about the fitted pivot and rebuild each
+    world vertex from it, then do one more corner check: `fit_resting_plane`
+    only guarantees "no sinking" against its own LINEAR plane model
+    evaluated at each corner's ORIGINAL (pre-rotation) position — on
+    genuinely non-planar terrain, a rotated corner's real final (x, y)
+    drifts slightly off that flat position (a true rotation, unlike a linear
+    plane, doesn't preserve X/Y), so the actual terrain sampled there can
+    differ from what the fit saw. Re-sampling `corner_sampler` at each
+    corner's real final (x, y) and lifting the whole rigid stone straight up
+    by whatever small amount clears the worst case restores the "never
+    penetrates" guarantee at the true terrain rather than just the flat
+    linear model of it — the same corner re-check `segment_path.py`'s own
+    placement fit performs for a placed path segment, for the identical
+    reason. Finally applies the `sink_mm` overlap (so a later boolean merge
+    stays manifold, same as boulders). The stones share no vertices, so the
+    concatenation of closed 2-manifold prisms is itself 2-manifold."""
+    all_verts = []
+    all_faces = []
+    for (x, y, outline_local, _pid) in placements:
+        n = len(outline_local)
+        if n < 3:
+            continue
+        lverts, lfaces = flagstone_mesh(outline_local, thickness_mm)
+
+        samples = [(lx, ly, corner_sampler(x + lx, y + ly))
+                  for (lx, ly) in outline_local]
+
+        plane = sg.fit_resting_plane(samples)
+        if plane is None:
+            plane = sg.fit_tilt_plane(samples)
+        if plane is None:
+            px, py, pz = 0.0, 0.0, corner_sampler(x, y)
+            slope_x, slope_y = 0.0, 0.0
+        else:
+            px, py, pz, slope_x, slope_y = plane
+            slope_x, slope_y = sg.clamp_tilt_slopes(slope_x, slope_y, max_tilt_deg)
+
+        normal = _normalize((-slope_x, -slope_y, 1.0))
+        rot_mat = _rotate_to_normal(*normal)
+
+        world = []
+        for (vx, vy, vz) in lverts:
+            rvx, rvy, rvz = _apply_rotation(rot_mat, (vx - px, vy - py, vz))
+            world.append((x + px + rvx, y + py + rvy, pz + rvz))
+
+        lift = 0.0
+        for (wx, wy, wz) in world[:n]:
+            gap = wz - corner_sampler(wx, wy)
+            if gap < lift:
+                lift = gap
+        shift = -lift - sink_mm   # lift <= 0, so -lift >= 0 clears the worst corner
+
+        base = len(all_verts)
+        for (wx, wy, wz) in world:
+            all_verts.append((wx, wy, wz + shift))
+        for f in lfaces:
             all_faces.append(tuple(base + idx for idx in f))
     return all_verts, all_faces
 
@@ -586,6 +1153,30 @@ SURFACES = {
                     ParamSpec("distribution", "Size Distribution",
                               "0 = many small + few large, 1 = uniform sizes",
                               0.3, 0.0, 1.0, unit='factor'),
+                )),
+        Surface("FLAGSTONE", "Flagstone Paving",
+                "Large irregular paving slabs, individually tilted to rest "
+                "flush on the terrain (does not change the tile surface)",
+                reference_mm=0.0, generator=None,
+                kind='scatter', placement_fn=scatter_flagstones,
+                element_mesh_fn=flagstone_mesh, uses_feature=False,
+                extra_params=(
+                    ParamSpec("min_size_mm", "Min Stone Size (mm)",
+                              "Diameter of the smallest flagstones",
+                              420.0, 50.0, 2000.0, unit='mm',
+                              reference_mm=420.0),
+                    ParamSpec("max_size_mm", "Max Stone Size (mm)",
+                              "Diameter of the largest flagstones",
+                              650.0, 50.0, 2000.0, unit='mm',
+                              reference_mm=650.0),
+                    ParamSpec("gap_mm", "Avg. Mortar Gap (mm)",
+                              "Average gap maintained between neighbouring "
+                              "flagstones -- actual gaps vary, and stones "
+                              "may touch in places",
+                              10.0, 0.0, 100.0, unit='mm', reference_mm=10.0),
+                    ParamSpec("thickness_mm", "Slab Thickness (mm)",
+                              "Thickness of each flagstone slab",
+                              60.0, 5.0, 300.0, unit='mm', reference_mm=60.0),
                 )),
     )
 }

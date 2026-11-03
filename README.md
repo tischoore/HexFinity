@@ -314,12 +314,30 @@ field), each with an editable **Area Name**. Scale is driven by a map-wide
   triangles inside the region's footprint; unlike the always-live region
   *value*, this extra geometry is treated like a flora/terrain pad and is
   part of what [Bake](#bake) freezes.
-- **Scatter surfaces** — **Boulder Field** — place *distinct objects* across the
-  region **without changing the tile surface**. Boulders are noise-deformed
-  icospheres, joined into one mesh `Boulders_<Area Name>` parented under the tile and
-  seated on the real terrain by a downward raycast. Knobs: **Min/Max Boulder Size
-  (mm)**, **Boulder Density**, **Size Distribution**. An optional **Merge** boolean-
-  unions them into the tile so the whole tile prints as one manifold piece.
+- **Scatter surfaces** — place *distinct objects* across the region **without
+  changing the tile surface**:
+  - **Boulder Field** — noise-deformed icospheres, joined into one mesh
+    `Boulders_<Area Name>` parented under the tile and seated on the real
+    terrain by a downward raycast. Knobs: **Min/Max Boulder Size (mm)**,
+    **Boulder Density**, **Size Distribution**.
+  - **Flagstone Paving** — large, irregular low-poly paving slabs (roughly
+    0.3x Man Height by default, randomly varied), joined into one mesh
+    `Flagstones_<Area Name>` parented under the tile. Unlike a boulder, each
+    slab is individually **tilted** to rest flush against the local terrain
+    slope (sampling several points around its own footprint and fitting the
+    lowest never-penetrating plane through them, the same fit
+    `segment_path.py` uses for a placed path segment) rather than just
+    raycast-seated flat at its centre — the better-quality, close-up
+    alternative to Cobblestone's heightfield bump texture, which is bounded
+    by the mesh's own vertex spacing and can't produce real flat-topped
+    stones. Each stone's footprint is its own cell of a Voronoi-style
+    tessellation of the region (not a generated n-gon), inset along its
+    shared seams so neighbouring stones' gaps *average* out to the
+    configured value — varying stone-to-stone, and occasionally touching
+    (gap 0), rather than a strict per-pair minimum. Knobs: **Min/Max Stone
+    Size (mm)**, **Avg. Mortar Gap (mm)**, **Slab Thickness (mm)**.
+  Either one has an optional **Merge** boolean-unions it into the tile so the
+  whole tile prints as one manifold piece.
 
 Both kinds share the same authoring UX (draw a region → pick a surface → tune
 params) and ride the same registry: adding a surface is one record plus its
@@ -339,8 +357,10 @@ into disconnected islands, committing it is refused with a warning instead of
 silently picking one piece — lower the angle tolerance or click elsewhere.
 
 See **[docs/procedural_surfaces.md](docs/procedural_surfaces.md)** for the
-displacement workflow and **[docs/boulder-field.md](docs/boulder-field.md)** for the
-scatter kind (algorithm, scene tree, merge-for-print, and manual checklist).
+displacement workflow, **[docs/boulder-field.md](docs/boulder-field.md)** for the
+Boulder Field scatter surface, and
+**[docs/flagstone-paving.md](docs/flagstone-paving.md)** for Flagstone Paving
+(algorithm, tilt fit, scene tree, merge-for-print, and manual checklist).
 
 ## Path Feature
 
@@ -682,6 +702,7 @@ C:\Work\Hexfinity\
 │   ├─ regions.py              # modal draw-region + flood-fill-region operators + region list UI
 │   ├─ path_features.py        # modal draw-feature (waypoint line) operator + texture-carve pipeline + feature list UI + link-connected-paths operator
 │   ├─ scatter.py              # bpy shell for scatter surfaces (boulder objects + merge)
+│   ├─ flagstones.py           # bpy shell for the Flagstone Paving scatter surface (tilt-fit slab objects + merge)
 │   ├─ flora.py                # modal click-to-plant tree tool + mesh cache + overlap check + pin objects
 │   ├─ assets\
 │   │   ├─ leefytree\           # leafy-tree STL assets (one tree per file)
@@ -706,6 +727,7 @@ C:\Work\Hexfinity\
     ├─ test_procedural_surfaces.py
     ├─ test_face_select.py
     ├─ test_scatter.py
+    ├─ test_flagstones.py
     ├─ test_map.py
     ├─ test_tile_export.py
     └─ test_manifold_check.py

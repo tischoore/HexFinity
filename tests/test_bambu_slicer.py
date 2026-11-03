@@ -768,6 +768,24 @@ def _counting(monkeypatch, name):
     return calls
 
 
+def test_cached_root_scans_once_until_clear_cache(monkeypatch):
+    calls = _counting(monkeypatch, "find_bambu_executable")
+    bambu_slicer.cached_root()
+    bambu_slicer.cached_root()
+    assert len(calls) == 1
+    bambu_slicer.clear_cache()
+    bambu_slicer.cached_root()
+    assert len(calls) == 2
+
+
+def test_cached_root_also_caches_not_found(monkeypatch):
+    monkeypatch.setattr(bambu_slicer, "find_bambu_executable", lambda: None)
+    calls = _counting(monkeypatch, "profiles_dir")
+    assert bambu_slicer.cached_root() is None
+    assert bambu_slicer.cached_root() is None
+    assert len(calls) == 1
+
+
 def test_cached_index_scans_once_until_clear_cache(tmp_path, monkeypatch):
     calls = _counting(monkeypatch, "build_profile_index")
     bambu_slicer.cached_index(tmp_path)

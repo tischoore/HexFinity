@@ -336,7 +336,7 @@ def _slice_setting_value(enum_value):
 
 
 def _slice_bambu_root():
-    return bambu_slicer.profiles_dir(bambu_slicer.find_bambu_executable())
+    return bambu_slicer.cached_root()
 
 
 def _slice_printer_items(self, context):

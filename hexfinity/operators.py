@@ -458,14 +458,21 @@ def rebuild_tile(obj, finalize_flora=False, bake_capture=None):
         # region add/remove/reorder; deterministic seeds make rebuilds identical.
         scatter_regions = [(i, rd) for i, rd in enumerate(surface_regions)
                            if rd.get("kind") == 'scatter']
-        existing = any(c.get("hf_scatter_of") is not None for c in obj.children)
-        if scatter_regions or existing:
-            from . import scatter
+        existing_scatter = any(c.get("hf_scatter_of") is not None
+                               for c in obj.children)
+        existing_flagstones = any(c.get("hf_flagstone_of") is not None
+                                  for c in obj.children)
+        if scatter_regions or existing_scatter or existing_flagstones:
+            from . import scatter, flagstones
             scatter.purge_scatter(obj)
+            flagstones.purge_flagstones(obj)
             if scatter_regions:
                 bpy.context.view_layer.update()
                 for i, rd in scatter_regions:
-                    scatter.sync_scatter(obj, i, rd, rd["name"])
+                    if rd.get("surface_type") == "FLAGSTONE":
+                        flagstones.sync_flagstones(obj, i, rd, rd["name"])
+                    else:
+                        scatter.sync_scatter(obj, i, rd, rd["name"])
 
         # Planted trees, same full-purge-and-resync shape as scatter above:
         # placements are stored data (species/position/rotation/scale), not
@@ -1260,31 +1267,34 @@ def _terrain_children(obj):
 
 
 def _terrain_objects(tile):
-    """`_terrain_children(tile)` minus scatter boulder objects and placed
-    path-segment pieces — the actual imported terrain-object meshes carrying
-    `hexfinity_terrain` snap settings, the ones `terrain_pad_specs` builds
-    plateau pads for. A segment piece (see segment_path.py) is just another
-    plain mesh child of the tile, same as a terrain object, so it must be
-    excluded explicitly here or it would falsely count toward "this hex has
-    terrain objects" (e.g. panel.py's "Regenerate Plateau" button)."""
-    from . import scatter, segment_path
+    """`_terrain_children(tile)` minus scatter boulder/flagstone objects and
+    placed path-segment pieces — the actual imported terrain-object meshes
+    carrying `hexfinity_terrain` snap settings, the ones `terrain_pad_specs`
+    builds plateau pads for. A segment piece (see segment_path.py) is just
+    another plain mesh child of the tile, same as a terrain object, so it
+    must be excluded explicitly here or it would falsely count toward "this
+    hex has terrain objects" (e.g. panel.py's "Regenerate Plateau" button)."""
+    from . import scatter, flagstones, segment_path
     return [c for c in _terrain_children(tile)
            if c.get(scatter.SCATTER_OF) is None
+           and c.get(flagstones.FLAGSTONE_OF) is None
            and not c.get(segment_path.SEGMENT_PIECE_TAG)]
 
 
 def _is_terrain_object(o):
     """True if `o` is an imported terrain-object mesh (not a tile, not a
-    planted tree/pin, not a scatter boulder, not a placed path-segment
-    piece) — the same eligibility `_terrain_objects` filters a tile's
-    children down to, but usable directly on a candidate object from the
-    current selection."""
+    planted tree/pin, not a scatter boulder/flagstone, not a placed
+    path-segment piece) — the same eligibility `_terrain_objects` filters a
+    tile's children down to, but usable directly on a candidate object from
+    the current selection."""
     if o.type != 'MESH' or o.hexfinity_tile.is_generated:
         return False
-    from . import flora, scatter, segment_path
+    from . import flora, scatter, flagstones, segment_path
     if o.get(flora.FLORA_OF) or o.get(flora.FLORA_PIN_OF):
         return False
     if o.get(scatter.SCATTER_OF) is not None:
+        return False
+    if o.get(flagstones.FLAGSTONE_OF) is not None:
         return False
     if o.get(segment_path.SEGMENT_PIECE_TAG):
         return False

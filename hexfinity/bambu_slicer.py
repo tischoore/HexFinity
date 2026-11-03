@@ -939,15 +939,18 @@ def save_settings_fields(path, **fields):
 # Enumeration cache — for UI dropdowns redrawn many times per second while a
 # dialog is open. list_printers/list_filaments/list_processes (and the
 # build_profile_index they run on) each open+json.load every relevant preset
-# file from scratch; fine for a one-shot CLI run or a single resolve at slice
-# time, far too expensive to re-run on every EnumProperty items= callback
-# (which Blender fires on every redraw of an open dialog, not just once).
+# file from scratch, and find_bambu_executable (via cached_root) does up to
+# four shutil.which PATH scans; fine for a one-shot CLI run or a single
+# resolve at slice time, far too expensive to re-run on every EnumProperty
+# items= callback (which Blender fires on every redraw of an open dialog,
+# not just once).
 # Trades "notice a newly-installed Bambu printer without restarting Blender"
 # for "the dropdowns don't stutter" — call clear_cache() (wired to the
 # dialog's "Refresh Presets" button) to pick up an install change mid-session.
 # --------------------------------------------------------------------------- #
 
-_CACHE = {"index": None, "printers": None, "filaments": {}, "processes": {}}
+_CACHE = {"index": None, "printers": None, "filaments": {}, "processes": {},
+          "root": None, "root_resolved": False}
 
 
 def clear_cache():
@@ -957,6 +960,22 @@ def clear_cache():
     _CACHE["printers"] = None
     _CACHE["filaments"].clear()
     _CACHE["processes"].clear()
+    _CACHE["root"] = None
+    _CACHE["root_resolved"] = False
+
+
+def cached_root():
+    """``profiles_dir(find_bambu_executable())``, memoized until
+    :func:`clear_cache`. ``find_bambu_executable`` does up to four
+    ``shutil.which`` PATH scans; the four dropdown ``items=`` callbacks in
+    ``properties.py`` each call this on every redraw of the Export + Slice
+    dialog, so leaving it unmemoized visibly stutters that dialog. A
+    ``root_resolved`` flag (rather than checking ``_CACHE["root"] is None``)
+    caches a "not found" result too, not just a successful one."""
+    if not _CACHE["root_resolved"]:
+        _CACHE["root"] = profiles_dir(find_bambu_executable())
+        _CACHE["root_resolved"] = True
+    return _CACHE["root"]
 
 
 def cached_index(root):
