@@ -68,20 +68,32 @@ vertex-budget warning.
    `obj.ray_cast` in tile-local space, BVH-accelerated) → seats each boulder
    on the *real* terrain, after Coons / displacement / brush / height edits —
    robust regardless of how the height was produced. A straight-down raycast
-   can genuinely miss at a point that's clearly still on the tile: a Flood
-   Fill region's boundary is walked directly off the mesh's own rim
+   can go wrong two ways at a point that's clearly still on the tile: a
+   Flood Fill region's boundary is walked directly off the mesh's own rim
    vertices, so a seating point can land exactly on a real mesh vertex or
    edge there, a classic degenerate case for a ray-triangle intersection
-   test (the ray ends up coplanar with/parallel to the near-vertical side
-   wall, or exactly on a vertex several faces share). On a miss, `z_of`
-   retries at a small ring of offsets around the point (escalating through
-   a few small radii) before falling back to the fixed `fallback_z` — cheap,
-   since a miss itself is rare and each retry is still one fast BVH raycast,
-   and reliable regardless of which way "inward" happens to be, since some
-   direction in the ring always lands back inside a real face. (Two earlier
-   attempts were tried and reverted: a closure-captured mutable "last
-   successful hit" as the miss fallback, which silently carried a stale,
-   unrelated height across calls once any single raycast missed; and a
+   test. Most often it simply misses (the ray ends up coplanar
+   with/parallel to the near-vertical side wall, or exactly on a vertex
+   several faces share) — but it can also "fall through" that degenerate
+   top-adjacent triangle and register a hit further down instead: the side
+   wall is one big, concave n-gon per hex side spanning the full
+   top-rim-to-bottom-corner range (with tab/hole cutout detours), not a
+   simple vertical quad, so missing the topmost triangle doesn't mean
+   missing the whole wall — the ray can land on a *lower* wall triangle, or
+   even the bottom plate, and come back a "successful" hit at a wrong Z
+   entirely. `_cast` treats both the same way: a hit only counts if its
+   normal is reasonably upward-facing (`_TOP_HIT_NORMAL_Z_MIN`, the same
+   convention `face_select.py`'s flood fill uses to stay off walls/the
+   bottom plate) — a hit on a wall or the bottom plate is rejected exactly
+   like a miss. Either way, `z_of` retries at a small ring of offsets around
+   the point (escalating through a few small radii) before falling back to
+   the fixed `fallback_z` — cheap, since this itself is rare and each retry
+   is still one fast BVH raycast, and reliable regardless of which way
+   "inward" happens to be, since some direction in the ring always lands
+   back inside a real top face. (Two earlier attempts were tried and
+   reverted: a closure-captured mutable "last successful hit" as the miss
+   fallback, which silently carried a stale, unrelated height across calls
+   once any single raycast missed; and a
    barycentric-interpolation replacement with no raycast-miss case at all,
    whose unaccelerated per-call scan over every top triangle made a large
    region's placement pass pathologically slow enough to lock up Blender.)

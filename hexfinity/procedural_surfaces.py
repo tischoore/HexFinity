@@ -943,6 +943,27 @@ def _apply_rotation(mat, v):
             r2[0] * x + r2[1] * y + r2[2] * z)
 
 
+# A flagstone's outline corner is routinely exactly on the region polygon's
+# own boundary (mortar insets never apply to the paved area's rim), which
+# can coincide with the hex's physical rim -- the one place a raycast-based
+# `corner_sampler` is most prone to a wrong reading (see flagstones.py's
+# `_make_corner_sampler`: a miss, or a "fall through" hit on the side wall
+# or bottom plate). Rather than relying solely on the bpy-side sampler to
+# recover from that, `assemble_flagstone_mesh` sidesteps it here too: it
+# never actually samples EXACTLY at a corner, only a point nudged this
+# fraction of the way from the corner back toward the stone's own centroid
+# (always known here, always strictly inside the stone's own footprint) --
+# tiny enough (a sub-millimetre shift even for a large stone) to make no
+# perceptible difference to the height actually read, but enough to clear
+# any exact-boundary degeneracy before the sample is even taken.
+_SAMPLE_INWARD_SHRINK = 0.002
+
+
+def _shrink_toward_centroid(cx, cy, x, y):
+    return (cx + (x - cx) * (1.0 - _SAMPLE_INWARD_SHRINK),
+            cy + (y - cy) * (1.0 - _SAMPLE_INWARD_SHRINK))
+
+
 def assemble_flagstone_mesh(placements, corner_sampler, *, thickness_mm=60.0,
                             sink_mm=1.0, max_tilt_deg=25.0):
     """Join every flagstone in `placements` into ONE `(verts, faces)` mesh,
@@ -954,29 +975,38 @@ def assemble_flagstone_mesh(placements, corner_sampler, *, thickness_mm=60.0,
     oriented tessellation cell), sample the real surface Z under every one
     of its BOTTOM-ring corners — the contact face, z=0 in the stone's own
     local frame — via the injected `corner_sampler(x, y)` callback (keeping
-    this bpy-free/testable, mirroring boulders' injected `z_of`), fit the
-    lowest never-penetrating plane through those samples
-    (`segment_geometry.fit_resting_plane` — the same "rests on N uneven
-    point supports without sinking through" fit `segment_path.py` uses for a
-    placed path segment — falling back to its least-squares `fit_tilt_plane`
-    only on the rare fully-degenerate input the resting fit can't handle),
-    clamp the tilt (`segment_geometry.clamp_tilt_slopes`), turn the plane's
-    normal into a rigid rotation about the fitted pivot and rebuild each
-    world vertex from it, then do one more corner check: `fit_resting_plane`
-    only guarantees "no sinking" against its own LINEAR plane model
-    evaluated at each corner's ORIGINAL (pre-rotation) position — on
-    genuinely non-planar terrain, a rotated corner's real final (x, y)
+    this bpy-free/testable, mirroring boulders' injected `z_of`) — nudged
+    very slightly toward the stone's own centroid first
+    (`_shrink_toward_centroid`/`_SAMPLE_INWARD_SHRINK`), so a corner sitting
+    exactly on the region's own boundary is never the literal point the FIT
+    samples (this is a deliberate, bounded bias — tiny enough to be
+    inconsequential to the fitted plane, see `test_assembly_tilts_to_match_a_sloped_plane`'s
+    own tolerance — traded for never fitting against a single at-risk
+    exact-boundary sample) — fit the lowest never-penetrating plane through
+    those samples (`segment_geometry.fit_resting_plane` — the same "rests on
+    N uneven point supports without sinking through" fit `segment_path.py`
+    uses for a placed path segment — falling back to its least-squares
+    `fit_tilt_plane` only on the rare fully-degenerate input the resting fit
+    can't handle), clamp the tilt (`segment_geometry.clamp_tilt_slopes`),
+    turn the plane's normal into a rigid rotation about the fitted pivot and
+    rebuild each world vertex from it, then do one more corner check:
+    `fit_resting_plane` only guarantees "no sinking" against its own LINEAR
+    plane model evaluated at each corner's ORIGINAL (pre-rotation) position —
+    on genuinely non-planar terrain, a rotated corner's real final (x, y)
     drifts slightly off that flat position (a true rotation, unlike a linear
     plane, doesn't preserve X/Y), so the actual terrain sampled there can
     differ from what the fit saw. Re-sampling `corner_sampler` at each
-    corner's real final (x, y) and lifting the whole rigid stone straight up
-    by whatever small amount clears the worst case restores the "never
-    penetrates" guarantee at the true terrain rather than just the flat
-    linear model of it — the same corner re-check `segment_path.py`'s own
-    placement fit performs for a placed path segment, for the identical
-    reason. Finally applies the `sink_mm` overlap (so a later boolean merge
-    stays manifold, same as boulders). The stones share no vertices, so the
-    concatenation of closed 2-manifold prisms is itself 2-manifold."""
+    corner's real final (x, y) — the EXACT position this time, deliberately
+    NOT nudged, since this is the safety net that must guarantee no sinking
+    against the true terrain, not a lerped stand-in for it — and lifting the
+    whole rigid stone straight up by whatever small amount clears the worst
+    case restores the "never penetrates" guarantee at the true terrain
+    rather than just the flat linear model of it — the same corner re-check
+    `segment_path.py`'s own placement fit performs for a placed path
+    segment, for the identical reason. Finally applies the `sink_mm` overlap
+    (so a later boolean merge stays manifold, same as boulders). The stones
+    share no vertices, so the concatenation of closed 2-manifold prisms is
+    itself 2-manifold."""
     all_verts = []
     all_faces = []
     for (x, y, outline_local, _pid) in placements:
@@ -985,7 +1015,8 @@ def assemble_flagstone_mesh(placements, corner_sampler, *, thickness_mm=60.0,
             continue
         lverts, lfaces = flagstone_mesh(outline_local, thickness_mm)
 
-        samples = [(lx, ly, corner_sampler(x + lx, y + ly))
+        samples = [(lx, ly, corner_sampler(*_shrink_toward_centroid(
+                       x, y, x + lx, y + ly)))
                   for (lx, ly) in outline_local]
 
         plane = sg.fit_resting_plane(samples)
@@ -1006,6 +1037,11 @@ def assemble_flagstone_mesh(placements, corner_sampler, *, thickness_mm=60.0,
             rvx, rvy, rvz = _apply_rotation(rot_mat, (vx - px, vy - py, vz))
             world.append((x + px + rvx, y + py + rvy, pz + rvz))
 
+        # Unlike the fit samples above, this safety-net recheck deliberately
+        # samples the corner's own TRUE final position, not a nudged one --
+        # it's the thing that guarantees no corner ever sinks below the real
+        # terrain there, so it must read the real terrain exactly there, not
+        # a lerped stand-in for it.
         lift = 0.0
         for (wx, wy, wz) in world[:n]:
             gap = wz - corner_sampler(wx, wy)

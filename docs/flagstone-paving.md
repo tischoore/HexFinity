@@ -100,7 +100,18 @@ per-corner seating raycasts, and the boolean merge touch `bpy`.
      `corner_sampler(x, y)` callback (mirrors Boulder Field's injected
      `z_of`, just called once per corner instead of once per element). No
      separate spin step any more — the outline is already a unique, oriented
-     cell.
+     cell. **This fit sample is taken at a point nudged very slightly
+     (`_SAMPLE_INWARD_SHRINK`, 0.2%) toward the stone's own centroid, never
+     the literal corner** — a flagstone corner is routinely exactly on the
+     region's own boundary (which can coincide with the hex's physical rim),
+     the one place `flagstones.py`'s raycast-based `corner_sampler` is most
+     prone to a wrong reading despite its own retry/normal-check hardening;
+     this was a real, reported bug — a single mis-sampled corner is enough
+     to tilt the whole fit past `max_tilt_deg` and clamp it, leaving the
+     stone balanced on just one corner. The nudge is tiny enough to bias the
+     fitted plane negligibly (see `test_assembly_tilts_to_match_a_sloped_plane`'s
+     own tolerance) while avoiding the single at-risk exact-boundary sample
+     entirely.
    - Fit the lowest never-penetrating plane through those samples —
      `segment_geometry.fit_resting_plane`, the exact same fit
      `segment_path.py` uses to tilt a placed path segment onto its hex —
@@ -120,11 +131,13 @@ per-corner seating raycasts, and the boolean merge touch `bpy`.
      slightly off that flat position (a rotation, unlike a plane, doesn't
      preserve X/Y), so the real terrain sampled there can differ from what
      the fit saw. Re-sampling `corner_sampler` at each corner's actual final
-     (x, y) and lifting the whole rigid stone straight up by whatever small
-     amount clears the worst case restores the "never penetrates" guarantee
-     against the *true* terrain — the identical corner re-check
-     `segment_path.py`'s own placement fit performs, for the identical
-     reason.
+     (x, y) — the *exact* position this time, deliberately NOT nudged, since
+     this is the safety net that must guarantee no sinking against the true
+     terrain rather than a lerped stand-in for it — and lifting the whole
+     rigid stone straight up by whatever small amount clears the worst case
+     restores the "never penetrates" guarantee against the *true* terrain —
+     the identical corner re-check `segment_path.py`'s own placement fit
+     performs, for the identical reason.
    - Apply the `sink_mm` overlap (so a later boolean merge stays manifold,
      same as Boulder Field) — unlike Boulder Field's fixed `SINK_MM`,
      `flagstones.py` scales this as `min(SINK_MM_MAX, thickness_mm *
@@ -146,30 +159,42 @@ warning, mirroring `estimate_boulder_count`'s shape.
 `scatter.sync_scatter` exactly (object lifecycle, tags, naming, manifold
 check), except its raycast sampler (`_make_corner_sampler`) is called once
 per flagstone *corner* rather than once per element, feeding
-`assemble_flagstone_mesh`'s tilt fit. A straight-down raycast can genuinely
-miss at a point that's clearly still on the tile: a Flood Fill region's
+`assemble_flagstone_mesh`'s tilt fit. A straight-down raycast can go wrong
+two ways at a point that's clearly still on the tile: a Flood Fill region's
 boundary is walked directly off the mesh's own rim vertices, so a
 boundary-touching flagstone corner (common — mortar insets never apply to
 the paved area's own rim) often lands exactly on a real mesh vertex or edge
-there, a classic degenerate case for a ray-triangle intersection test (the
-ray ends up coplanar with/parallel to the near-vertical side wall, or
-exactly on a vertex several faces share) — this reads as "a few flagstones
-along the Flood Fill boundary are angled or floating above the surface",
-hitting stones along a straight run of edge rather than at the hex's own
-(far less subdivided) corners, where a boundary-touching flagstone has many
-fewer such exact-vertex corners to begin with. On a miss, `_make_corner_sampler`
-retries at a small ring of offsets around the point (escalating through a
-few small radii) before falling back to the fixed `fallback_z` — cheap,
-since a miss itself is rare and each retry is still one fast BVH raycast,
-and reliable regardless of which way "inward" happens to be, since some
-direction in the ring always lands back inside a real face. (Two earlier
-attempts were tried and reverted: a closure-captured mutable "last
-successful hit" as the miss fallback, which silently carried a stale,
-unrelated height across every stone in the region once any single raycast
-missed; and a barycentric-interpolation replacement with no raycast-miss
-case at all, whose unaccelerated per-call scan over every top triangle made
-a large/Flood-Filled region's full placement pass pathologically slow
-enough to lock up Blender.) `max_tilt_deg` is a module constant
+there, a classic degenerate case for a ray-triangle intersection test. Most
+often it simply misses (the ray ends up coplanar with/parallel to the
+near-vertical side wall, or exactly on a vertex several faces share) — but
+it can also "fall through" that degenerate top-adjacent triangle and
+register a hit further down instead: the side wall is one big, concave
+n-gon per hex side spanning the full top-rim-to-bottom-corner range (with
+tab/hole cutout detours), not a simple vertical quad, so missing the
+topmost triangle doesn't mean missing the whole wall — the ray can land on
+a *lower* wall triangle, or even the bottom plate, and come back a
+"successful" hit at a wrong Z entirely. Either failure reads as "a few
+flagstones along the Flood Fill boundary are angled or floating above the
+surface", hitting stones along a straight run of edge rather than at the
+hex's own (far less subdivided) corners, where a boundary-touching
+flagstone has many fewer such exact-vertex corners to begin with.
+`_make_corner_sampler`'s `_cast` treats both failure modes the same way: a
+hit only counts if its normal is reasonably upward-facing
+(`_TOP_HIT_NORMAL_Z_MIN`, the same convention `face_select.py`'s flood fill
+uses to stay off walls/the bottom plate) — a hit on a wall or the bottom
+plate is rejected exactly like a miss. Either way, it retries at a small
+ring of offsets around the point (escalating through a few small radii)
+before falling back to the fixed `fallback_z` — cheap, since this itself is
+rare and each retry is still one fast BVH raycast, and reliable regardless
+of which way "inward" happens to be, since some direction in the ring
+always lands back inside a real top face. (Two earlier attempts were tried
+and reverted: a closure-captured mutable "last successful hit" as the miss
+fallback, which silently carried a stale, unrelated height across every
+stone in the region once any single raycast missed; and a
+barycentric-interpolation replacement with no raycast-miss case at all,
+whose unaccelerated per-call scan over every top triangle made a
+large/Flood-Filled region's full placement pass pathologically slow enough
+to lock up Blender.) `max_tilt_deg` is a module constant
 (mirroring how `scatter.py` hardcodes `ROUGHNESS`/`SUBDIV`) — the four
 user-facing param slots go to stone size/gap/thickness instead.
 `AVG_OUTLINE_VERTS_ESTIMATE` is a rough per-stone vertex count used only by
@@ -236,7 +261,8 @@ shape; flagstone mesh manifoldness across outline shapes,
 vertex/face count matching the outline, bottom/top ring flatness; assembly
 manifoldness, summed counts, degenerate-outline skip, flat-terrain seating,
 tilting to match a sloped plane, never sinking a corner below sampled
-(including non-planar) terrain, tilt clamping; the `_rotate_to_normal` helper
+(including non-planar) terrain, tilt clamping, a single catastrophically
+wrong sample at one exact corner not corrupting the fit's tilt; the `_rotate_to_normal` helper
 (identity for +Z, maps +Z to an arbitrary normal, length-preserving); and the
 registry contract (scatter excluded from the displacement fan-out, zero
 displacement, extra-param defaults and mm scaling, the gap param's "Avg."
@@ -266,9 +292,12 @@ unit-tested without Blender. Verify by hand after changes:
    boundary coincides with the hex's own physical rim: every one must sit
    flush and level (or correctly tilted to match real sloped/domed terrain
    there), never visibly floating above or dug at an unexplained angle.
-   This is the regression check for a real, previously-shipped bug (a
-   raycast-based sampler that could silently reuse a stale, unrelated
-   height on a miss at the rim's knife-edge).
+   This is the regression check for several real, previously-shipped bugs
+   in the raycast-based sampler (a stale fallback on a miss; a "fall
+   through" to a wrong face; a single exact-boundary sample tilting the
+   whole fit so hard it ends up resting on just one corner) — watch in
+   particular for a stone balanced on a single corner with the rest
+   visibly floating, the specific symptom the last of those left behind.
 5. **Gap** — set a small Avg. Mortar Gap and a wide Min/Max Stone Size
    spread: the joints visibly vary in width stone-to-stone, some stones
    touch directly, and there are no empty holes in the paved area; raising

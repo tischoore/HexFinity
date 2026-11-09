@@ -24,15 +24,24 @@ from .manifold_check import assert_two_manifold
 
 # A raycast exactly on the region polygon's own boundary -- which, for a
 # Flood Fill selection, routinely coincides with an actual mesh rim vertex
-# (the boundary is walked directly off the mesh's own verts) -- can miss:
-# the ray is coplanar with/parallel to the near-vertical side wall there,
-# or lands exactly on a vertex several faces share, both classic degenerate
-# cases for a ray-triangle intersection test. `_MISS_RETRY_RADII_MM` nudges
-# the query point in a small ring of directions at escalating radii until
-# one lands cleanly inside a face, rather than risking a wrong fallback
-# height for that one point (see `_make_z_of`).
+# (the boundary is walked directly off the mesh's own verts) -- can go wrong
+# two ways. It can miss outright: the ray is coplanar with/parallel to the
+# near-vertical side wall there, or lands exactly on a vertex several faces
+# share, both classic degenerate cases for a ray-triangle intersection test.
+# Or worse, it can "fall through" a degenerate top-adjacent wall triangle it
+# should have hit and instead register a hit further down the SAME side
+# wall's n-gon (the side wall is one big n-gon per hex side, built from the
+# top rim all the way down to the bottom corners, with tab/hole cutout
+# detours -- not a simple vertical quad) or on the bottom plate -- a
+# "successful" hit, but at a wrong Z from a face that isn't the top surface
+# at all. `_MISS_RETRY_RADII_MM` nudges the query point in a small ring of
+# directions at escalating radii until one lands cleanly inside a genuinely
+# upward-facing face, rather than risking a wrong fallback (or wrong-face)
+# height for that one point (see `_make_z_of`'s `_cast`, which checks the
+# hit normal, not just whether there was a hit at all).
 _MISS_RETRY_RADII_MM = (0.05, 0.5, 5.0)
 _MISS_RETRY_DIRECTIONS = 8
+_TOP_HIT_NORMAL_Z_MIN = 0.3
 
 
 # Tag keys written onto each generated boulder object.
@@ -90,35 +99,49 @@ def _make_z_of(tile_obj, depsgraph, fallback_z):
     found by raycasting straight down onto the tile's evaluated mesh
     (BVH-accelerated — fast regardless of how many top faces the tile has).
 
-    A straight-down raycast can genuinely miss at a point that's clearly
+    A straight-down raycast can go wrong two ways at a point that's clearly
     still "on the tile": a Flood Fill region's boundary is walked directly
     off the mesh's own rim vertices, so a seating point can land EXACTLY on
     a real mesh vertex or edge there, a classic degenerate case for a
-    ray-triangle intersection test (the ray ends up coplanar with/parallel
-    to the near-vertical side wall, or exactly on a vertex several faces
-    share). On a miss, `z_of` retries at a small ring of offsets around the
-    point (`_MISS_RETRY_DIRECTIONS` directions, escalating through
-    `_MISS_RETRY_RADII_MM`) before giving up — cheap, since a miss itself is
-    rare and each retry is still one fast BVH raycast, but reliable: for a
-    point sitting on a boundary/vertex, at least some of a ring's directions
-    point back into the interior of a real face regardless of which way
-    "inward" happens to be. Only once every retry also misses does it fall
-    back to the fixed `fallback_z` — NOT whatever the *previous* call
-    happened to hit: an earlier revision used a closure-captured mutable
-    "last successful hit" as the miss fallback, which silently carried a
-    stale, unrelated height across calls once any single raycast missed — a
-    real, reported bug. (A barycentric-interpolation replacement with no
-    raycast-miss case at all was tried next, but its unaccelerated per-call
-    scan over every top triangle made a large/Flood-Filled region's full
-    placement pass pathologically slow enough to lock up Blender — reverted
-    in favour of this retry-ring approach, which keeps the fast BVH raycast;
-    see `flagstones.py`'s `_make_corner_sampler` for the identical story.)"""
+    ray-triangle intersection test. Most often it simply misses (the ray
+    ends up coplanar with/parallel to the near-vertical side wall, or
+    exactly on a vertex several faces share) — but it can also "fall
+    through" that degenerate top-adjacent triangle and register a hit
+    further down instead: the side wall is one big, concave n-gon per hex
+    side spanning the full top-rim-to-bottom-corner range (with tab/hole
+    cutout detours), not a simple vertical quad, so missing the topmost
+    triangle doesn't mean missing the whole wall — the ray can land on a
+    *lower* wall triangle, or even the bottom plate, and come back a
+    "successful" hit at a wrong Z entirely. `_cast` treats both the same
+    way: a hit only counts if its normal is reasonably upward-facing
+    (`_TOP_HIT_NORMAL_Z_MIN`, the same convention `face_select.py`'s flood
+    fill uses to stay off walls/the bottom plate) — a hit on a wall or the
+    bottom plate is rejected exactly like a miss. Either way, `z_of` retries
+    at a small ring of offsets around the point (`_MISS_RETRY_DIRECTIONS`
+    directions, escalating through `_MISS_RETRY_RADII_MM`) before giving up
+    — cheap, since this itself is rare and each retry is still one fast BVH
+    raycast, but reliable: for a point sitting on a boundary/vertex, at
+    least some of a ring's directions point back into the interior of a
+    real top face regardless of which way "inward" happens to be. Only once
+    every retry also fails does it fall back to the fixed `fallback_z` —
+    NOT whatever the *previous* call happened to hit: an earlier revision
+    used a closure-captured mutable "last successful hit" as the miss
+    fallback, which silently carried a stale, unrelated height across calls
+    once any single raycast missed — a real, reported bug. (A
+    barycentric-interpolation replacement with no raycast-miss case at all
+    was tried next, but its unaccelerated per-call scan over every top
+    triangle made a large/Flood-Filled region's full placement pass
+    pathologically slow enough to lock up Blender — reverted in favour of
+    this retry-ring approach, which keeps the fast BVH raycast; see
+    `flagstones.py`'s `_make_corner_sampler` for the identical story.)"""
     down = Vector((0.0, 0.0, -1.0))
 
     def _cast(x, y):
-        hit, loc, _n, _i = tile_obj.ray_cast(
+        hit, loc, normal, _i = tile_obj.ray_cast(
             Vector((x, y, 1.0e5)), down, depsgraph=depsgraph)
-        return loc.z if hit else None
+        if hit and normal.z > _TOP_HIT_NORMAL_Z_MIN:
+            return loc.z
+        return None
 
     def z_of(x, y):
         z = _cast(x, y)

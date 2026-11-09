@@ -467,6 +467,14 @@ def test_assembly_flat_terrain_sits_at_sampled_height_minus_sink():
 
 
 def test_assembly_tilts_to_match_a_sloped_plane():
+    # The fit samples (not the lift recheck) are deliberately taken from a
+    # point nudged very slightly toward the stone's centroid, not the exact
+    # corner (`_shrink_toward_centroid` -- see assemble_flagstone_mesh's own
+    # docstring) -- so the fitted plane carries a correspondingly tiny bias
+    # versus the true sampled plane. `abs=0.1` accounts for that deliberate,
+    # bounded bias (`_SAMPLE_INWARD_SHRINK` is 0.2%, so at this ~100mm
+    # outline radius and slope the expected bias is a few hundredths of a
+    # unit) while still catching anything actually wrong with the fit.
     slope = 0.3
     sample = lambda x, y: slope * x
     outline = [(100.0, 0.0), (-50.0, 86.6), (-50.0, -86.6)]
@@ -476,9 +484,44 @@ def test_assembly_tilts_to_match_a_sloped_plane():
     n = len(outline)
     bottoms = verts[:n]
     for (x, y, z) in bottoms:
-        assert z == pytest.approx(sample(x, y), abs=1e-6)
+        assert z == pytest.approx(sample(x, y), abs=0.1)
     zs = [z for (_x, _y, z) in bottoms]
     assert max(zs) - min(zs) > 1.0
+
+
+def test_assembly_fit_ignores_a_bad_sample_exactly_at_one_corner():
+    # Regression guard for a real, reported bug: a raycast-based
+    # corner_sampler can return a wildly wrong height specifically at a
+    # point sitting exactly on the region's own boundary (where it can
+    # coincide with the hex's physical rim -- see flagstones.py's
+    # `_make_corner_sampler`). The fit samples a point nudged very slightly
+    # toward the stone's own centroid instead of the literal corner
+    # (`_shrink_toward_centroid`), so a sampler that's only wrong AT THE
+    # EXACT corner coordinate shouldn't corrupt the fit the way it would if
+    # sampled exactly there -- the real-world symptom was a stone tilted
+    # (and clamped to max_tilt_deg) so hard it ended up resting on a single
+    # corner.
+    # (The lift recheck afterward DOES still sample the exact corner by
+    # design -- see assemble_flagstone_mesh's own docstring -- so it can
+    # independently push the whole stone's absolute height around if it
+    # also happens to land on `bad_point`; that's an artifact of this
+    # synthetic single-sampler setup, not something production code relies
+    # on this shrink for. What matters here, and the only thing asserted,
+    # is that the FIT's own tilt isn't corrupted by it.)
+    outline = [(100.0, 0.0), (-50.0, 86.6), (-50.0, -86.6)]
+    placements = [(0.0, 0.0, outline, 1)]
+    bad_point = (100.0, 0.0)
+
+    def sampler(x, y):
+        if (x, y) == bad_point:
+            return 999.0   # catastrophically wrong, only at the exact corner
+        return 20.0
+
+    verts, _ = ps.assemble_flagstone_mesh(placements, sampler, sink_mm=0.0,
+                                          thickness_mm=60.0, max_tilt_deg=25.0)
+    n = len(outline)
+    zs = [z for (_x, _y, z) in verts[:n]]
+    assert max(zs) - min(zs) < 1.0   # relatively flat -- not tilted/clamped
 
 
 def test_assembly_never_sinks_a_corner_below_sampled_terrain():
