@@ -73,18 +73,26 @@ def _unique_object_name(base):
 
 def _make_z_of(tile_obj, depsgraph, fallback_z):
     """Return `z_of(x, y)` → tile-LOCAL surface Z (mm) under the local point,
-    found by raycasting straight down onto the tile's evaluated mesh. Falls back
-    to `fallback_z` for the rare miss (a point grazing the rim)."""
-    last = [fallback_z]
+    found by raycasting straight down onto the tile's evaluated mesh
+    (BVH-accelerated — fast regardless of how many top faces the tile has).
+    Falls back to `fallback_z` for the rare miss (a point grazing the rim).
+
+    `fallback_z` must be returned on every miss, not whatever the previous
+    call happened to hit: an earlier revision used a closure-captured
+    mutable "last successful hit" as the miss fallback, which silently
+    carried a stale, unrelated height across calls once any single raycast
+    missed — a real, reported bug. A barycentric-interpolation replacement
+    (no raycast, no miss case at all) was tried next, but its unaccelerated
+    per-call scan over every top triangle made a large/Flood-Filled region's
+    full placement pass pathologically slow — effectively locking up
+    Blender. Back to the raycast, with just the fallback value fixed; see
+    `flagstones.py`'s `_make_corner_sampler` for the identical story."""
     down = Vector((0.0, 0.0, -1.0))
 
     def z_of(x, y):
         hit, loc, _n, _i = tile_obj.ray_cast(
             Vector((x, y, 1.0e5)), down, depsgraph=depsgraph)
-        if hit:
-            last[0] = loc.z
-            return loc.z
-        return last[0]
+        return loc.z if hit else fallback_z
 
     return z_of
 

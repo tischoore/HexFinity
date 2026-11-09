@@ -31,8 +31,8 @@ tuple of `ParamSpec` extra parameters. Because `generator is None`:
 ## The pure / impure split (the bpy-free invariant)
 
 All geometry math is bpy-free, unit-tested, and manifold-checked, exactly like
-`mesh_builder`. Only object instantiation, the seating raycast, and the boolean
-merge touch `bpy`.
+`mesh_builder`. Only object instantiation, the seating raycast, and the
+boolean merge touch `bpy`.
 
 ### bpy-free — `procedural_surfaces.py`
 
@@ -65,9 +65,22 @@ vertex-budget warning.
 1. `scatter_boulders(...)` → placements (whole-tile regions use
    `hex_polygon(diameter)`).
 2. `z_of(x, y)` = raycast straight **down** onto `tile_obj` (a downward
-   `obj.ray_cast` in tile-local space) → seats each boulder on the *real* terrain,
-   after Coons / displacement / brush / height edits — robust regardless of how
-   the height was produced. A small `SINK_MM` overlap keeps a later boolean clean.
+   `obj.ray_cast` in tile-local space, BVH-accelerated) → seats each boulder
+   on the *real* terrain, after Coons / displacement / brush / height edits —
+   robust regardless of how the height was produced. The miss fallback is a
+   fixed `fallback_z`, not whatever the *previous* call happened to hit — an
+   earlier revision used a closure-captured mutable "last successful hit" as
+   the fallback instead, which silently carried a stale, unrelated height
+   across calls once any single raycast missed (most likely a seating point
+   landing exactly on the region polygon's own boundary, which can coincide
+   with the hex's physical rim — the knife-edge between the top face and the
+   near-vertical side wall where a straight-down raycast can numerically
+   miss) — a real bug. A barycentric-interpolation replacement with no
+   raycast-miss case at all was tried next, but its unaccelerated per-call
+   scan over every top triangle made a large region's placement pass
+   pathologically slow enough to lock up Blender — reverted back to the
+   raycast, with just the fallback value fixed. A small `SINK_MM` overlap
+   keeps a later boolean clean.
 3. `assemble_scatter_mesh(...)` → one mesh; create object `Boulders_<Area Name>`,
    **parent to `tile_obj`** (identity parent inverse, so the boulder verts — already
    tile-local — land in the right place), link into the tile's collection(s), and
@@ -125,7 +138,7 @@ defaults and mm scaling). Run:
 
 ## Manual checklist (the bpy-only parts)
 
-The object lifecycle, raycast seating, and boolean merge can't be unit-tested
+The object lifecycle, raycast seating, and the boolean merge can't be unit-tested
 without Blender. Verify by hand after changes:
 
 1. **Create** — generate a single tile, select it, add a region, set surface =
@@ -133,7 +146,11 @@ without Blender. Verify by hand after changes:
    tile, populated with boulders.
 2. **Seating** — boulders rest on the surface (not floating, not fully buried).
    Raise/lower a corner or paint the brush: on the rebuild the boulders re-seat on
-   the new height.
+   the new height. Pay particular attention to boulders near a Flood Fill
+   region's own boundary, especially where it coincides with the hex's
+   physical rim — the regression check for a real, previously-shipped bug
+   where a raycast-based sampler could silently seat a boulder at a stale,
+   unrelated height on a miss right at that knife-edge.
 3. **Determinism** — a pure height edit regenerates the same number of boulders in
    the same places.
 4. **Region edits** — adding / removing / reordering regions never leaves orphan
