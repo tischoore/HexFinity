@@ -67,20 +67,25 @@ vertex-budget warning.
 2. `z_of(x, y)` = raycast straight **down** onto `tile_obj` (a downward
    `obj.ray_cast` in tile-local space, BVH-accelerated) → seats each boulder
    on the *real* terrain, after Coons / displacement / brush / height edits —
-   robust regardless of how the height was produced. The miss fallback is a
-   fixed `fallback_z`, not whatever the *previous* call happened to hit — an
-   earlier revision used a closure-captured mutable "last successful hit" as
-   the fallback instead, which silently carried a stale, unrelated height
-   across calls once any single raycast missed (most likely a seating point
-   landing exactly on the region polygon's own boundary, which can coincide
-   with the hex's physical rim — the knife-edge between the top face and the
-   near-vertical side wall where a straight-down raycast can numerically
-   miss) — a real bug. A barycentric-interpolation replacement with no
-   raycast-miss case at all was tried next, but its unaccelerated per-call
-   scan over every top triangle made a large region's placement pass
-   pathologically slow enough to lock up Blender — reverted back to the
-   raycast, with just the fallback value fixed. A small `SINK_MM` overlap
-   keeps a later boolean clean.
+   robust regardless of how the height was produced. A straight-down raycast
+   can genuinely miss at a point that's clearly still on the tile: a Flood
+   Fill region's boundary is walked directly off the mesh's own rim
+   vertices, so a seating point can land exactly on a real mesh vertex or
+   edge there, a classic degenerate case for a ray-triangle intersection
+   test (the ray ends up coplanar with/parallel to the near-vertical side
+   wall, or exactly on a vertex several faces share). On a miss, `z_of`
+   retries at a small ring of offsets around the point (escalating through
+   a few small radii) before falling back to the fixed `fallback_z` — cheap,
+   since a miss itself is rare and each retry is still one fast BVH raycast,
+   and reliable regardless of which way "inward" happens to be, since some
+   direction in the ring always lands back inside a real face. (Two earlier
+   attempts were tried and reverted: a closure-captured mutable "last
+   successful hit" as the miss fallback, which silently carried a stale,
+   unrelated height across calls once any single raycast missed; and a
+   barycentric-interpolation replacement with no raycast-miss case at all,
+   whose unaccelerated per-call scan over every top triangle made a large
+   region's placement pass pathologically slow enough to lock up Blender.)
+   A small `SINK_MM` overlap keeps a later boolean clean.
 3. `assemble_scatter_mesh(...)` → one mesh; create object `Boulders_<Area Name>`,
    **parent to `tile_obj`** (identity parent inverse, so the boulder verts — already
    tile-local — land in the right place), link into the tile's collection(s), and

@@ -146,23 +146,30 @@ warning, mirroring `estimate_boulder_count`'s shape.
 `scatter.sync_scatter` exactly (object lifecycle, tags, naming, manifold
 check), except its raycast sampler (`_make_corner_sampler`) is called once
 per flagstone *corner* rather than once per element, feeding
-`assemble_flagstone_mesh`'s tilt fit. The raycast's miss fallback is a fixed
-`fallback_z`, not whatever the previous corner's raycast happened to hit — an
-earlier revision used a closure-captured mutable "last successful hit" as
-the fallback instead, which silently carried a stale, unrelated height
-across every stone in the region (since the sampler closure is built once
-per region) once any single raycast missed — most likely a corner sitting
-exactly on the region polygon's own boundary (mortar insets never apply to
-the paved area's own rim), which can coincide with the hex's physical edge —
-the knife-edge between the top face and the near-vertical side wall where a
-straight-down raycast can numerically miss. That was a real, reported bug:
-"a few flagstones are angled or floating above the surface", easy to trigger
-via Flood Fill's many boundary-exact corners. (A barycentric-interpolation
-replacement with no raycast-miss case at all was tried next, but its
-unaccelerated per-call scan over every top triangle made a large/Flood-Filled
-region's full placement pass pathologically slow enough to lock up Blender —
-reverted back to the raycast, with just the fallback value fixed.)
-`max_tilt_deg` is a module constant
+`assemble_flagstone_mesh`'s tilt fit. A straight-down raycast can genuinely
+miss at a point that's clearly still on the tile: a Flood Fill region's
+boundary is walked directly off the mesh's own rim vertices, so a
+boundary-touching flagstone corner (common — mortar insets never apply to
+the paved area's own rim) often lands exactly on a real mesh vertex or edge
+there, a classic degenerate case for a ray-triangle intersection test (the
+ray ends up coplanar with/parallel to the near-vertical side wall, or
+exactly on a vertex several faces share) — this reads as "a few flagstones
+along the Flood Fill boundary are angled or floating above the surface",
+hitting stones along a straight run of edge rather than at the hex's own
+(far less subdivided) corners, where a boundary-touching flagstone has many
+fewer such exact-vertex corners to begin with. On a miss, `_make_corner_sampler`
+retries at a small ring of offsets around the point (escalating through a
+few small radii) before falling back to the fixed `fallback_z` — cheap,
+since a miss itself is rare and each retry is still one fast BVH raycast,
+and reliable regardless of which way "inward" happens to be, since some
+direction in the ring always lands back inside a real face. (Two earlier
+attempts were tried and reverted: a closure-captured mutable "last
+successful hit" as the miss fallback, which silently carried a stale,
+unrelated height across every stone in the region once any single raycast
+missed; and a barycentric-interpolation replacement with no raycast-miss
+case at all, whose unaccelerated per-call scan over every top triangle made
+a large/Flood-Filled region's full placement pass pathologically slow
+enough to lock up Blender.) `max_tilt_deg` is a module constant
 (mirroring how `scatter.py` hardcodes `ROUGHNESS`/`SUBDIV`) — the four
 user-facing param slots go to stone size/gap/thickness instead.
 `AVG_OUTLINE_VERTS_ESTIMATE` is a rough per-stone vertex count used only by

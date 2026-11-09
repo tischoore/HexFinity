@@ -14,11 +14,25 @@ assembler) — this module is the thin Blender layer that the pure code can't do
 guard, so the object churn it does never recurses back into a rebuild.
 """
 
+import math
+
 import bpy
 from mathutils import Vector
 
 from . import procedural_surfaces as ps
 from .manifold_check import assert_two_manifold
+
+# A raycast exactly on the region polygon's own boundary -- which, for a
+# Flood Fill selection, routinely coincides with an actual mesh rim vertex
+# (the boundary is walked directly off the mesh's own verts) -- can miss:
+# the ray is coplanar with/parallel to the near-vertical side wall there,
+# or lands exactly on a vertex several faces share, both classic degenerate
+# cases for a ray-triangle intersection test. `_MISS_RETRY_RADII_MM` nudges
+# the query point in a small ring of directions at escalating radii until
+# one lands cleanly inside a face, rather than risking a wrong fallback
+# height for that one point (see `_make_z_of`).
+_MISS_RETRY_RADII_MM = (0.05, 0.5, 5.0)
+_MISS_RETRY_DIRECTIONS = 8
 
 
 # Tag keys written onto each generated boulder object.
@@ -75,24 +89,48 @@ def _make_z_of(tile_obj, depsgraph, fallback_z):
     """Return `z_of(x, y)` → tile-LOCAL surface Z (mm) under the local point,
     found by raycasting straight down onto the tile's evaluated mesh
     (BVH-accelerated — fast regardless of how many top faces the tile has).
-    Falls back to `fallback_z` for the rare miss (a point grazing the rim).
 
-    `fallback_z` must be returned on every miss, not whatever the previous
-    call happened to hit: an earlier revision used a closure-captured
-    mutable "last successful hit" as the miss fallback, which silently
-    carried a stale, unrelated height across calls once any single raycast
-    missed — a real, reported bug. A barycentric-interpolation replacement
-    (no raycast, no miss case at all) was tried next, but its unaccelerated
-    per-call scan over every top triangle made a large/Flood-Filled region's
-    full placement pass pathologically slow — effectively locking up
-    Blender. Back to the raycast, with just the fallback value fixed; see
-    `flagstones.py`'s `_make_corner_sampler` for the identical story."""
+    A straight-down raycast can genuinely miss at a point that's clearly
+    still "on the tile": a Flood Fill region's boundary is walked directly
+    off the mesh's own rim vertices, so a seating point can land EXACTLY on
+    a real mesh vertex or edge there, a classic degenerate case for a
+    ray-triangle intersection test (the ray ends up coplanar with/parallel
+    to the near-vertical side wall, or exactly on a vertex several faces
+    share). On a miss, `z_of` retries at a small ring of offsets around the
+    point (`_MISS_RETRY_DIRECTIONS` directions, escalating through
+    `_MISS_RETRY_RADII_MM`) before giving up — cheap, since a miss itself is
+    rare and each retry is still one fast BVH raycast, but reliable: for a
+    point sitting on a boundary/vertex, at least some of a ring's directions
+    point back into the interior of a real face regardless of which way
+    "inward" happens to be. Only once every retry also misses does it fall
+    back to the fixed `fallback_z` — NOT whatever the *previous* call
+    happened to hit: an earlier revision used a closure-captured mutable
+    "last successful hit" as the miss fallback, which silently carried a
+    stale, unrelated height across calls once any single raycast missed — a
+    real, reported bug. (A barycentric-interpolation replacement with no
+    raycast-miss case at all was tried next, but its unaccelerated per-call
+    scan over every top triangle made a large/Flood-Filled region's full
+    placement pass pathologically slow enough to lock up Blender — reverted
+    in favour of this retry-ring approach, which keeps the fast BVH raycast;
+    see `flagstones.py`'s `_make_corner_sampler` for the identical story.)"""
     down = Vector((0.0, 0.0, -1.0))
 
-    def z_of(x, y):
+    def _cast(x, y):
         hit, loc, _n, _i = tile_obj.ray_cast(
             Vector((x, y, 1.0e5)), down, depsgraph=depsgraph)
-        return loc.z if hit else fallback_z
+        return loc.z if hit else None
+
+    def z_of(x, y):
+        z = _cast(x, y)
+        if z is not None:
+            return z
+        for radius in _MISS_RETRY_RADII_MM:
+            for i in range(_MISS_RETRY_DIRECTIONS):
+                angle = 2.0 * math.pi * i / _MISS_RETRY_DIRECTIONS
+                z = _cast(x + radius * math.cos(angle), y + radius * math.sin(angle))
+                if z is not None:
+                    return z
+        return fallback_z
 
     return z_of
 
