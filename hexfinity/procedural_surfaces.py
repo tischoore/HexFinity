@@ -909,6 +909,121 @@ def estimate_flagstone_count(polygon, *, min_size_mm, max_size_mm, gap_mm):
     return int(area / (pitch * pitch) * _FLAGSTONE_COVERAGE_FACTOR)
 
 
+# ---------------------------------------------------------------------------
+# Polyline -> corridor polygon — turns a Path Feature's drawn line + width
+# into a region polygon `scatter_flagstones` can tessellate, so a flagstone
+# path reuses the exact same placement/mesh/tilt-fit code as a flagstone
+# Draw Area region. Path Feature's existing `width_mm` has never needed an
+# explicit polygon before — everywhere else (tree_pads.py) it's just a
+# per-vertex radial distance test against the centerline — so this is new.
+# ---------------------------------------------------------------------------
+def polyline_corridor_polygon(points, width_mm, *, miter_limit=4.0):
+    """Buffer open polyline `points` (`[(x, y), ...]`, >= 2 points after
+    dropping duplicate consecutive ones) into a closed `width_mm`-wide
+    ribbon polygon centred on it — standard stroke-to-fill polyline
+    buffering. Returns `[]` for fewer than 2 distinct points.
+
+    At each interior point, the offset direction is the normalised average
+    of its two adjacent segments' left-of-travel perpendiculars (a
+    standard mitred join) scaled by `1 / cos(half the turn angle)` so the
+    two segments' offset edges actually meet there — clamped to
+    `miter_limit` x the half-width to avoid an unbounded spike on a sharp
+    turn (falls back to the unmitred per-segment offset beyond that, a
+    plain bevel instead of a spike — the same "safety clamp against one
+    extreme case" idiom `clamp_tilt_slopes` uses elsewhere in this
+    codebase). The two endpoints use their one adjacent segment's own
+    (unmitred) perpendicular directly — no cap there to begin with.
+
+    Winding is whatever falls out of the construction — not normalised
+    here, since every caller (`scatter_flagstones` first among them) already
+    normalises its own `polygon` argument via `_signed_area` regardless of
+    where it came from.
+
+    Not self-intersection-safe for a very sharp turn on a very short
+    segment (the inner mitred corner can fall past the far end of the
+    short segment) — acceptable for a hand-drawn path with reasonably
+    spaced waypoints, the same kind of accepted limitation this codebase
+    already lives with for a genuinely concave Draw Area region (see
+    `scatter_flagstones`'s own docstring)."""
+    pts = []
+    for (px, py) in points:
+        if not pts or math.hypot(px - pts[-1][0], py - pts[-1][1]) > 1e-9:
+            pts.append((float(px), float(py)))
+    n = len(pts)
+    if n < 2:
+        return []
+    half = max(width_mm, 0.0) * 0.5
+
+    def seg_dir(i):
+        ax, ay = pts[i]
+        bx, by = pts[i + 1]
+        dx, dy = bx - ax, by - ay
+        length = math.hypot(dx, dy)
+        if length < 1e-9:
+            return (1.0, 0.0)
+        return (dx / length, dy / length)
+
+    seg_perps = []
+    for i in range(n - 1):
+        dx, dy = seg_dir(i)
+        seg_perps.append((-dy, dx))   # left-of-travel unit perpendicular
+
+    offsets = []
+    for i in range(n):
+        if i == 0:
+            offsets.append(seg_perps[0])
+        elif i == n - 1:
+            offsets.append(seg_perps[-1])
+        else:
+            px, py = seg_perps[i - 1]
+            qx, qy = seg_perps[i]
+            bx, by = px + qx, py + qy
+            blen = math.hypot(bx, by)
+            if blen < 1e-9:
+                # A ~180-degree reversal has no well-defined miter -- fall
+                # back to the incoming segment's own unmitred offset.
+                offsets.append((px, py))
+                continue
+            bx, by = bx / blen, by / blen
+            cos_half = bx * px + by * py   # always in [0, 1] by construction
+            scale = 1.0 / max(cos_half, 1.0 / miter_limit)
+            offsets.append((bx * scale, by * scale))
+
+    left = [(x + nx * half, y + ny * half)
+           for (x, y), (nx, ny) in zip(pts, offsets)]
+    right = [(x - nx * half, y - ny * half)
+            for (x, y), (nx, ny) in zip(pts, offsets)]
+    return left + list(reversed(right))
+
+
+def clip_polygon_to_hex(polygon, diameter_mm):
+    """Clip `polygon` (any winding, possibly concave — e.g. a
+    `polyline_corridor_polygon` result) to the hex's own footprint
+    (`hex_polygon(diameter_mm)`) via `_intersect_halfplanes`. A path's
+    buffered corridor can extend past the hex's physical rim right where
+    the path is deliberately continuing onto a neighbouring tile — unlike a
+    hand-drawn or Flood-Filled region, which is already implicitly bounded
+    by the mesh itself — so it must be clipped before tessellating. Returns
+    `[]` if nothing of `polygon` survives."""
+    hexp = hex_polygon(diameter_mm)
+    if _signed_area(hexp) < 0.0:
+        hexp = list(reversed(hexp))
+    halfplanes = []
+    n = len(hexp)
+    for k in range(n):
+        ax, ay = hexp[k]
+        bx, by = hexp[(k + 1) % n]
+        dx, dy = bx - ax, by - ay
+        length = math.hypot(dx, dy)
+        if length < 1e-9:
+            continue
+        nx, ny = dy / length, -dx / length
+        c = nx * ax + ny * ay
+        halfplanes.append((nx, ny, c, None))
+    verts, _tags = _intersect_halfplanes(polygon, halfplanes)
+    return verts
+
+
 def _rotate_to_normal(nx, ny, nz):
     """3x3 rotation matrix (3 row-tuples) mapping (0,0,1) to the unit vector
     (nx, ny, nz) via the minimal (shortest-arc) rotation — Rodrigues' formula

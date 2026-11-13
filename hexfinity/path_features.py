@@ -92,6 +92,7 @@ _PATH_FEATURE_LINK_FIELDS = (
     "feature_type", "width_mm", "depth_mm", "repeat_mm", "local_subdiv",
     "texture", "depth_levels", "embankment_angle_deg",
     "embankment_variation_mm", "river_bottom_style", "preserve_edge",
+    "min_size_mm", "max_size_mm", "gap_mm", "thickness_mm",
 )
 
 # Generous vs. float32 property-storage/matrix-round-trip noise at hex-scale

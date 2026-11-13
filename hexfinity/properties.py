@@ -844,6 +844,11 @@ class HexFinityPathFeature(bpy.types.PropertyGroup):
             ('PAVED_ROAD', "Paved Road", "A stone-paved road"),
             ('RIVER', "River", "A carved river channel with sloped, "
                                 "irregular embankments and no texture"),
+            ('FLAGSTONE', "Flagstone Path", "A flagstone-paved walking "
+                          "path — places real, individually-tilted "
+                          "paving-slab objects along the line (the same "
+                          "algorithm as the Flagstone Paving Draw Area "
+                          "surface) rather than carving the tile mesh"),
             ('SEGMENT', "Segment", "A placed path-segment mesh piece (see "
                                    "Draw Segments Path) — no carve "
                                    "parameters; the geometry is a real "
@@ -955,6 +960,48 @@ class HexFinityPathFeature(bpy.types.PropertyGroup):
                     "matching River drawn on the neighbouring tile can "
                     "continue it seamlessly",
         default=True,
+        update=_on_path_feature_update,
+    )
+    # FLAGSTONE only — mirrors the FLAGSTONE Draw Area surface's own 4
+    # ParamSpec knobs (procedural_surfaces.SURFACES["FLAGSTONE"].extra_params)
+    # exactly, since flagstones.flagstone_path_specs feeds this feature's
+    # width_mm + these 4 fields into the same scatter_flagstones/
+    # assemble_flagstone_mesh pipeline a Draw Area region already uses — no
+    # depth_mm/repeat_mm/texture/local_subdiv, since a flagstone path places
+    # real objects rather than carving/texturing the tile's own mesh.
+    min_size_mm: bpy.props.FloatProperty(
+        name="Min Stone Size (mm)",
+        description="FLAGSTONE only — diameter of the smallest flagstones",
+        default=420.0,
+        min=0.5,
+        soft_max=2000.0,
+        update=_on_path_feature_update,
+    )
+    max_size_mm: bpy.props.FloatProperty(
+        name="Max Stone Size (mm)",
+        description="FLAGSTONE only — diameter of the largest flagstones",
+        default=650.0,
+        min=0.5,
+        soft_max=2000.0,
+        update=_on_path_feature_update,
+    )
+    gap_mm: bpy.props.FloatProperty(
+        name="Avg. Mortar Gap (mm)",
+        description="FLAGSTONE only — average gap maintained between "
+                    "neighbouring flagstones (actual gaps vary, and stones "
+                    "may touch in places), same convention as the "
+                    "Flagstone Paving Draw Area surface's own gap",
+        default=10.0,
+        min=0.0,
+        soft_max=100.0,
+        update=_on_path_feature_update,
+    )
+    thickness_mm: bpy.props.FloatProperty(
+        name="Slab Thickness (mm)",
+        description="FLAGSTONE only — thickness of each flagstone slab",
+        default=60.0,
+        min=5.0,
+        soft_max=300.0,
         update=_on_path_feature_update,
     )
     points: bpy.props.CollectionProperty(type=HexFinitySurfacePoint)
