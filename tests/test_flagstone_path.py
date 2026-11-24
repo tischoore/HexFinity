@@ -93,3 +93,63 @@ def _near_edge(poly, x, y, tol=1e-3):
         if math.hypot(x - (x0 + t * dx), y - (y0 + t * dy)) < tol:
             return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Rim-snapped ends are squared off along the hex edge.
+
+def _rim_dist(x, y):
+    return ps._nearest_hex_edge(x, y, D)[0]
+
+
+def _edge_point(edge_idx, t):
+    hexp = ps.hex_polygon(D)
+    (x0, y0), (x1, y1) = hexp[edge_idx], hexp[(edge_idx + 1) % 6]
+    return (x0 + (x1 - x0) * t, y0 + (y1 - y0) * t)
+
+
+def test_extend_rim_endpoints_moves_only_rim_ends_along_segment():
+    end = _edge_point(1, 0.5)
+    pts = [(-10.0, 0.0), (0.0, 5.0), end]
+    out = ps.extend_rim_endpoints(pts, 6.0, D)
+    assert out[0] == pts[0] and out[1] == pts[1]
+    dx, dy = out[2][0] - end[0], out[2][1] - end[1]
+    sx, sy = end[0] - pts[1][0], end[1] - pts[1][1]
+    assert math.hypot(dx, dy) > 6.0
+    assert abs(dx * sy - dy * sx) < 1e-6 * math.hypot(sx, sy) * math.hypot(dx, dy)
+    assert dx * sx + dy * sy > 0.0
+
+
+def test_extend_rim_endpoints_ignores_off_rim_ends():
+    pts = [(-10.0, 0.0), (10.0, 3.0)]
+    assert ps.extend_rim_endpoints(pts, 6.0, D) == pts
+
+
+def test_oblique_rim_end_is_flush_with_hex_edge():
+    width = 8.0
+    end = _edge_point(1, 0.5)
+    start = (end[0] - 30.0, end[1] - 10.0)   # meets the edge obliquely
+    polys = ps.path_corridor_polygons([start, end], width, D)
+    assert len(polys) == 1
+    poly = polys[0]
+    on_rim = [(x, y) for (x, y) in poly if _rim_dist(x, y) < 1e-6]
+    assert len(on_rim) >= 2
+    # The on-rim run spans (at least) the path width measured along the
+    # edge, i.e. the end is a full edge-aligned cut, not a skewed cap.
+    span = max(math.hypot(a[0] - b[0], a[1] - b[1]) for a in on_rim for b in on_rim)
+    assert span >= width - 1e-6
+    # No vertex stops short near the end: every vertex within reach of the
+    # end point is either on the rim or a full half-width back along the line.
+    for (x, y) in poly:
+        if math.hypot(x - end[0], y - end[1]) < width * 0.5:
+            assert _rim_dist(x, y) < 1e-6
+
+
+def test_corner_rim_end_stays_inside_and_simple():
+    corner = ps.hex_polygon(D)[0]
+    polys = ps.path_corridor_polygons([(0.0, 0.0), corner], 8.0, D)
+    assert len(polys) == 1
+    assert ps._polygon_is_simple(polys[0])
+    for (x, y) in polys[0]:
+        assert ps.point_in_polygon(x, y, ps.hex_polygon(D)) or _rim_dist(x, y) < 1e-6
+    assert sum(1 for (x, y) in polys[0] if _rim_dist(x, y) < 1e-6) >= 3

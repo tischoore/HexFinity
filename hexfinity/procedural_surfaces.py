@@ -792,6 +792,60 @@ def _clip_to_hex(poly, diameter_mm):
     return verts
 
 
+def _nearest_hex_edge(x, y, diameter_mm):
+    """(distance, outward_nx, outward_ny) to the nearest edge LINE of the
+    tile hexagon (`hex_polygon`) — 0 on an edge, the apothem at the centre.
+    A local copy of `mesh_builder.rim_edge_distance`'s math (that module
+    imports this one, so it can't be imported back)."""
+    hexp = hex_polygon(diameter_mm)
+    best = None
+    for i in range(6):
+        (x0, y0), (x1, y1) = hexp[i], hexp[(i + 1) % 6]
+        mx, my = (x0 + x1) * 0.5, (y0 + y1) * 0.5
+        m = math.hypot(mx, my)
+        nx, ny = mx / m, my / m          # outward normal (hex centred on origin)
+        dist = abs(m - (nx * x + ny * y))
+        if best is None or dist < best[0]:
+            best = (dist, nx, ny)
+    return best
+
+
+def extend_rim_endpoints(points, width_mm, diameter_mm, tol_mm=None):
+    """Copy of `points` where an END point (first or last) lying on the hex
+    rim is pushed outward along its own end segment's direction, past the
+    rim by `width_mm` plus a margin. Buffering the extended line and then
+    clipping to the hex (`path_corridor_polygons`) cuts the corridor end
+    exactly along the hex edge — or both edges at a P corner — instead of
+    leaving a cap perpendicular to the last segment, which is skewed
+    against the edge whenever the line doesn't meet it at 90°. Off-rim ends,
+    mid-line points, and an end segment that runs inward from the rim are
+    left untouched."""
+    pts = [(float(p[0]), float(p[1])) for p in points]
+    if len(pts) < 2 or width_mm <= 0.0:
+        return pts
+    if tol_mm is None:
+        tol_mm = max(1e-4 * diameter_mm, 1e-6)
+    ext = width_mm * 1.5 + 1.0
+
+    def push(end, prev):
+        ex, ey = end
+        dist, nx, ny = _nearest_hex_edge(ex, ey, diameter_mm)
+        if dist > tol_mm:
+            return end
+        dx, dy = ex - prev[0], ey - prev[1]
+        m = math.hypot(dx, dy)
+        if m < 1e-9:
+            return end
+        dx, dy = dx / m, dy / m
+        if dx * nx + dy * ny <= 1e-3:   # heading inward / along the rim
+            return end
+        return (ex + dx * ext, ey + dy * ext)
+
+    pts[-1] = push(pts[-1], pts[-2])
+    pts[0] = push(pts[0], pts[1])
+    return pts
+
+
 def path_corridor_polygons(points, width_mm, diameter_mm):
     """Turn an open polyline (tile-local mm) into the paved area of a
     Flagstone Path Feature: the line buffered by `width_mm/2` on each side
@@ -810,6 +864,9 @@ def path_corridor_polygons(points, width_mm, diameter_mm):
     half = width_mm * 0.5
     if len(pts) < 2 or half <= 0.0:
         return []
+    # A rim-snapped end is extended past the rim so the hex clip below
+    # squares it off exactly along the hex edge.
+    pts = extend_rim_endpoints(pts, width_mm, diameter_mm)
 
     def seg_normal(a, b):
         dx, dy = b[0] - a[0], b[1] - a[1]

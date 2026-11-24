@@ -323,6 +323,8 @@ unit-tested without Blender. Verify by hand after changes:
 
 ## Flagstone Path: bed + seating check
 
+**Rim-snapped ends.** When a Flagstone Path's first or last waypoint lies on the hex rim, `procedural_surfaces.extend_rim_endpoints` pushes it outward past the rim along its own end segment, by `1.5 × width + 1 mm`. The corridor's hex clip then cuts the end exactly along the hex edge (or along both edges at a P corner). Without this, an end cap perpendicular to a line meeting the edge obliquely left a triangular unpaved gap. The bed spec uses the same extended points, so the bed runs flat out to the edge; its rim fade still zeroes it at the seam. An end segment heading inward or along the rim is left alone. Stones are flush with the edge, apart from the few hundredths of a mm their own terrain tilt shifts their corners.
+
 A Flagstone Path flattens the terrain under its corridor into a bed by default (**Flatten Bed**, with Local Subdiv 2), and every stone's bottom face is checked against the terrain at its corners *and* interior points. `tests/_headless_flagstone_path_check.py` checks this end to end in real Blender on a hill-crossing path:
 
 ```

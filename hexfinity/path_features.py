@@ -416,9 +416,15 @@ def path_specs(tile_obj):
             # The stones themselves are real objects (flagstone_path_specs);
             # here we only flatten the bed they rest on, when enabled.
             if feature.flatten_bed:
+                from . import procedural_surfaces as ps
                 specs.append({
                     "kind": "bed",
-                    "points": [(p.x, p.y) for p in feature.points],
+                    # Rim-snapped ends extended past the rim, so the bed runs
+                    # flat right out to the edge (the rim fade still zeroes
+                    # it exactly at the seam).
+                    "points": ps.extend_rim_endpoints(
+                        [(p.x, p.y) for p in feature.points],
+                        feature.width_mm, map_props.diameter_mm),
                     "width_mm": feature.width_mm,
                     "blend_mm": max(feature.width_mm * 0.15, 1.0),
                     "local_subdiv": feature.local_subdiv,

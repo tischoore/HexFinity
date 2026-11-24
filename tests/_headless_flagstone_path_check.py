@@ -100,4 +100,29 @@ w_raw, _ = worst_penetration()
 print(f"flatten_bed OFF: worst penetration {w_raw:.4f} mm")
 assert w_raw <= sink + 0.08, w_raw
 
+# --- A path ending on a hex edge (snapped point) at an oblique angle must
+# finish flush with that edge across its full width.
+from hexfinity import map as hexmap
+from hexfinity import procedural_surfaces as ps
+feature.flatten_bed = True
+snaps = hexmap.edge_snap_points(mp.diameter_mm, 3)
+end = snaps[3]                      # a mid-edge snap point
+start = (end[0] * 0.3 + 6.0, end[1] * 0.3 - 4.0)
+feature.points.clear()
+for (x, y) in (start, end):
+    p = feature.points.add()
+    p.x, p.y = x, y
+operators.rebuild_tile(obj)
+fo = flag_obj()
+near = [v.co for v in fo.data.vertices
+        if (v.co.x - end[0]) ** 2 + (v.co.y - end[1]) ** 2 < (feature.width_mm * 0.75) ** 2]
+# Each stone is rigidly tilted onto the terrain, which shifts its corners'
+# XY by a few hundredths of a mm -- allow for that.
+rim_d = sorted(ps._nearest_hex_edge(c.x, c.y, mp.diameter_mm)[0] for c in near)
+print("closest rim distances:", [round(d, 4) for d in rim_d[:8]])
+on_rim = [c for c in near if ps._nearest_hex_edge(c.x, c.y, mp.diameter_mm)[0] < 0.05]
+span = max(((a.x - b.x) ** 2 + (a.y - b.y) ** 2) ** 0.5 for a in on_rim for b in on_rim)
+print(f"edge end: {len(on_rim)} stone verts on rim, span {span:.3f} mm (width {feature.width_mm:.3f})")
+assert span >= feature.width_mm * 0.95, span
+
 print("FLAGSTONE PATH CHECK OK")
