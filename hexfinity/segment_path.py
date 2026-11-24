@@ -1074,16 +1074,19 @@ class HEXFINITY_OT_start_segments_path_draw(bpy.types.Operator):
         # small so the user can see where there's something to aim for;
         # the one currently engaged (if any) is drawn brighter and bigger,
         # on top, so the exact snap point is unambiguous.
+        # POINT_UNIFORM_COLOR: UNIFORM_COLOR points are invisible on Vulkan/Metal.
+        point_shader = gpu.shader.from_builtin('POINT_UNIFORM_COLOR')
+        point_shader.bind()
         if self._hover_targets:
             gpu.state.point_size_set(6.0)
-            shader.uniform_float("color", _SNAP_CANDIDATE_COLOR)
+            point_shader.uniform_float("color", _SNAP_CANDIDATE_COLOR)
             candidate_positions = [(w.x, w.y, w.z) for w, _meta in self._hover_targets]
-            batch_for_shader(shader, 'POINTS', {"pos": candidate_positions}).draw(shader)
+            batch_for_shader(point_shader, 'POINTS', {"pos": candidate_positions}).draw(point_shader)
         if self._snap_world is not None:
             gpu.state.point_size_set(12.0)
-            shader.uniform_float("color", _SNAP_ACTIVE_COLOR)
+            point_shader.uniform_float("color", _SNAP_ACTIVE_COLOR)
             w = self._snap_world
-            batch_for_shader(shader, 'POINTS', {"pos": [(w.x, w.y, w.z)]}).draw(shader)
+            batch_for_shader(point_shader, 'POINTS', {"pos": [(w.x, w.y, w.z)]}).draw(point_shader)
 
         gpu.state.depth_test_set('NONE')
         gpu.state.face_culling_set('NONE')

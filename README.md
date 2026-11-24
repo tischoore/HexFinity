@@ -372,7 +372,7 @@ Press **Draw Feature** to start a modal tool. Waypoints are placed on a flat pla
 
 - Left-click places a waypoint.
 - A free click that would land outside the tile's own hex boundary is rejected outright, so a line can never wander onto a neighbour's footprint.
-- **Edge Snap** points — each hex edge's two corners plus `Edge Snap − 2` evenly spaced interior points, checked in screen-space so it's zoom-independent — plus every waypoint of the tile's already-drawn lines are checked before falling back to a free point. Snapping on the very first click just starts the line there. Snapping onto an existing line's waypoint on any later click commits the current line at an exact, reproducible point but leaves the tool running, ready to start a new line. Snapping onto a hex-edge point — see *Drawing across multiple hexes* — continues the line onto the neighbouring hex.
+- **Edge Snap** points — each hex edge's two corners plus `Edge Snap − 2` evenly spaced interior points, checked in screen-space so it's zoom-independent — plus every waypoint of the tile's already-drawn lines are checked before falling back to a free point. While the tool is active, every snap point has a visible gizmo, drawn as screen-space boxes (triangles/lines, not GL points, so they render on every GPU backend). Each **hex-edge point** is a filled green box on the drawing plane, with larger boxes at the P corners, joined by a faint vertical tether to a small green box on the real hex rim below, so it's clear which edge point it belongs to. Each **existing-line waypoint** (a same-tile join target) is a hollow cyan box, so "continue onto the neighbour" and "join this line" look different. The target the cursor would snap to is drawn on top as a larger opaque bright-green box with a white outline. When a hex-edge point and an existing waypoint coincide (every multi-hex crossing leaves one), the hex-edge point wins, so clicking an already-crossed edge point still crosses onto the neighbour instead of joining the line. Snapping on the very first click just starts the line there. Snapping onto an existing line's waypoint on any later click commits the current line at an exact, reproducible point but leaves the tool running, ready to start a new line. Snapping onto a hex-edge point — see *Drawing across multiple hexes* — continues the line onto the neighbouring hex.
 - Enter commits the current line early (minimum 2 points) without ending the tool. **Right-click is the only way to end the whole drawing session** (it also commits whatever line is in progress, if it has 2+ points).
 
 A committed line appears in the **Path Feature** list (name + type), editable/removable like a region. Every field auto-recarves the tile — there is no separate Generate step.
@@ -396,6 +396,8 @@ The **Type** dropdown picks one of four shapes, each with its own scale-aware de
 ### Layering
 
 Path Feature carves **on top of** everything else — Surface Texture, Procedural Surface regions, and any flora/terrain pad — matching its position as the topmost layer in the panel stack. Multiple overlapping lines apply in sequence, each adding its own offset to whatever the previous one left.
+
+**Flagstone Path** is the exception: it never carves the tile. The drawn line is buffered into a corridor polygon of the chosen Width (`procedural_surfaces.path_corridor_polygons` — miter joins, flat end caps, clipped to the hex; a bend too tight for one clean outline falls back to one quad per segment), and that polygon is paved by exactly the same power-diagram tessellator and per-stone terrain tilt fit the *Flagstone Paving* Draw Area surface uses (`scatter_flagstones` → `assemble_flagstone_mesh`, via `flagstones.sync_flagstones`). Its panel shows only Width, Slab Thickness, Min/Max Stone Size and Avg. Mortar Gap (defaults scaled from Man Height, taken from the surface's own ParamSpecs). The stones are a separate `Flagstones_<name>` object, rebuilt on every tile rebuild and mergeable into the tile with *Merge Flagstones*.
 
 ### River cross-tile continuity
 
@@ -628,7 +630,10 @@ HexFinity
 │  │   │                         generated, else ends the session there — no
 │  │   │                         pre-selection needed; RMB is the only way
 │  │   │                         to deliberately end the session)
-│  │   ├─ Name + Type (Simple / Gravel / Paved Road / River — each texture
+│  │   ├─ Flagstone Path: Width / Slab Thickness / Min Stone Size / Max
+│  │   │           Stone Size / Avg. Mortar Gap — places real flagstone
+│  │   │           objects along the line (no carve, no Depth/Repeat/Subdiv)
+│  │   ├─ Name + Type (Simple / Gravel / Paved Road / River / Flagstone Path — each texture
 │  │   │                         type carries its own texture, no separate
 │  │   │                         Texture dropdown; River has no texture at all)
 │  │   ├─ Width  (Simple/Gravel/Paved Road: groove width. River: flat bed
@@ -682,6 +687,8 @@ HexFinity
 ```
 
 A floating sphere gizmo, hovering one *level height* above the tile's apex, drags the active tile's centre XY inside the hex. When a HexFinity tile is selected, the viewport also overlays `P1`–`P6` labels floating one *level height* above each corner so corner identity is unambiguous in the panel. Separately, a **green** sphere gizmo hovers over every open grid slot bordering the map — see [Expanding the map](#expanding-the-map-add-hex-gizmos) — visible for the whole map regardless of selection, not tied to the active tile the way the cyan centre-drag sphere is.
+
+**Viewport dots (developer note):** every modal tool's GPU-drawn dot (Draw Path Feature's cursor/snap tip and waypoints, Draw Region points, the Flora marker, segment authoring tips/flags, and Draw Segments Path's snap candidates) is drawn with the `POINT_UNIFORM_COLOR` built-in shader, never `UNIFORM_COLOR`. The generic shader never writes a point size, so on the Vulkan/Metal GPU backends Blender 5.x uses, `gpu.state.point_size_set()` is ignored and the dots disappear (lines still draw, but at 1 px). `tests/test_gpu_point_shaders.py` enforces this with a source scan.
 
 ---
 

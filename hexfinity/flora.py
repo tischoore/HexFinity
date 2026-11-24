@@ -715,9 +715,12 @@ class HEXFINITY_OT_flora_marker(bpy.types.Operator):
         shader.uniform_float("color", _MARKER_COLOR)
         batch_for_shader(shader, 'LINE_STRIP', {"pos": pts}).draw(shader)
 
+        # POINT_UNIFORM_COLOR: UNIFORM_COLOR points are invisible on Vulkan/Metal.
+        point_shader = gpu.shader.from_builtin('POINT_UNIFORM_COLOR')
+        point_shader.bind()
         gpu.state.point_size_set(7.0)
-        shader.uniform_float("color", _MARKER_COLOR)
-        batch_for_shader(shader, 'POINTS', {"pos": [(cx, cy)]}).draw(shader)
+        point_shader.uniform_float("color", _MARKER_COLOR)
+        batch_for_shader(point_shader, 'POINTS', {"pos": [(cx, cy)]}).draw(point_shader)
 
         gpu.state.line_width_set(1.0)
         gpu.state.blend_set('NONE')

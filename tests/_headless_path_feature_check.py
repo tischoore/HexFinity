@@ -232,6 +232,23 @@ w1 = (obj2.location.x + new_feat.points[0].x, obj2.location.y + new_feat.points[
 assert abs(w0[0] - w1[0]) < 1e-6 and abs(w0[1] - w1[1]) < 1e-6, (w0, w1)
 print("shared waypoint coincides across tiles OK")
 
+# Snap tie-break: tile0 now has a committed waypoint exactly on the NE edge
+# midpoint. Picking at that screen spot must still return the hex-edge
+# target (edge_idx set), not the coincident waypoint (edge_idx None) --
+# otherwise clicking an already-crossed edge point would join instead of
+# crossing. Screen coords are faked as world XY (any monotone projection
+# gives the same nearest-target ordering for coincident points).
+from hexfinity.path_features import _pick_snap_target
+t0_targets = _snap_targets_world(obj, mp, pf_tool.edge_snap)
+screen = [((w.x, w.y), (w, e)) for w, e in t0_targets]
+coincident = [e for w, e in t0_targets
+              if abs(w.x - world_mid.x) < 1e-4 and abs(w.y - world_mid.y) < 1e-4]
+assert None in coincident and edge_idx in coincident, coincident
+picked = _pick_snap_target(screen, (world_mid.x, world_mid.y), 5.0)
+assert picked is not None and picked[1] == edge_idx, picked
+assert _pick_snap_target(screen, (1e6, 1e6), 5.0) is None
+print("edge snap wins tie against coincident waypoint OK")
+
 # A true dead end -- no tile at all across the edge -- must still block the
 # crossing (there is nothing to continue onto), independent of selection.
 tile2.is_generated = False

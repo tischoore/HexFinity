@@ -569,6 +569,13 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
                                     "tile (or draw a matching River there at "
                                     "the same edge point) to continue it.",
                               icon='INFO')
+            elif feature.feature_type == 'FLAGSTONE':
+                # Real flagstone objects (same tessellator as the Flagstone
+                # Paving Draw Area surface) — no carve depth/texture/subdiv.
+                sub.prop(feature, "thickness_mm")
+                sub.prop(feature, "min_size_mm")
+                sub.prop(feature, "max_size_mm")
+                sub.prop(feature, "gap_mm")
             else:
                 sub.prop(feature, "depth_mm")
                 sub.prop(feature, "repeat_mm")

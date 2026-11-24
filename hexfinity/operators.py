@@ -462,17 +462,25 @@ def rebuild_tile(obj, finalize_flora=False, bake_capture=None):
                                for c in obj.children)
         existing_flagstones = any(c.get("hf_flagstone_of") is not None
                                   for c in obj.children)
-        if scatter_regions or existing_scatter or existing_flagstones:
+        # Flagstone Path Features reuse the FLAGSTONE scatter pipeline over a
+        # corridor polygon around the drawn line (path_features.
+        # flagstone_path_specs) — same purge/resync lifecycle.
+        from . import path_features as _pf
+        flagstone_paths = _pf.flagstone_path_specs(obj)
+        if (scatter_regions or flagstone_paths or existing_scatter
+                or existing_flagstones):
             from . import scatter, flagstones
             scatter.purge_scatter(obj)
             flagstones.purge_flagstones(obj)
-            if scatter_regions:
+            if scatter_regions or flagstone_paths:
                 bpy.context.view_layer.update()
                 for i, rd in scatter_regions:
                     if rd.get("surface_type") == "FLAGSTONE":
                         flagstones.sync_flagstones(obj, i, rd, rd["name"])
                     else:
                         scatter.sync_scatter(obj, i, rd, rd["name"])
+                for rd in flagstone_paths:
+                    flagstones.sync_flagstones(obj, rd["key"], rd, rd["name"])
 
         # Planted trees, same full-purge-and-resync shape as scatter above:
         # placements are stored data (species/position/rotation/scale), not

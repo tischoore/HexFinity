@@ -70,7 +70,8 @@ from gpu_extras.batch import batch_for_shader
 from bpy_extras import view3d_utils
 from mathutils import Vector
 
-from .map import (edge_snap_points, point_in_hex, find_connected_component,
+from .map import (edge_snap_points, edge_snap_point_params, point_in_hex,
+                  find_connected_component,
                   EDGE_DIRECTIONS, neighbour_coord, find_tile)
 
 
@@ -82,6 +83,22 @@ VIEW_PAN_DURATION_S = 1.2
 _LINE_COLOR = (0.85, 0.55, 0.25, 0.9)
 _SNAP_COLOR = (0.3, 1.0, 0.5, 0.95)
 _POINT_COLOR = (1.0, 1.0, 1.0, 1.0)
+# Snap gizmos (screen-space boxes, see _screen_box_tris). Hex-edge points are
+# filled green boxes (bigger at the P corners) tethered down to the real rim;
+# existing-waypoint join targets are hollow cyan boxes so "continue onto the
+# neighbour" and "join this line" read differently; the engaged target is a
+# larger opaque bright-green box drawn on top.
+_EDGE_SNAP_FILL = (0.2, 0.9, 0.4, 0.55)
+_EDGE_SNAP_OUTLINE = (0.05, 0.45, 0.15, 1.0)
+_EDGE_SNAP_TETHER = (0.2, 0.9, 0.4, 0.35)
+_JOIN_SNAP_OUTLINE = (0.35, 0.9, 1.0, 0.95)
+_ENGAGED_FILL = (0.3, 1.0, 0.45, 1.0)
+_ENGAGED_OUTLINE = (1.0, 1.0, 1.0, 1.0)
+_EDGE_BOX_HALF_PX = 6.0
+_CORNER_BOX_HALF_PX = 8.0
+_RIM_BOX_HALF_PX = 2.5
+_JOIN_BOX_HALF_PX = 6.0
+_ENGAGED_BOX_HALF_PX = 10.0
 
 # Settings fields propagated by "Link Connected Paths" -- every physical/
 # carve field, deliberately excluding `name` (kept per-path) and `points`
@@ -150,6 +167,10 @@ _RIVER_DEFAULTS = {
     "preserve_edge": True,
 }
 
+# FLAGSTONE path width, as a factor of man_height_mm (stone sizes/gap/
+# thickness come from procedural_surfaces.SURFACES["FLAGSTONE"]'s ParamSpecs).
+FLAGSTONE_WIDTH_FACTOR = 1.5
+
 
 def apply_type_defaults(feature, man_height_mm):
     """Fill `feature`'s type-appropriate fields from `_TYPE_DEFAULTS`/
@@ -169,6 +190,14 @@ def apply_type_defaults(feature, man_height_mm):
             d["embankment_variation_factor"] * man_height_mm)
         feature.river_bottom_style = d["river_bottom_style"]
         feature.preserve_edge = d["preserve_edge"]
+        return
+    if feature.feature_type == 'FLAGSTONE':
+        # Same model-scale-aware defaults the FLAGSTONE Draw Area surface
+        # uses — its ParamSpecs are the single source of truth.
+        from . import procedural_surfaces as ps
+        feature.width_mm = FLAGSTONE_WIDTH_FACTOR * man_height_mm
+        for spec in ps.SURFACES["FLAGSTONE"].extra_params:
+            setattr(feature, spec.key, spec.scaled_default(man_height_mm))
         return
     d = _TYPE_DEFAULTS.get(feature.feature_type)
     if d is None:
@@ -377,6 +406,9 @@ def path_specs(tile_obj):
     for i, feature in enumerate(tile.path_features):
         if len(feature.points) < 2:
             continue
+        if feature.feature_type in ('FLAGSTONE', 'SEGMENT'):
+            # Real objects, not a carve — see flagstone_path_specs().
+            continue
         if feature.feature_type == 'RIVER':
             seed = _river_seed(tile, i)
             spec = {
@@ -417,6 +449,40 @@ def path_specs(tile_obj):
             "local_subdiv": feature.local_subdiv,
         })
     return specs
+
+
+def flagstone_path_specs(tile_obj):
+    """Region dicts (the shape `flagstones.sync_flagstones` consumes) for
+    every FLAGSTONE path feature on `tile_obj` with >= 2 points — one per
+    corridor polygon from `procedural_surfaces.path_corridor_polygons`
+    (normally one per feature). Each is tagged with its own `key`
+    (`path_<feature>_<polygon>`) so it never collides with a Draw Area
+    region's `region_<n>` tag."""
+    from . import procedural_surfaces as ps
+    tile = tile_obj.hexfinity_tile
+    diameter_mm = bpy.context.scene.hexfinity_map.diameter_mm
+    out = []
+    for i, feature in enumerate(tile.path_features):
+        if feature.feature_type != 'FLAGSTONE' or len(feature.points) < 2:
+            continue
+        polys = ps.path_corridor_polygons(
+            [(p.x, p.y) for p in feature.points], feature.width_mm, diameter_mm)
+        seed = _river_seed(tile, i)
+        for j, poly in enumerate(polys):
+            out.append({
+                "key": f"path_{i}_{j}",
+                "name": feature.name or f"Path {i + 1}",
+                "polygon": poly,
+                "seed": (seed ^ (j * 2654435761)) & 0x7FFFFFFF,
+                "scatter_merge": False,
+                "extras": {
+                    "min_size_mm": feature.min_size_mm,
+                    "max_size_mm": feature.max_size_mm,
+                    "gap_mm": feature.gap_mm,
+                    "thickness_mm": feature.thickness_mm,
+                },
+            })
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -464,15 +530,61 @@ def _snap_targets_world(obj, map_props, edge_snap):
     tile = obj.hexfinity_tile
     z_local = _feature_plane_z_local(tile, map_props)
     mw = obj.matrix_world
-    n = max(2, edge_snap)
-    per_edge = n - 1
     targets = []
-    for i, (x, y) in enumerate(edge_snap_points(map_props.diameter_mm, edge_snap)):
-        targets.append((mw @ Vector((x, y, z_local)), i // per_edge))
+    for (x, y), (edge_idx, _t) in zip(edge_snap_points(map_props.diameter_mm, edge_snap),
+                                      edge_snap_point_params(edge_snap)):
+        targets.append((mw @ Vector((x, y, z_local)), edge_idx))
     for feature in tile.path_features:
         for p in feature.points:
             targets.append((mw @ Vector((p.x, p.y, z_local)), None))
     return targets
+
+
+def _pick_snap_target(screen_targets, coord, radius_px):
+    """The payload of the screen-space target nearest `coord` within
+    `radius_px`, or None. `screen_targets` is [((sx, sy), payload), ...] in
+    `_snap_targets_world` order — hex-edge points first, existing waypoints
+    after. The comparison is strict (`<`) so the *first* of several equally
+    near targets wins: a committed waypoint lying exactly on a hex-edge
+    point (every multi-hex crossing leaves one) must not shadow that edge
+    point, or clicking it would resolve as a same-tile join (edge_idx None)
+    and never cross onto the neighbour."""
+    best = None
+    best_dist = radius_px + 1e-9
+    for (sx, sy), payload in screen_targets:
+        dist = math.hypot(sx - coord[0], sy - coord[1])
+        if dist < best_dist:
+            best_dist = dist
+            best = payload
+    return best
+
+
+def _screen_box_tris(cx, cy, half):
+    """6 screen-space verts (2 triangles) of an axis-aligned square centred
+    on (cx, cy). Snap gizmos are drawn as TRIS/LINES rather than POINTS so
+    they never depend on point_size_set (see tests/test_gpu_point_shaders.py
+    for why that's fragile on Vulkan/Metal)."""
+    x0, x1, y0, y1 = cx - half, cx + half, cy - half, cy + half
+    return [(x0, y0), (x1, y0), (x1, y1), (x0, y0), (x1, y1), (x0, y1)]
+
+
+def _screen_box_outline(cx, cy, half):
+    """8 screen-space verts ('LINES') outlining the same square."""
+    x0, x1, y0, y1 = cx - half, cx + half, cy - half, cy + half
+    return [(x0, y0), (x1, y0), (x1, y0), (x1, y1),
+            (x1, y1), (x0, y1), (x0, y1), (x0, y0)]
+
+
+def _rim_z_local(tile, map_props, edge_idx, t):
+    """Approximate tile-local z of the hex rim at fraction `t` along edge
+    `edge_idx` — a straight lerp between the two corner heights (the
+    Loop-subdivided sharp rim is close to linear between corners). Only used
+    to tether an edge-snap gizmo down to the real edge visually."""
+    levels = (tile.p1, tile.p2, tile.p3, tile.p4, tile.p5, tile.p6)
+    la = levels[edge_idx]
+    lb = levels[(edge_idx + 1) % 6]
+    level = la + (lb - la) * t
+    return map_props.base_thickness_mm + max(0.0, level) * map_props.level_height_mm
 
 
 def _commit_feature(context, obj, pts_local, feature_type='SIMPLE', seed_settings=None):
@@ -615,17 +727,12 @@ class HEXFINITY_OT_draw_path_feature(bpy.types.Operator):
             return None
         map_props = context.scene.hexfinity_map
         edge_snap = context.scene.hexfinity_path_features.edge_snap
-        best = None
-        best_dist = SNAP_RADIUS_PX
+        screen = []
         for w, edge_idx in _snap_targets_world(self._tile, map_props, edge_snap):
             s = view3d_utils.location_3d_to_region_2d(region, rv3d, w)
-            if s is None:
-                continue
-            dist = math.hypot(s.x - coord[0], s.y - coord[1])
-            if dist <= best_dist:
-                best_dist = dist
-                best = (w, edge_idx)
-        return best
+            if s is not None:
+                screen.append(((s.x, s.y), (w, edge_idx)))
+        return _pick_snap_target(screen, coord, SNAP_RADIUS_PX)
 
     def _update_snap_hint(self, context):
         self._snap_hint = self._find_snap_target(context, self._cursor)
@@ -777,6 +884,55 @@ class HEXFINITY_OT_draw_path_feature(bpy.types.Operator):
         if context.area is not None:
             context.area.tag_redraw()
 
+    def _draw_snap_gizmos(self, context, region, rv3d, shader):
+        """Draw a box gizmo at every snap target of the current tile (see
+        _draw). `shader` is a bound UNIFORM_COLOR shader."""
+        map_props = context.scene.hexfinity_map
+        edge_snap = context.scene.hexfinity_path_features.edge_snap
+        tile = self._tile.hexfinity_tile
+        mw = self._tile.matrix_world
+        targets = _snap_targets_world(self._tile, map_props, edge_snap)
+        params = edge_snap_point_params(edge_snap)
+        edge_targets = targets[:len(params)]
+        join_targets = targets[len(params):]
+
+        fill, outline, tether = [], [], []
+        for (w, edge_idx), (_e, t) in zip(edge_targets, params):
+            s = view3d_utils.location_3d_to_region_2d(region, rv3d, w)
+            if s is None:
+                continue
+            half = _CORNER_BOX_HALF_PX if t == 0.0 else _EDGE_BOX_HALF_PX
+            fill += _screen_box_tris(s.x, s.y, half)
+            outline += _screen_box_outline(s.x, s.y, half)
+            local = mw.inverted_safe() @ w
+            rim_w = mw @ Vector((local.x, local.y, _rim_z_local(tile, map_props, edge_idx, t)))
+            r = view3d_utils.location_3d_to_region_2d(region, rv3d, rim_w)
+            if r is not None:
+                tether += [(s.x, s.y), (r.x, r.y)]
+                fill += _screen_box_tris(r.x, r.y, _RIM_BOX_HALF_PX)
+
+        join_outline = []
+        for w, _edge_idx in join_targets:
+            s = view3d_utils.location_3d_to_region_2d(region, rv3d, w)
+            if s is not None:
+                join_outline += _screen_box_outline(s.x, s.y, _JOIN_BOX_HALF_PX)
+
+        shader.bind()
+        if tether:
+            gpu.state.line_width_set(1.0)
+            shader.uniform_float("color", _EDGE_SNAP_TETHER)
+            batch_for_shader(shader, 'LINES', {"pos": tether}).draw(shader)
+        if fill:
+            shader.uniform_float("color", _EDGE_SNAP_FILL)
+            batch_for_shader(shader, 'TRIS', {"pos": fill}).draw(shader)
+        gpu.state.line_width_set(1.5)
+        if outline:
+            shader.uniform_float("color", _EDGE_SNAP_OUTLINE)
+            batch_for_shader(shader, 'LINES', {"pos": outline}).draw(shader)
+        if join_outline:
+            shader.uniform_float("color", _JOIN_SNAP_OUTLINE)
+            batch_for_shader(shader, 'LINES', {"pos": join_outline}).draw(shader)
+
     def _draw(self, context):
         region = context.region
         rv3d = context.region_data
@@ -806,13 +962,37 @@ class HEXFINITY_OT_draw_path_feature(bpy.types.Operator):
         shader.uniform_float("color", _LINE_COLOR)
         batch_for_shader(shader, 'LINE_STRIP', {"pos": preview}).draw(shader)
 
-        # The tip dot (highlighted when it would snap) plus committed dots.
+        # Snap gizmos: every snap target is always visible as a screen-space
+        # box (TRIS/LINES, never POINTS, so they can't vanish on a backend
+        # that ignores point_size_set). Hex-edge points: filled green box on
+        # the drawing plane, tethered by a faint vertical line to a small box
+        # on the real rim below; existing-waypoint joins: hollow cyan box.
+        self._draw_snap_gizmos(context, region, rv3d, shader)
+
+        # Committed waypoint dots + the free cursor tip. POINT_UNIFORM_COLOR,
+        # not UNIFORM_COLOR: the latter never writes a point size, so on
+        # Vulkan/Metal point_size_set is ignored and the dots render
+        # invisibly.
+        point_shader = gpu.shader.from_builtin('POINT_UNIFORM_COLOR')
+        point_shader.bind()
         gpu.state.point_size_set(7.0)
-        shader.uniform_float("color", tip_color)
-        batch_for_shader(shader, 'POINTS', {"pos": [tip]}).draw(shader)
         if pts2d:
-            shader.uniform_float("color", _POINT_COLOR)
-            batch_for_shader(shader, 'POINTS', {"pos": pts2d}).draw(shader)
+            point_shader.uniform_float("color", _POINT_COLOR)
+            batch_for_shader(point_shader, 'POINTS', {"pos": pts2d}).draw(point_shader)
+        if self._snap_hint is None:
+            point_shader.uniform_float("color", tip_color)
+            batch_for_shader(point_shader, 'POINTS', {"pos": [tip]}).draw(point_shader)
+        else:
+            # Engaged target last, on top: a big opaque box with a white
+            # outline so "this is where the click will land" is unmistakable.
+            shader.bind()
+            shader.uniform_float("color", _ENGAGED_FILL)
+            batch_for_shader(shader, 'TRIS', {
+                "pos": _screen_box_tris(tip[0], tip[1], _ENGAGED_BOX_HALF_PX)}).draw(shader)
+            gpu.state.line_width_set(2.0)
+            shader.uniform_float("color", _ENGAGED_OUTLINE)
+            batch_for_shader(shader, 'LINES', {
+                "pos": _screen_box_outline(tip[0], tip[1], _ENGAGED_BOX_HALF_PX)}).draw(shader)
 
         gpu.state.line_width_set(1.0)
         gpu.state.blend_set('NONE')

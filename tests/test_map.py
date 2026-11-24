@@ -367,6 +367,28 @@ def test_edge_snap_clamped_minimum():
     assert len(pts0) == len(pts1) == len(pts2) == 6
 
 
+@pytest.mark.parametrize("edge_snap", [0, 2, 3, 4, 6])
+def test_edge_snap_point_params_parallel_to_points(edge_snap):
+    diameter = 100.0
+    pts = hm.edge_snap_points(diameter, edge_snap)
+    params = hm.edge_snap_point_params(edge_snap)
+    assert len(params) == len(pts)
+    per_edge = max(2, edge_snap) - 1
+    for i, ((x, y), (edge_idx, t)) in enumerate(zip(pts, params)):
+        assert edge_idx == i // per_edge
+        assert 0.0 <= t < 1.0
+        ax, ay = hm.corner_xy(edge_idx, diameter)
+        bx, by = hm.corner_xy((edge_idx + 1) % 6, diameter)
+        assert x == pytest.approx(ax + (bx - ax) * t)
+        assert y == pytest.approx(ay + (by - ay) * t)
+
+
+def test_edge_snap_point_params_corners_have_t_zero():
+    params = hm.edge_snap_point_params(4)
+    corners = [p for p in params if p[1] == 0.0]
+    assert [e for e, _ in corners] == list(range(6))
+
+
 # ---------------------------------------------------------------------------
 # hex_prism_verts_faces
 

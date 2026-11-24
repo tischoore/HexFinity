@@ -743,6 +743,131 @@ _FLAGSTONE_COVERAGE_FACTOR = 0.95
 _FLAGSTONE_MIN_CELL_AREA_FRACTION = 0.2
 
 
+# Miter joins sharper than this (miter length / half-width) are treated as
+# "too tight" — the single offset outline would spike or self-intersect, so
+# `path_corridor_polygons` falls back to one quad per polyline segment.
+_CORRIDOR_MITER_LIMIT = 4.0
+
+
+def _segments_cross(p1, p2, p3, p4):
+    """True if open segments p1-p2 and p3-p4 properly intersect."""
+    def orient(a, b, c):
+        return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    d1, d2 = orient(p3, p4, p1), orient(p3, p4, p2)
+    d3, d4 = orient(p1, p2, p3), orient(p1, p2, p4)
+    return ((d1 > 1e-12 and d2 < -1e-12) or (d1 < -1e-12 and d2 > 1e-12)) and \
+           ((d3 > 1e-12 and d4 < -1e-12) or (d3 < -1e-12 and d4 > 1e-12))
+
+
+def _polygon_is_simple(poly):
+    n = len(poly)
+    for i in range(n):
+        a1, a2 = poly[i], poly[(i + 1) % n]
+        for j in range(i + 2, n):
+            if i == 0 and j == n - 1:
+                continue   # adjacent via the closing edge
+            if _segments_cross(a1, a2, poly[j], poly[(j + 1) % n]):
+                return False
+    return True
+
+
+def _signed_area(poly):
+    n = len(poly)
+    return 0.5 * sum(poly[i][0] * poly[(i + 1) % n][1]
+                     - poly[(i + 1) % n][0] * poly[i][1] for i in range(n))
+
+
+def _clip_to_hex(poly, diameter_mm):
+    """Clip `poly` to the tile hexagon via `_intersect_halfplanes`."""
+    hexp = hex_polygon(diameter_mm)
+    halfplanes = []
+    for i in range(6):
+        (x0, y0), (x1, y1) = hexp[i], hexp[(i + 1) % 6]
+        a, b = (y1 - y0), -(x1 - x0)
+        c = a * x0 + b * y0
+        if c < 0.0:            # orient so the hex centre (origin) is kept
+            a, b, c = -a, -b, -c
+        halfplanes.append((a, b, c, None))
+    verts, _ = _intersect_halfplanes(poly, halfplanes)
+    return verts
+
+
+def path_corridor_polygons(points, width_mm, diameter_mm):
+    """Turn an open polyline (tile-local mm) into the paved area of a
+    Flagstone Path Feature: the line buffered by `width_mm/2` on each side
+    (miter joins, flat end caps), clipped to the tile hexagon so no stone
+    ever crosses the rim. Returns a list of CCW polygons — normally exactly
+    one; if a bend is too tight for a single clean outline (miter beyond
+    `_CORRIDOR_MITER_LIMIT`, or the outline self-intersects) it falls back
+    to one quad per polyline segment. Each polygon is fed straight into
+    `scatter_flagstones`, the same tessellator the FLAGSTONE Draw Area
+    surface uses."""
+    pts = []
+    for p in points:
+        p = (float(p[0]), float(p[1]))
+        if not pts or math.hypot(p[0] - pts[-1][0], p[1] - pts[-1][1]) > 1e-9:
+            pts.append(p)
+    half = width_mm * 0.5
+    if len(pts) < 2 or half <= 0.0:
+        return []
+
+    def seg_normal(a, b):
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        m = math.hypot(dx, dy)
+        return (-dy / m, dx / m)
+
+    normals = [seg_normal(pts[i], pts[i + 1]) for i in range(len(pts) - 1)]
+
+    def quad(a, b, n):
+        return [(a[0] - n[0] * half, a[1] - n[1] * half),
+                (b[0] - n[0] * half, b[1] - n[1] * half),
+                (b[0] + n[0] * half, b[1] + n[1] * half),
+                (a[0] + n[0] * half, a[1] + n[1] * half)]
+
+    left, right = [], []
+    too_tight = False
+    for i, p in enumerate(pts):
+        if i == 0:
+            n, scale = normals[0], 1.0
+        elif i == len(pts) - 1:
+            n, scale = normals[-1], 1.0
+        else:
+            n0, n1 = normals[i - 1], normals[i]
+            mx, my = n0[0] + n1[0], n0[1] + n1[1]
+            mm = math.hypot(mx, my)
+            if mm < 1e-9:
+                too_tight = True
+                break
+            n = (mx / mm, my / mm)
+            cos_half = n[0] * n0[0] + n[1] * n0[1]
+            scale = 1.0 / cos_half if cos_half > 1e-9 else float("inf")
+            if scale > _CORRIDOR_MITER_LIMIT:
+                too_tight = True
+                break
+        left.append((p[0] + n[0] * half * scale, p[1] + n[1] * half * scale))
+        right.append((p[0] - n[0] * half * scale, p[1] - n[1] * half * scale))
+
+    if not too_tight:
+        outline = right + left[::-1]
+        if _polygon_is_simple(outline):
+            raw = [outline]
+        else:
+            too_tight = True
+    if too_tight:
+        raw = [quad(pts[i], pts[i + 1], normals[i]) for i in range(len(pts) - 1)]
+
+    out = []
+    for poly in raw:
+        if _signed_area(poly) < 0.0:
+            poly = poly[::-1]
+        clipped = _clip_to_hex(poly, diameter_mm)
+        if len(clipped) >= 3 and abs(_signed_area(clipped)) > 1e-6:
+            if _signed_area(clipped) < 0.0:
+                clipped = clipped[::-1]
+            out.append(clipped)
+    return out
+
+
 def scatter_flagstones(polygon, *, min_size_mm, max_size_mm, gap_mm, seed):
     """Plan flagstone placements inside `polygon` (tile-local mm) as a power
     diagram (weighted Voronoi) tessellation, each cell inset for mortar.

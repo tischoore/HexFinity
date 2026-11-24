@@ -189,6 +189,17 @@ def edge_snap_points(diameter_mm, edge_snap):
     return polygon_edge_snap_points(corners, edge_snap)
 
 
+def edge_snap_point_params(edge_snap, edge_count=6):
+    """[(edge_idx, t), ...] parallel to edge_snap_points()/
+    polygon_edge_snap_points(): point i lies at fraction `t` (in [0, 1))
+    along edge `edge_idx`, i.e. lerp(corner[edge_idx], corner[edge_idx+1], t).
+    `t == 0` marks a polygon corner (a P corner for a hex). Lets a caller
+    recover per-point edge membership/position without re-deriving the
+    `i // (edge_snap - 1)` ordering arithmetic."""
+    n = max(2, edge_snap)
+    return [(i, k / (n - 1)) for i in range(edge_count) for k in range(n - 1)]
+
+
 def point_in_polygon(x, y, vertices):
     """True if (x, y) lies inside (or on the boundary of) the convex polygon
     given as an ordered list of (x, y) vertices — a sign-consistency test,

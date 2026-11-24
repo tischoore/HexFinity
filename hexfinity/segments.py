@@ -617,12 +617,15 @@ class HEXFINITY_OT_draw_segment_path(bpy.types.Operator):
         shader.uniform_float("color", _LINE_COLOR)
         batch_for_shader(shader, 'LINE_STRIP', {"pos": preview}).draw(shader)
 
+        # POINT_UNIFORM_COLOR: UNIFORM_COLOR points are invisible on Vulkan/Metal.
+        point_shader = gpu.shader.from_builtin('POINT_UNIFORM_COLOR')
+        point_shader.bind()
         gpu.state.point_size_set(7.0)
-        shader.uniform_float("color", tip_color)
-        batch_for_shader(shader, 'POINTS', {"pos": [tip]}).draw(shader)
+        point_shader.uniform_float("color", tip_color)
+        batch_for_shader(point_shader, 'POINTS', {"pos": [tip]}).draw(point_shader)
         if pts2d:
-            shader.uniform_float("color", _POINT_COLOR)
-            batch_for_shader(shader, 'POINTS', {"pos": pts2d}).draw(shader)
+            point_shader.uniform_float("color", _POINT_COLOR)
+            batch_for_shader(point_shader, 'POINTS', {"pos": pts2d}).draw(point_shader)
 
         gpu.state.line_width_set(1.0)
         gpu.state.blend_set('NONE')
@@ -794,13 +797,14 @@ class HEXFINITY_OT_add_corner(bpy.types.Operator):
                 tip = (s.x, s.y)
                 tip_color = _SHARP_CORNER_COLOR if self._snap_is_sharp else _SNAP_COLOR
 
-        shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+        # POINT_UNIFORM_COLOR: UNIFORM_COLOR points are invisible on Vulkan/Metal.
+        point_shader = gpu.shader.from_builtin('POINT_UNIFORM_COLOR')
         gpu.state.blend_set('ALPHA')
-        shader.bind()
+        point_shader.bind()
 
         gpu.state.point_size_set(9.0)
-        shader.uniform_float("color", tip_color)
-        batch_for_shader(shader, 'POINTS', {"pos": [tip]}).draw(shader)
+        point_shader.uniform_float("color", tip_color)
+        batch_for_shader(point_shader, 'POINTS', {"pos": [tip]}).draw(point_shader)
 
         gpu.state.point_size_set(1.0)
         gpu.state.blend_set('NONE')
@@ -1131,9 +1135,14 @@ def _draw_flag(shader, x, y, color, active):
     flag_h = _FLAG_HEIGHT_ACTIVE_PX if active else _FLAG_HEIGHT_PX
     top = y + pole_h
 
-    shader.uniform_float("color", color)
+    # POINT_UNIFORM_COLOR: UNIFORM_COLOR points are invisible on Vulkan/Metal.
+    point_shader = gpu.shader.from_builtin('POINT_UNIFORM_COLOR')
+    point_shader.bind()
+    point_shader.uniform_float("color", color)
     gpu.state.point_size_set(8.0 if active else 5.0)
-    batch_for_shader(shader, 'POINTS', {"pos": [(x, y)]}).draw(shader)
+    batch_for_shader(point_shader, 'POINTS', {"pos": [(x, y)]}).draw(point_shader)
+    shader.bind()
+    shader.uniform_float("color", color)
     batch_for_shader(shader, 'LINES', {"pos": [(x, y), (x, top)]}).draw(shader)
     batch_for_shader(shader, 'TRIS', {"pos": [
         (x, top), (x + flag_w, top - flag_h * 0.5), (x, top - flag_h),

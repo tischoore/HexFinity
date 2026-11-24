@@ -229,7 +229,8 @@ def sync_flagstones(tile_obj, region_idx, region_dict, name):
         coll.objects.link(obj)
     obj.parent = tile_obj            # default matrix_parent_inverse (identity):
     obj.location = (0.0, 0.0, 0.0)   # flagstone verts are already tile-local mm
-    obj[FLAGSTONE_OF] = region_key(region_idx)
+    # A Flagstone Path Feature passes its own "path_<i>_<j>" key.
+    obj[FLAGSTONE_OF] = region_dict.get("key") or region_key(region_idx)
     obj[FLAGSTONE_MERGE] = bool(region_dict.get("scatter_merge", False))
     return obj
 

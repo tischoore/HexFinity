@@ -169,10 +169,13 @@ class HEXFINITY_OT_draw_region(bpy.types.Operator):
             batch_for_shader(shader, 'LINE_STRIP', {"pos": preview}).draw(shader)
 
         # Vertex dots.
+        # POINT_UNIFORM_COLOR: UNIFORM_COLOR points are invisible on Vulkan/Metal.
         if pts2d:
+            point_shader = gpu.shader.from_builtin('POINT_UNIFORM_COLOR')
+            point_shader.bind()
             gpu.state.point_size_set(7.0)
-            shader.uniform_float("color", (1.0, 1.0, 1.0, 1.0))
-            batch_for_shader(shader, 'POINTS', {"pos": pts2d}).draw(shader)
+            point_shader.uniform_float("color", (1.0, 1.0, 1.0, 1.0))
+            batch_for_shader(point_shader, 'POINTS', {"pos": pts2d}).draw(point_shader)
 
         gpu.state.line_width_set(1.0)
         gpu.state.blend_set('NONE')
