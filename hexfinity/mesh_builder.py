@@ -311,10 +311,13 @@ def build_hex_tile(
     "embankment_variation_mm", "river_bottom_style", "local_subdiv",
     "seed"}` plus `"pixels"`/`"tex_width"`/`"tex_height"`/
     `"ripple_patch_mm"` when rippled, applied via
-    `tree_pads.refine_and_carve_river`). The list is partitioned by `"kind"`
-    (defaulting missing/old-shaped entries to `"texture"`) and each group is
-    passed to its own `tree_pads` call, texture-group first, river-group
-    second, strictly after the merged `flora_pads`/`terrain_pads` flatten
+    `tree_pads.refine_and_carve_river`) or `"bed"` (FLAGSTONE with Flatten
+    Bed — `{"points", "width_mm", "blend_mm", "local_subdiv"}`, applied via
+    `tree_pads.refine_and_flatten_bed_along_path`). The list is partitioned
+    by `"kind"` (defaulting missing/old-shaped entries to `"texture"`) and
+    each group is passed to its own `tree_pads` call — bed-group first (so a
+    groove/river crossing a paved path still wins), then texture, then
+    river — strictly after the merged `flora_pads`/`terrain_pads` flatten
     pass and before `flora_notches` — so a path/river carves into whatever
     landform/pad flattening already produced (the topmost layer in the
     user-facing Water/Land/Draw Area/Path Feature stack), and a river's
@@ -597,6 +600,11 @@ def build_hex_tile(
                              if p.get("kind", "texture") == "texture"]
             river_paths = [p for p in path_features
                            if p.get("kind") == "river"]
+            bed_paths = [p for p in path_features if p.get("kind") == "bed"]
+            if bed_paths:
+                top_faces = tree_pads.refine_and_flatten_bed_along_path(
+                    verts_mm, top_faces, protected_edges, bed_paths,
+                    diameter_mm, base_thickness_mm)
             if texture_paths:
                 top_faces = tree_pads.refine_and_displace_along_path(
                     verts_mm, top_faces, protected_edges, texture_paths,

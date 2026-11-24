@@ -1204,6 +1204,37 @@ def _shrink_toward_centroid(cx, cy, x, y):
             cy + (y - cy) * (1.0 - _SAMPLE_INWARD_SHRINK))
 
 
+# Fractions (centroid -> corner / edge midpoint) at which the bottom face's
+# interior is sampled for the no-penetration lift, on top of the exact
+# corners and edge midpoints themselves.
+_INTERIOR_SAMPLE_RINGS = (0.25, 0.5, 0.75)
+
+
+def _bottom_face_samples(bottom_ring):
+    """`[(x, y, z_bottom), ...]` points ON a stone's (planar, convex) bottom
+    face: the exact corners, every edge midpoint, the vertex centroid, and
+    each corner/midpoint pulled toward that centroid at every
+    `_INTERIOR_SAMPLE_RINGS` fraction. Since the ring is planar, linear
+    interpolation between the centroid and any boundary point stays exactly
+    on the face, so `z_bottom` needs no plane evaluation."""
+    n = len(bottom_ring)
+    cx = sum(p[0] for p in bottom_ring) / n
+    cy = sum(p[1] for p in bottom_ring) / n
+    cz = sum(p[2] for p in bottom_ring) / n
+    boundary = list(bottom_ring)
+    for i in range(n):
+        a, b = bottom_ring[i], bottom_ring[(i + 1) % n]
+        boundary.append(((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5,
+                         (a[2] + b[2]) * 0.5))
+    out = list(boundary)
+    out.append((cx, cy, cz))
+    for t in _INTERIOR_SAMPLE_RINGS:
+        for (bx, by, bz) in boundary:
+            out.append((cx + (bx - cx) * t, cy + (by - cy) * t,
+                        cz + (bz - cz) * t))
+    return out
+
+
 def assemble_flagstone_mesh(placements, corner_sampler, *, thickness_mm=60.0,
                             sink_mm=1.0, max_tilt_deg=25.0):
     """Join every flagstone in `placements` into ONE `(verts, faces)` mesh,
@@ -1243,7 +1274,11 @@ def assemble_flagstone_mesh(placements, corner_sampler, *, thickness_mm=60.0,
     case restores the "never penetrates" guarantee at the true terrain
     rather than just the flat linear model of it — the same corner re-check
     `segment_path.py`'s own placement fit performs for a placed path
-    segment, for the identical reason. Finally applies the `sink_mm` overlap
+    segment, for the identical reason. That recheck also covers the bottom
+    face's INTERIOR (`_bottom_face_samples`: edge midpoints, centroid and
+    rings in between), since the fit itself only sees the corners and
+    convex/bumpy terrain between them would otherwise poke up through the
+    slab. Finally applies the `sink_mm` overlap
     (so a later boolean merge stays manifold, same as boulders). The stones
     share no vertices, so the concatenation of closed 2-manifold prisms is
     itself 2-manifold."""
@@ -1278,16 +1313,20 @@ def assemble_flagstone_mesh(placements, corner_sampler, *, thickness_mm=60.0,
             world.append((x + px + rvx, y + py + rvy, pz + rvz))
 
         # Unlike the fit samples above, this safety-net recheck deliberately
-        # samples the corner's own TRUE final position, not a nudged one --
-        # it's the thing that guarantees no corner ever sinks below the real
-        # terrain there, so it must read the real terrain exactly there, not
-        # a lerped stand-in for it.
+        # samples each corner's own TRUE final position, not a nudged one --
+        # it's the thing that guarantees the stone never sinks below the real
+        # terrain, so it must read the real terrain exactly there. It also
+        # samples the bottom face's INTERIOR (`_bottom_face_samples`): the
+        # fit only ever saw the corners, so on a convex/bumpy surface (a
+        # hill, a Surface Texture) the terrain between the corners would
+        # otherwise poke straight up through the thin slab -- the reported
+        # "flagstones sink into the surface" bug.
         lift = 0.0
-        for (wx, wy, wz) in world[:n]:
+        for (wx, wy, wz) in _bottom_face_samples(world[:n]):
             gap = wz - corner_sampler(wx, wy)
             if gap < lift:
                 lift = gap
-        shift = -lift - sink_mm   # lift <= 0, so -lift >= 0 clears the worst corner
+        shift = -lift - sink_mm   # lift <= 0, so -lift >= 0 clears the worst sample
 
         base = len(all_verts)
         for (wx, wy, wz) in world:
@@ -1452,7 +1491,7 @@ SURFACES = {
                               10.0, 0.0, 100.0, unit='mm', reference_mm=10.0),
                     ParamSpec("thickness_mm", "Slab Thickness (mm)",
                               "Thickness of each flagstone slab",
-                              60.0, 5.0, 300.0, unit='mm', reference_mm=60.0),
+                              60.0, 0.2, 300.0, unit='mm', reference_mm=60.0),
                 )),
     )
 }

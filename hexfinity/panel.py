@@ -571,11 +571,15 @@ class HEXFINITY_PT_panel(bpy.types.Panel):
                               icon='INFO')
             elif feature.feature_type == 'FLAGSTONE':
                 # Real flagstone objects (same tessellator as the Flagstone
-                # Paving Draw Area surface) — no carve depth/texture/subdiv.
+                # Paving Draw Area surface) resting on an optional
+                # flattened bed — no carve depth/texture.
                 sub.prop(feature, "thickness_mm")
                 sub.prop(feature, "min_size_mm")
                 sub.prop(feature, "max_size_mm")
                 sub.prop(feature, "gap_mm")
+                sub.prop(feature, "flatten_bed")
+                if feature.flatten_bed:
+                    sub.prop(feature, "local_subdiv")
             else:
                 sub.prop(feature, "depth_mm")
                 sub.prop(feature, "repeat_mm")

@@ -687,3 +687,64 @@ def test_fit_resting_plane_is_available_and_used():
     # Not a re-test of segment_geometry's own suite -- just confirms the
     # import this module depends on resolves to the real function.
     assert sg.fit_resting_plane([(0, 0, 1), (1, 0, 1), (0, 1, 1)]) is not None
+
+
+# ---------------------------------------------------------------------------
+# Interior-aware lift: terrain between a stone's corners must never poke up
+# through the slab (the "flagstones sink into the surface" bug).
+
+def _stone_bottoms(placements, verts):
+    i = 0
+    for (_x, _y, outline, _pid) in placements:
+        n = len(outline)
+        yield verts[i:i + n]
+        i += 2 * n
+
+
+def _max_interior_penetration(placements, verts, sampler):
+    worst = -float("inf")
+    for ring in _stone_bottoms(placements, verts):
+        n = len(ring)
+        cx = sum(p[0] for p in ring) / n
+        cy = sum(p[1] for p in ring) / n
+        cz = sum(p[2] for p in ring) / n
+        for p in ring:
+            for t in (0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0):
+                px, py = cx + (p[0] - cx) * t, cy + (p[1] - cy) * t
+                pz = cz + (p[2] - cz) * t
+                worst = max(worst, sampler(px, py) - pz)
+    return worst
+
+
+@pytest.mark.parametrize("sampler", [
+    lambda x, y: 15.0 - 0.01 * x * x,                                  # hill
+    lambda x, y: 15.0 - 0.01 * x * x
+    + 0.3 * math.sin(x * 2.1) * math.cos(y * 1.7),                     # bumpy hill
+    lambda x, y: 10.0 + 0.4 * math.exp(-(x * x + y * y)),              # centre bump
+])
+def test_assembly_interior_never_penetrated_by_convex_terrain(sampler):
+    poly = [(-20.0, -4.0), (20.0, -4.0), (20.0, 4.0), (-20.0, 4.0)]
+    placements = ps.scatter_flagstones(poly, min_size_mm=2.33, max_size_mm=3.6,
+                                       gap_mm=0.055, seed=1)
+    sink = 0.05
+    verts, faces = ps.assemble_flagstone_mesh(
+        placements, sampler, thickness_mm=0.33, sink_mm=sink, max_tilt_deg=25.0)
+    assert_two_manifold(verts, faces)
+    # Sampled at a denser pattern than the lift itself uses; allow a small
+    # resolution slack beyond the intended sink overlap.
+    assert _max_interior_penetration(placements, verts, sampler) <= sink + 0.05
+
+
+def test_bottom_face_samples_lie_on_tilted_plane():
+    ring = [(0.0, 0.0, 1.0), (4.0, 0.0, 3.0), (4.0, 3.0, 4.5), (0.0, 3.0, 2.5)]
+    plane = lambda x, y: 1.0 + 0.5 * x + 0.5 * y
+    samples = ps._bottom_face_samples(ring)
+    assert len(samples) == 2 * len(ring) + 1 + 2 * len(ps._INTERIOR_SAMPLE_RINGS) * len(ring)
+    for (x, y, z) in samples:
+        assert z == pytest.approx(plane(x, y), abs=1e-9)
+        assert 0.0 <= x <= 4.0 and 0.0 <= y <= 3.0
+
+
+def test_flagstone_thickness_min_allows_small_scale_default():
+    spec = {s.key: s for s in ps.SURFACES["FLAGSTONE"].extra_params}["thickness_mm"]
+    assert spec.scaled_default(10.0) >= spec.min

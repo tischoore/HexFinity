@@ -1000,8 +1000,16 @@ class HexFinityPathFeature(bpy.types.PropertyGroup):
         name="Slab Thickness (mm)",
         description="FLAGSTONE only — thickness of each flagstone slab",
         default=60.0,
-        min=5.0,
+        min=0.2,
         soft_max=300.0,
+        update=_on_path_feature_update,
+    )
+    flatten_bed: bpy.props.BoolProperty(
+        name="Flatten Bed",
+        description="FLAGSTONE only — flatten the terrain under the path "
+                    "corridor into a smooth bed (following the path's slope "
+                    "lengthwise, flat across) so the stones lie flush on top",
+        default=True,
         update=_on_path_feature_update,
     )
     points: bpy.props.CollectionProperty(type=HexFinitySurfacePoint)

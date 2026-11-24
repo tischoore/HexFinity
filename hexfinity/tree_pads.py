@@ -872,6 +872,88 @@ def _interp_table(table, s):
     return table[-1][1]
 
 
+def refine_and_flatten_bed_along_path(verts, faces, protected_edges, beds,
+                                      diameter_mm, base_thickness_mm):
+    """Refine + flatten `faces` into a smooth bed along each path's polyline
+    — the prepared ground a Flagstone Path's stones rest on. Append-only on
+    `verts`, same contract as the other refine+apply strategies.
+
+    `beds` is a list of `{"points", "width_mm", "blend_mm", "local_subdiv"}`
+    dicts (tile-local mm). Combines `refine_and_carve_river`'s absolute
+    lerp-toward-target in the curvilinear `(s, t)` frame (target =
+    the pre-flatten centerline height at arc-length `s`, so the bed follows
+    the path's own slope lengthwise but is flat across) with
+    `refine_and_displace_along_path`'s weight shape: 1.0 within `width/2`, a
+    `1 - smoothstep` shoulder out to `width/2 + blend_mm`, and the mandatory
+    `rim_edge_distance` fade over `blend_mm` so the seam stays untouched.
+    Multiple beds apply sequentially."""
+    if not beds:
+        return list(faces)
+
+    ctxs = []
+    refine_specs = []
+    for b in beds:
+        pts = b["points"]
+        half = b["width_mm"] / 2.0
+        blend = max(b.get("blend_mm", 0.0), 0.0)
+        ctxs.append({
+            "points": pts, "half": half, "blend": blend,
+            "table": _sample_centerline_heights(verts, faces, pts,
+                                                max(half, 1.0)),
+        })
+        levels = int(b.get("local_subdiv", 0))
+        # `_edge_qualifies` stops splitting an edge once it's shorter than
+        # 0.6 x the spec's radius, so a chain of `half`-radius circles (what
+        # the texture/river paths use) leaves ~0.6*half-long edges -- longer
+        # than the bed's own shoulder, so one coarse triangle straddling the
+        # bed edge slopes up INTO the bed and pokes through the stones. Use
+        # smaller circles sized to the shoulder instead, keeping the same
+        # total reach (radius + blend = half + blend).
+        r_ref = max(min(half, max(blend, 0.5)), 1e-3)
+        reach_blend = max(half + blend - r_ref, 0.0)
+        step = r_ref
+        for i in range(len(pts) - 1):
+            ax, ay = pts[i]
+            bx, by = pts[i + 1]
+            n_steps = max(1, int(math.ceil(math.hypot(bx - ax, by - ay) / step)))
+            for k in range(n_steps + 1):
+                t = k / n_steps
+                refine_specs.append({
+                    "x": ax + (bx - ax) * t, "y": ay + (by - ay) * t,
+                    "radius_mm": r_ref, "blend_mm": reach_blend,
+                    "_levels": levels,
+                })
+
+    faces = _refine_corridors_with_own_levels(verts, faces, protected_edges,
+                                              refine_specs)
+
+    for i in range(len(verts)):
+        x, y, z = verts[i]
+        changed = False
+        for ctx in ctxs:
+            half, blend = ctx["half"], ctx["blend"]
+            s, t = curvilinear_coords(x, y, ctx["points"])
+            d = abs(t)
+            if d <= half:
+                w = 1.0
+            elif blend > 1e-9 and d <= half + blend:
+                w = 1.0 - _smoothstep((d - half) / blend)
+            else:
+                continue
+            rim = rim_edge_distance(x, y, diameter_mm)
+            fade = max(blend, 1e-6)
+            w *= 0.0 if rim < 0.0 else (1.0 if rim > fade else rim / fade)
+            if w <= 0.0:
+                continue
+            target = _interp_table(ctx["table"], s)
+            z = z + w * (target - z)
+            changed = True
+        if changed:
+            verts[i] = (x, y, max(z, base_thickness_mm))
+
+    return faces
+
+
 def refine_and_carve_river(verts, faces, protected_edges, rivers,
                             diameter_mm, base_thickness_mm):
     """Refine + carve `faces` into a river channel along each river's

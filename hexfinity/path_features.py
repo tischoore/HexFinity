@@ -170,6 +170,7 @@ _RIVER_DEFAULTS = {
 # FLAGSTONE path width, as a factor of man_height_mm (stone sizes/gap/
 # thickness come from procedural_surfaces.SURFACES["FLAGSTONE"]'s ParamSpecs).
 FLAGSTONE_WIDTH_FACTOR = 1.5
+FLAGSTONE_BED_LOCAL_SUBDIV = 2
 
 
 def apply_type_defaults(feature, man_height_mm):
@@ -196,6 +197,9 @@ def apply_type_defaults(feature, man_height_mm):
         # uses — its ParamSpecs are the single source of truth.
         from . import procedural_surfaces as ps
         feature.width_mm = FLAGSTONE_WIDTH_FACTOR * man_height_mm
+        # Bed-flatten refinement passes: enough that a coarse top mesh
+        # actually comes out flat under the corridor.
+        feature.local_subdiv = FLAGSTONE_BED_LOCAL_SUBDIV
         for spec in ps.SURFACES["FLAGSTONE"].extra_params:
             setattr(feature, spec.key, spec.scaled_default(man_height_mm))
         return
@@ -406,8 +410,19 @@ def path_specs(tile_obj):
     for i, feature in enumerate(tile.path_features):
         if len(feature.points) < 2:
             continue
-        if feature.feature_type in ('FLAGSTONE', 'SEGMENT'):
-            # Real objects, not a carve — see flagstone_path_specs().
+        if feature.feature_type == 'SEGMENT':
+            continue
+        if feature.feature_type == 'FLAGSTONE':
+            # The stones themselves are real objects (flagstone_path_specs);
+            # here we only flatten the bed they rest on, when enabled.
+            if feature.flatten_bed:
+                specs.append({
+                    "kind": "bed",
+                    "points": [(p.x, p.y) for p in feature.points],
+                    "width_mm": feature.width_mm,
+                    "blend_mm": max(feature.width_mm * 0.15, 1.0),
+                    "local_subdiv": feature.local_subdiv,
+                })
             continue
         if feature.feature_type == 'RIVER':
             seed = _river_seed(tile, i)

@@ -137,7 +137,15 @@ per-corner seating raycasts, and the boolean merge touch `bpy`.
      rigid stone straight up by whatever small amount clears the worst case
      restores the "never penetrates" guarantee against the *true* terrain —
      the identical corner re-check `segment_path.py`'s own placement fit
-     performs, for the identical reason.
+     performs, for the identical reason. The re-check covers the bottom
+     face's **interior** too (`_bottom_face_samples`: exact corners, edge
+     midpoints, the centroid, and rings at `_INTERIOR_SAMPLE_RINGS` =
+     0.25/0.5/0.75 of the way from the centroid to each corner/midpoint).
+     The bottom face is planar, so the slab's own Z at each sample is a
+     plain linear interpolation. The fit itself only sees the corners, so
+     without this the terrain *between* corners (a hill crest, a Surface
+     Texture bump) poked straight up through the thin slab, and stones
+     read as sunk into the ground.
    - Apply the `sink_mm` overlap (so a later boolean merge stays manifold,
      same as Boulder Field) — unlike Boulder Field's fixed `SINK_MM`,
      `flagstones.py` scales this as `min(SINK_MM_MAX, thickness_mm *
@@ -237,7 +245,7 @@ segments.
 | **Area Name** | Editable label; names the object `Flagstones_<name>`. Auto-defaults to `Area N`. |
 | **Min / Max Stone Size (mm)** | Diameter range, used as each seed's tessellation weight (bigger -> bigger cell). mm params, so their defaults scale with **Man Height** (nominal ≈ 0.3x Man Height). |
 | **Avg. Mortar Gap (mm)** | Average gap maintained between neighbouring flagstones — actual gaps vary stone-to-stone, and stones may touch (gap 0) in places. |
-| **Slab Thickness (mm)** | Thickness of each flagstone slab. |
+| **Slab Thickness (mm)** | Thickness of each flagstone slab. Hard minimum 0.2 mm, so the man-height-scaled default (0.33 mm at Man Height 10) is no longer silently clamped up to 5 mm. |
 | **Merge into Tile** | Per-region preference for the Merge button (printability). |
 
 > **Vertex budget.** A large region of small stones can still yield a heavy
@@ -312,3 +320,13 @@ unit-tested without Blender. Verify by hand after changes:
 8. **Export** — *Export Tiles to STL* includes the flagstones (loose if not
    merged, unioned if merged); a tile with a scatter region is treated as
    custom.
+
+## Flagstone Path: bed + seating check
+
+A Flagstone Path flattens the terrain under its corridor into a bed by default (**Flatten Bed**, with Local Subdiv 2), and every stone's bottom face is checked against the terrain at its corners *and* interior points. `tests/_headless_flagstone_path_check.py` checks this end to end in real Blender on a hill-crossing path:
+
+```
+blender --background --factory-startup --python tests/_headless_flagstone_path_check.py
+```
+
+It asserts that no terrain pokes up more than a few hundredths of a mm past the intended merge overlap, with Flatten Bed on or off. Before this fix the same scene had 0.54 mm of terrain coming through a 0.33 mm slab.
